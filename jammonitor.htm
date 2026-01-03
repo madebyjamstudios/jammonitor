@@ -592,16 +592,13 @@ table.jm-table tr:hover { background: #e8f4fc; }
                             <!-- Populated by JS -->
                             <div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>
                         </div>
-                        <div class="wan-iface-actions">
-                            <button class="wan-iface-btn wan-iface-btn-apply" onclick="JamMonitor.saveWanInterfaces()">Apply</button>
-                            <button class="wan-iface-btn wan-iface-btn-cancel" onclick="JamMonitor.loadWanInterfaces()">Reset</button>
-                            <span class="wan-iface-status" id="wan-iface-status"></span>
-                        </div>
+                        <span class="wan-iface-status" id="wan-iface-status" style="font-size:11px;margin-top:8px;display:block;"></span>
                     </div>
 
                     <div class="wan-advanced-actions">
                         <div id="wan-advanced-error" class="wan-advanced-error"></div>
                         <div id="wan-advanced-success" class="wan-advanced-success"></div>
+                        <button class="wan-advanced-btn" style="background:#95a5a6;margin-right:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
                         <button class="wan-advanced-btn wan-advanced-btn-save" id="wan-advanced-save-btn" onclick="JamMonitor.saveAdvancedSettings()">Save and Apply</button>
                     </div>
                 </div>

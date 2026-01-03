@@ -2109,21 +2109,38 @@ var JamMonitor = (function() {
             }
         };
 
-        fetch(window.location.pathname + '/wan_advanced', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(result) {
+        // Save WAN interfaces first
+        var checkboxes = document.querySelectorAll('#wan-iface-grid input[type="checkbox"]:checked');
+        var selectedIfaces = [];
+        checkboxes.forEach(function(cb) {
+            selectedIfaces.push(cb.value);
+        });
+
+        // Save both: WAN interfaces + advanced settings
+        Promise.all([
+            fetch(window.location.pathname + '/wan_ifaces', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: selectedIfaces })
+            }).then(function(r) { return r.json(); }),
+            fetch(window.location.pathname + '/wan_advanced', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }).then(function(r) { return r.json(); })
+        ])
+        .then(function(results) {
             saveBtn.disabled = false;
             saveBtn.textContent = 'Save and Apply';
-            if (result.success) {
-                successDiv.textContent = 'Settings saved successfully!';
+            var ifaceResult = results[0];
+            var advResult = results[1];
+            if (ifaceResult.success && advResult.success) {
+                successDiv.textContent = 'All settings saved successfully!';
                 successDiv.style.display = 'block';
+                loadWanPolicy(); // Reload WAN policy to reflect changes
                 setTimeout(function() { successDiv.style.display = 'none'; }, 3000);
             } else {
-                errorDiv.textContent = result.error || 'Failed to save settings';
+                errorDiv.textContent = ifaceResult.error || advResult.error || 'Failed to save settings';
                 errorDiv.style.display = 'block';
             }
         })
@@ -2134,6 +2151,11 @@ var JamMonitor = (function() {
             errorDiv.textContent = 'Network error: ' + e.message;
             errorDiv.style.display = 'block';
         });
+    }
+
+    function resetAdvancedSettings() {
+        loadAdvancedSettings();
+        loadWanInterfaces();
     }
 
     // ============================================================
@@ -2692,6 +2714,7 @@ var JamMonitor = (function() {
         toggleDnsFields: toggleDnsFields,
         toggleAdvancedSettings: toggleAdvancedSettings,
         saveAdvancedSettings: saveAdvancedSettings,
+        resetAdvancedSettings: resetAdvancedSettings,
         loadWanInterfaces: loadWanInterfaces,
         saveWanInterfaces: saveWanInterfaces,
         updateIfaceItem: updateIfaceItem,

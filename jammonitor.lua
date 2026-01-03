@@ -1820,18 +1820,11 @@ function action_wan_ifaces()
             end
         end
 
-        -- Get all network interfaces from UCI (exclude system ones)
-        local excluded = {
-            loopback = true,
-            lan = true,
-            guest = true,
-            omrvpn = true
-        }
-
+        -- Get all network interfaces from UCI (only exclude loopback)
         uci:foreach("network", "interface", function(s)
             local name = s[".name"]
-            -- Skip excluded and bridge interfaces
-            if not excluded[name] and not name:match("^br%-") then
+            -- Skip only loopback and bridge interfaces
+            if name ~= "loopback" and not name:match("^br%-") then
                 local device = s.device or s.ifname or ""
                 table.insert(result.all, {
                     name = name,

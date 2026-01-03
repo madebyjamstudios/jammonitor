@@ -2216,9 +2216,11 @@ var JamMonitor = (function() {
         .then(function(result) {
             if (result.success) {
                 wanIfacesOriginal = selected.slice();
-                updateIfaceStatus('Saved! Refresh WAN Policy to see changes.');
-                // Trigger WAN policy reload if on that tab
-                setTimeout(function() { updateIfaceStatus(''); }, 3000);
+                updateIfaceStatus('Saved! Reloading WAN Policy...');
+                // Reload WAN policy to reflect changes
+                loadWanPolicy();
+                setTimeout(function() { updateIfaceStatus('Done!'); }, 500);
+                setTimeout(function() { updateIfaceStatus(''); }, 2500);
             } else {
                 updateIfaceStatus(result.error || 'Save failed', true);
             }

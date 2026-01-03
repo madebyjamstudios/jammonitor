@@ -19,7 +19,8 @@ A comprehensive WAN bonding dashboard for OpenMPTCProuter, designed for the Bana
 
 ### Overview Dashboard
 
-![Overview Dashboard](screenshots/overview.png)
+<img width="2042" height="1472" alt="image" src="https://github.com/user-attachments/assets/d63924ed-9e85-4c44-94f3-6ae6852a4917" />
+
 
 The Overview tab provides a bird's-eye view of your entire network at a glance:
 
@@ -35,7 +36,8 @@ The Overview tab provides a bird's-eye view of your entire network at a glance:
 
 ### WAN Policy Manager
 
-![WAN Policy](screenshots/wan-policy.png)
+<img width="2044" height="1436" alt="image" src="https://github.com/user-attachments/assets/c18c68b9-61dc-4c3d-831d-e0ad156346e3" />
+
 
 The WAN Policy tab is the heart of JamMonitor's connection management:
 
@@ -53,7 +55,8 @@ The WAN Policy tab is the heart of JamMonitor's connection management:
 
 ### Bandwidth Analytics
 
-![Bandwidth Charts](screenshots/bandwidth.png)
+<img width="2030" height="1498" alt="image" src="https://github.com/user-attachments/assets/a9d23577-9517-4b35-a771-71369677ff44" />
+
 
 Comprehensive bandwidth tracking across multiple timeframes:
 
@@ -69,7 +72,9 @@ Comprehensive bandwidth tracking across multiple timeframes:
 
 ### Interfaces & Routing
 
-![Interfaces](screenshots/interfaces.png)
+<img width="2040" height="1240" alt="image" src="https://github.com/user-attachments/assets/954698f2-1a4f-4618-b05e-ac58c1986401" />
+<img width="2042" height="718" alt="image" src="https://github.com/user-attachments/assets/80ae620c-9cfd-4d60-88de-9ca68ebb12e9" />
+
 
 Complete visibility into your network interfaces:
 
@@ -83,7 +88,8 @@ Complete visibility into your network interfaces:
 
 ### WiFi & Client Management
 
-![WiFi APs](screenshots/wifi-clients.png)
+<img width="2036" height="1228" alt="image" src="https://github.com/user-attachments/assets/caf2fa35-d875-4276-9112-d2cd0871cfeb" />
+
 
 Monitor wireless networks and connected clients:
 

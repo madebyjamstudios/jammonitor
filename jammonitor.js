@@ -1140,30 +1140,32 @@ var JamMonitor = (function() {
 
                 // Render connected clients table
                 var clientsTbody = document.getElementById('wifi-clients-tbody');
-                var allClients = [];
-                data.local_radios.forEach(function(radio) {
-                    if (radio.client_list) {
-                        radio.client_list.forEach(function(client) {
-                            allClients.push(client);
-                        });
-                    }
-                });
-                if (allClients.length === 0) {
-                    clientsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">No clients connected</td></tr>';
-                } else {
-                    var rows = '';
-                    allClients.forEach(function(client) {
-                        var signalClass = client.signal > -50 ? 'color:#27ae60;' : (client.signal > -70 ? 'color:#f39c12;' : 'color:#e74c3c;');
-                        rows += '<tr>';
-                        rows += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(client.mac) + '</td>';
-                        rows += '<td style="' + signalClass + '">' + client.signal + ' dBm</td>';
-                        rows += '<td>' + client.rx_rate + ' Mbps</td>';
-                        rows += '<td>' + client.tx_rate + ' Mbps</td>';
-                        rows += '<td>' + escapeHtml(client.band || 'N/A') + '</td>';
-                        rows += '<td>' + escapeHtml(client.ssid || 'N/A') + '</td>';
-                        rows += '</tr>';
+                if (clientsTbody) {
+                    var allClients = [];
+                    data.local_radios.forEach(function(radio) {
+                        if (radio.client_list) {
+                            radio.client_list.forEach(function(client) {
+                                allClients.push(client);
+                            });
+                        }
                     });
-                    clientsTbody.innerHTML = rows;
+                    if (allClients.length === 0) {
+                        clientsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">No clients connected</td></tr>';
+                    } else {
+                        var rows = '';
+                        allClients.forEach(function(client) {
+                            var signalClass = client.signal > -50 ? 'color:#27ae60;' : (client.signal > -70 ? 'color:#f39c12;' : 'color:#e74c3c;');
+                            rows += '<tr>';
+                            rows += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(client.mac) + '</td>';
+                            rows += '<td style="' + signalClass + '">' + client.signal + ' dBm</td>';
+                            rows += '<td>' + client.rx_rate + ' Mbps</td>';
+                            rows += '<td>' + client.tx_rate + ' Mbps</td>';
+                            rows += '<td>' + escapeHtml(client.band || 'N/A') + '</td>';
+                            rows += '<td>' + escapeHtml(client.ssid || 'N/A') + '</td>';
+                            rows += '</tr>';
+                        });
+                        clientsTbody.innerHTML = rows;
+                    }
                 }
             })
             .catch(function(e) {

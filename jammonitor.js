@@ -177,10 +177,11 @@ var JamMonitor = (function() {
         if (updateTimer) clearInterval(updateTimer);
         updateTimer = setInterval(function() {
             if (currentView === 'overview') updateOverview();
+            else if (currentView === 'wan-policy') loadWanPolicy(true);
             else if (currentView === 'clients') updateClients();
             else if (currentView === 'wifi-aps') updateWifiAps();
             else if (currentView === 'bw-realtime') updateBandwidth('bw-realtime');
-        }, 3000);
+        }, 5000);
 
         // Always collect data in background
         setInterval(collectBackgroundData, 3000);

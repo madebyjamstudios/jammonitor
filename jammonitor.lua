@@ -1272,14 +1272,13 @@ function action_wan_policy()
         -- Get all network interfaces that are WANs (wan1, wan2, wan3, wan4)
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
-            -- Include interfaces with proto=dhcp (typical WAN getting IP from ISP)
-            -- OR with multipath already configured (for any existing MPTCP setup)
-            -- Exclude loopback and bridge interfaces
-            local proto = s.proto or ""
-            local is_dhcp = proto == "dhcp"
-            local has_multipath = s.multipath and s.multipath ~= ""
-            local is_excluded = iface_name == "loopback" or iface_name:match("^br%-")
-            if not is_excluded and (is_dhcp or has_multipath) then
+            -- Name pattern identifies actual WANs (wan1, wwan1, 4g, lte, mobile, etc.)
+            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            -- Active multipath means it's participating in bonding (not just "off")
+            local is_active_multipath = s.multipath and (s.multipath == "master" or s.multipath == "on" or s.multipath == "backup")
+            -- Exclude system interfaces
+            local is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
+            if not is_excluded and (is_wan_pattern or is_active_multipath) then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""

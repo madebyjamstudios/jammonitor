@@ -42,80 +42,6 @@ function action_wifi_status()
         }
     }
 
-    -- Build MAC -> hostname map from multiple sources
-    local mac_to_hostname = {}
-    local ip_to_hostname = {}
-
-    -- Source 1: DHCP leases (basic hostnames)
-    local leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
-    if leases and leases ~= "" then
-        -- Format: timestamp mac ip hostname clientid
-        for line in leases:gmatch("[^\n]+") do
-            local mac, ip, hostname = line:match("^%S+%s+(%S+)%s+(%S+)%s+(%S+)")
-            if mac and hostname and hostname ~= "*" then
-                mac_to_hostname[mac:upper()] = hostname
-                if ip then ip_to_hostname[ip] = hostname end
-            end
-        end
-    end
-
-    -- Source 2: mDNS cache via umdns (gets full Apple device names like "Mario's iPhone")
-    local umdns = sys.exec("ubus call umdns browse 2>/dev/null")
-    if umdns and umdns ~= "" then
-        local mdns_data = json.parse(umdns)
-        if mdns_data then
-            for service, hosts in pairs(mdns_data) do
-                if type(hosts) == "table" then
-                    for hostname, info in pairs(hosts) do
-                        if type(info) == "table" and info.ipv4 then
-                            -- mDNS hostnames often have .local suffix, remove it
-                            local clean_name = hostname:gsub("%.local$", "")
-                            ip_to_hostname[info.ipv4] = clean_name
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Source 3: Static ethers file (user-defined MAC->name mappings)
-    local ethers = sys.exec("cat /etc/ethers 2>/dev/null")
-    if ethers and ethers ~= "" then
-        for line in ethers:gmatch("[^\n]+") do
-            local mac, name = line:match("^(%S+)%s+(%S+)")
-            if mac and name then
-                mac_to_hostname[mac:upper()] = name
-            end
-        end
-    end
-
-    -- Build MAC -> IP map from ARP table (for mDNS hostname lookup)
-    local mac_to_ip = {}
-    local arp = sys.exec("cat /proc/net/arp 2>/dev/null")
-    if arp and arp ~= "" then
-        for line in arp:gmatch("[^\n]+") do
-            local ip, mac = line:match("^(%d+%.%d+%.%d+%.%d+)%s+%S+%s+%S+%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
-            if ip and mac then
-                mac_to_ip[mac:upper()] = ip
-            end
-        end
-    end
-
-    -- Helper function to get best hostname for a MAC address
-    local function get_hostname(mac)
-        local upper_mac = mac:upper()
-        -- Try direct MAC lookup first (DHCP, ethers)
-        if mac_to_hostname[upper_mac] then
-            return mac_to_hostname[upper_mac]
-        end
-        -- Try IP-based lookup (mDNS) - gets full Apple device names
-        local ip = mac_to_ip[upper_mac]
-        if ip and ip_to_hostname[ip] then
-            return ip_to_hostname[ip]
-        end
-        return ""
-    end
-
     -- Get local radio info via ubus
     local ubus_wifi = sys.exec("ubus call network.wireless status 2>/dev/null")
     if ubus_wifi and ubus_wifi ~= "" then
@@ -131,41 +57,17 @@ function action_wifi_status()
                     ssids = {}
                 }
 
-                -- Get channel/txpower from iwinfo using first interface (not radio name)
-                local first_iface = radio_info.interfaces and radio_info.interfaces[1] and radio_info.interfaces[1].ifname
-                if first_iface then
-                    local iwinfo_out = sys.exec("iwinfo " .. first_iface .. " info 2>/dev/null")
-                    if iwinfo_out and iwinfo_out ~= "" then
-                        local ch = iwinfo_out:match("Channel:%s*(%d+)")
-                        local txp = iwinfo_out:match("Tx%-Power:%s*(%d+)")
-                        local freq = iwinfo_out:match("Channel:%s*%d+%s*%(([%d%.]+)%s*GHz%)")
+                -- Get channel/txpower from iwinfo if available
+                local dev = radio_info.config and radio_info.config.path
+                if dev then
+                    local iwinfo = sys.exec("iwinfo " .. radio_name .. " info 2>/dev/null")
+                    if iwinfo and iwinfo ~= "" then
+                        local ch = iwinfo:match("Channel:%s*(%d+)")
+                        local txp = iwinfo:match("Tx%-Power:%s*(%d+)")
                         if ch then radio.channel = ch end
                         if txp then radio.txpower = txp .. " dBm" end
-                        if freq then radio.band = freq .. " GHz" end
-                    end
-
-                    -- Get channel utilization from survey data (raw values for delta calc in JS)
-                    local survey_out = sys.exec("iw " .. first_iface .. " survey dump 2>/dev/null")
-                    if survey_out and survey_out ~= "" then
-                        -- Find the "in use" frequency block and extract busy/active times
-                        local in_use_block = survey_out:match("%[in use%][^\n]*(.-)Survey")
-                        if not in_use_block then
-                            in_use_block = survey_out:match("%[in use%][^\n]*(.*)")
-                        end
-                        if in_use_block then
-                            local active = in_use_block:match("channel active time:%s*(%d+)")
-                            local busy = in_use_block:match("channel busy time:%s*(%d+)")
-                            if active and busy then
-                                -- Send raw values for JS to calculate delta
-                                radio.survey_active = tonumber(active) or 0
-                                radio.survey_busy = tonumber(busy) or 0
-                            end
-                        end
                     end
                 end
-
-                -- Initialize client list for this radio
-                radio.client_list = {}
 
                 -- Get SSIDs from interfaces
                 if radio_info.interfaces then
@@ -175,26 +77,10 @@ function action_wifi_status()
                             ssid = (iface.config and iface.config.ssid) or "N/A",
                             mode = (iface.config and iface.config.mode) or "N/A"
                         }
-                        -- Get client details for this interface
+                        -- Get client count for this interface
                         if iface.ifname then
-                            local assoc_out = sys.exec("iwinfo " .. iface.ifname .. " assoclist 2>/dev/null")
-                            local client_count = 0
-                            if assoc_out and assoc_out ~= "" then
-                                -- Parse each client block from assoclist
-                                -- Format: MAC  signal  noise  RX: rate  TX: rate
-                                for mac, signal, rx_rate, tx_rate in assoc_out:gmatch("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s+([%-]?%d+)%s+dBm.-RX:%s*([%d%.]+)%s*MBit/s.-TX:%s*([%d%.]+)%s*MBit/s") do
-                                    client_count = client_count + 1
-                                    local hostname = get_hostname(mac)
-                                    table.insert(radio.client_list, {
-                                        mac = mac,
-                                        hostname = hostname,
-                                        signal = tonumber(signal) or 0,
-                                        rx_rate = tonumber(rx_rate) or 0,
-                                        tx_rate = tonumber(tx_rate) or 0,
-                                        band = radio.band or "N/A"
-                                    })
-                                end
-                            end
+                            local assoc = sys.exec("iwinfo " .. iface.ifname .. " assoclist 2>/dev/null | grep -c 'dBm' || echo 0")
+                            local client_count = tonumber(assoc:match("%d+")) or 0
                             ssid_info.clients = client_count
                             radio.clients = radio.clients + client_count
                         end
@@ -1342,13 +1228,13 @@ function action_wan_policy()
         -- Get all network interfaces that are WANs (wan1, wan2, wan3, wan4)
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
-            -- Name pattern identifies actual WANs (wan1, wwan1, 4g, lte, mobile, etc.)
-            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
-            -- Active multipath means it's participating in bonding (not just "off")
-            local is_active_multipath = s.multipath and (s.multipath == "master" or s.multipath == "on" or s.multipath == "backup")
+            -- Only include WAN interfaces with multipath capability
+            -- Match wan1, wan2, wwan, wwan1, 4g, lte, etc. or any interface with multipath set
             -- Exclude system interfaces
-            local is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
-            if not is_excluded and (is_wan_pattern or is_active_multipath) then
+            local dominated = iface_name == "loopback" or iface_name == "lan" or iface_name == "omrvpn" or iface_name == "omr6in4" or iface_name:match("^br%-") or iface_name:match("^docker")
+            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            local has_multipath = s.multipath and s.multipath ~= ""
+            if not dominated and (is_wan_pattern or has_multipath) then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""

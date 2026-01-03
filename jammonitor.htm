@@ -591,15 +591,21 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 </div>
             </div>
 
-            <!-- Connected Clients Section -->
+            <!-- Remote APs Section -->
             <div class="jm-block" style="margin-bottom:20px;">
                 <div class="jm-block-header">
-                    <span class="jm-block-title">Connected Clients</span>
+                    <span class="jm-block-title">Remote APs</span>
+                    <button class="jm-btn jm-btn-sm" style="margin-left:auto;" onclick="JamMonitor.toggleApEditor()">Edit AP List</button>
+                </div>
+                <div id="ap-editor-container" class="jm-ap-editor" style="display:none;margin-top:10px;">
+                    <p style="font-size:12px;color:#7f8c8d;margin:0 0 8px;">Enter remote APs as JSON array. Example: [{"name":"AP-FOH","ip":"10.0.0.2"},{"name":"AP-BOH","ip":"10.0.0.3"}]</p>
+                    <textarea id="ap-list-editor" placeholder='[{"name":"AP-1","ip":"10.0.0.2"}]'></textarea>
+                    <button class="jm-btn jm-btn-sm" style="margin-top:8px;" onclick="JamMonitor.saveApList()">Save & Refresh</button>
                 </div>
                 <table class="jm-table" style="margin-top:10px;">
-                    <thead><tr><th>Device</th><th>MAC Address</th><th>Signal</th><th>RX Rate</th><th>TX Rate</th><th>Band</th></tr></thead>
-                    <tbody id="wifi-clients-tbody">
-                        <tr><td colspan="6" style="text-align:center;color:#999;">Loading...</td></tr>
+                    <thead><tr><th>Status</th><th>Name</th><th>IP</th><th>Latency</th><th>Last Seen</th></tr></thead>
+                    <tbody id="wifi-remote-tbody">
+                        <tr><td colspan="5" style="text-align:center;color:#999;">No remote APs configured</td></tr>
                     </tbody>
                 </table>
             </div>

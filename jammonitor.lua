@@ -1369,8 +1369,14 @@ function action_wan_policy()
             -- Active multipath means it's participating in bonding (always show)
             local is_active_multipath = s.multipath and (s.multipath == "master" or s.multipath == "on" or s.multipath == "backup")
 
-            -- Exclude system interfaces
-            local is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
+            -- Check if user explicitly selected this interface (overrides exclusions)
+            local user_selected = enabled_map[iface_name]
+
+            -- Only apply exclusions if NOT explicitly selected by user
+            local is_excluded = false
+            if not user_selected then
+                is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
+            end
 
             if not is_excluded and (is_enabled or is_active_multipath) then
                 local multipath = s.multipath or "off"

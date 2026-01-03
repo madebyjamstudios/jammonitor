@@ -1294,7 +1294,7 @@ var JamMonitor = (function() {
 
         if (list.length === 0) {
             countEl.textContent = '';
-            listEl.innerHTML = '<p style="color:#999;font-size:12px;text-align:center;">No remote APs configured</p>';
+            listEl.innerHTML = '<div style="padding:20px;background:#f8f9fa;border-radius:6px;text-align:center;"><p style="color:#95a5a6;margin:0;">No remote APs configured</p><p style="color:#bdc3c7;font-size:11px;margin:5px 0 0;">Click "+ Add APs" below to monitor external access points</p></div>';
             return;
         }
 

@@ -508,6 +508,17 @@ table.jm-table tr:hover { background: #e8f4fc; }
                     Advanced Settings
                 </div>
                 <div id="wan-advanced-content" class="wan-advanced-content">
+                    <!-- WAN Interface Selector (at top) -->
+                    <div class="wan-iface-selector" style="margin-top:0;padding-top:0;border-top:none;">
+                        <div class="wan-iface-selector-title">Manage WAN Interfaces</div>
+                        <div class="wan-iface-selector-desc">Select which network interfaces should appear in the WAN Policy manager. Check interfaces you want to manage for bonding/failover.</div>
+                        <div class="wan-iface-grid" id="wan-iface-grid">
+                            <!-- Populated by JS -->
+                            <div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>
+                        </div>
+                        <span class="wan-iface-status" id="wan-iface-status" style="font-size:11px;margin-top:8px;display:block;"></span>
+                    </div>
+
                     <div class="wan-advanced-grid">
                         <!-- Failover Detection Column -->
                         <div class="wan-advanced-col">
@@ -584,22 +595,11 @@ table.jm-table tr:hover { background: #e8f4fc; }
                         </div>
                     </div>
 
-                    <!-- WAN Interface Selector -->
-                    <div class="wan-iface-selector">
-                        <div class="wan-iface-selector-title">Manage WAN Interfaces</div>
-                        <div class="wan-iface-selector-desc">Select which network interfaces should appear in the WAN Policy manager. Check interfaces you want to manage for bonding/failover.</div>
-                        <div class="wan-iface-grid" id="wan-iface-grid">
-                            <!-- Populated by JS -->
-                            <div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>
-                        </div>
-                        <span class="wan-iface-status" id="wan-iface-status" style="font-size:11px;margin-top:8px;display:block;"></span>
-                    </div>
-
                     <div class="wan-advanced-actions">
                         <div id="wan-advanced-error" class="wan-advanced-error"></div>
                         <div id="wan-advanced-success" class="wan-advanced-success"></div>
-                        <button class="wan-advanced-btn" style="background:#95a5a6;margin-right:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
                         <button class="wan-advanced-btn wan-advanced-btn-save" id="wan-advanced-save-btn" onclick="JamMonitor.saveAdvancedSettings()">Save and Apply</button>
+                        <button class="wan-advanced-btn" style="background:#95a5a6;margin-left:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
                     </div>
                 </div>
             </div>
@@ -685,12 +685,15 @@ table.jm-table tr:hover { background: #e8f4fc; }
                             <p style="font-size:10px;color:#95a5a6;margin:0 0 8px;font-family:monospace;">Example: [{"name":"AP-Living","ip":"10.201.10.50"},{"name":"AP-Garage","ip":"10.201.10.51"}]</p>
                             <textarea id="ap-list-editor" style="width:100%;height:60px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #ddd;border-radius:4px;" placeholder='[{"name":"AP-Living","ip":"10.0.0.2"},{"name":"AP-Office","ip":"10.0.0.3"}]'></textarea>
                             <div style="margin-top:8px;display:flex;gap:8px;">
-                                <button class="jm-btn jm-btn-sm" onclick="JamMonitor.saveApList()">Save</button>
+                                <button class="jm-btn jm-btn-sm" onclick="JamMonitor.saveApList()">Save and Apply</button>
                                 <button class="jm-btn jm-btn-sm" style="background:#95a5a6;" onclick="JamMonitor.cancelApEdit()">Cancel</button>
                             </div>
                         </div>
                         <div id="remote-ap-list">
-                            <p style="color:#999;font-size:12px;text-align:center;">No remote APs configured</p>
+                            <div style="padding:20px;background:#f8f9fa;border-radius:6px;text-align:center;">
+                                <p style="color:#95a5a6;margin:0;">No remote APs configured</p>
+                                <p style="color:#bdc3c7;font-size:11px;margin:5px 0 0;">Click "+ Add APs" below to monitor external access points</p>
+                            </div>
                         </div>
                         <button class="jm-btn jm-btn-sm" style="margin-top:10px;background:#7f8c8d;" id="edit-ap-btn" onclick="JamMonitor.editApList()">+ Add APs</button>
                     </div>

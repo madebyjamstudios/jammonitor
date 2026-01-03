@@ -42,6 +42,19 @@ function action_wifi_status()
         }
     }
 
+    -- Build MAC -> hostname map from DHCP leases
+    local mac_to_hostname = {}
+    local leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
+    if leases and leases ~= "" then
+        -- Format: timestamp mac ip hostname clientid
+        for line in leases:gmatch("[^\n]+") do
+            local mac, hostname = line:match("^%S+%s+(%S+)%s+%S+%s+(%S+)")
+            if mac and hostname and hostname ~= "*" then
+                mac_to_hostname[mac:upper()] = hostname
+            end
+        end
+    end
+
     -- Get local radio info via ubus
     local ubus_wifi = sys.exec("ubus call network.wireless status 2>/dev/null")
     if ubus_wifi and ubus_wifi ~= "" then
@@ -114,14 +127,14 @@ function action_wifi_status()
                                 -- Format: MAC  signal  noise  RX: rate  TX: rate
                                 for mac, signal, rx_rate, tx_rate in assoc_out:gmatch("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s+([%-]?%d+)%s+dBm.-RX:%s*([%d%.]+)%s*MBit/s.-TX:%s*([%d%.]+)%s*MBit/s") do
                                     client_count = client_count + 1
+                                    local hostname = mac_to_hostname[mac:upper()] or ""
                                     table.insert(radio.client_list, {
                                         mac = mac,
+                                        hostname = hostname,
                                         signal = tonumber(signal) or 0,
                                         rx_rate = tonumber(rx_rate) or 0,
                                         tx_rate = tonumber(tx_rate) or 0,
-                                        band = radio.band or "N/A",
-                                        interface = iface.ifname,
-                                        ssid = ssid_info.ssid
+                                        band = radio.band or "N/A"
                                     })
                                 end
                             end

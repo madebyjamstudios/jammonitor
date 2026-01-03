@@ -1155,13 +1155,14 @@ var JamMonitor = (function() {
                         var rows = '';
                         allClients.forEach(function(client) {
                             var signalClass = client.signal > -50 ? 'color:#27ae60;' : (client.signal > -70 ? 'color:#f39c12;' : 'color:#e74c3c;');
+                            var deviceName = client.hostname || client.mac;
                             rows += '<tr>';
+                            rows += '<td>' + escapeHtml(deviceName) + '</td>';
                             rows += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(client.mac) + '</td>';
                             rows += '<td style="' + signalClass + '">' + client.signal + ' dBm</td>';
                             rows += '<td>' + client.rx_rate + ' Mbps</td>';
                             rows += '<td>' + client.tx_rate + ' Mbps</td>';
                             rows += '<td>' + escapeHtml(client.band || 'N/A') + '</td>';
-                            rows += '<td>' + escapeHtml(client.ssid || 'N/A') + '</td>';
                             rows += '</tr>';
                         });
                         clientsTbody.innerHTML = rows;

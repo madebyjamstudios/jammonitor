@@ -59,21 +59,42 @@
     .jm-container { min-height: auto; }
 }
 
-/* Ultra-compact for very small quadrants */
-@media (max-width: 500px) {
-    .jm-sidebar { width: 40px; }
+/* Compact for smaller quadrants */
+@media (max-width: 600px) {
+    .jm-sidebar { width: 45px; }
     .jm-sidebar-item { padding: 10px 5px; }
     .jm-sidebar-item::before { font-size: 14px; }
-    .jm-main { padding: 8px; }
+    .jm-main { padding: 10px; }
     .jm-block { padding: 10px; min-height: auto; }
-    .jm-big-value { font-size: 20px; }
+    .jm-big-value { font-size: 22px; }
+    .jm-row { font-size: 11px; }
     h2 { font-size: 16px; margin-bottom: 10px; }
+    .jm-health-tile { padding: 10px; }
+    .jm-health-tile .tile-value { font-size: 22px; }
+    .jm-health-tile .tile-label { font-size: 9px; }
+}
+
+/* Ultra-compact for very small quadrants */
+@media (max-width: 450px) {
+    .jm-sidebar { width: 36px; }
+    .jm-sidebar-item { padding: 8px 4px; }
+    .jm-sidebar-item::before { font-size: 12px; }
+    .jm-main { padding: 6px; }
+    .jm-block { padding: 8px; }
+    .jm-block-header { margin-bottom: 6px; padding-bottom: 6px; }
+    .jm-block-title { font-size: 11px; }
+    .jm-big-value { font-size: 18px; }
+    .jm-row { font-size: 10px; padding: 2px 0; }
+    .jm-health-tile { padding: 8px; }
+    .jm-health-tile .tile-value { font-size: 18px; }
+    .jm-health-tile .tile-label { font-size: 8px; }
 }
 
 /* Health blocks grid - 3x3 */
 .jm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
 @media (max-width: 1200px) { .jm-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 800px) { .jm-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .jm-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; } }
+@media (max-width: 400px) { .jm-grid { grid-template-columns: 1fr; } }
 
 .jm-block { background: #fff; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); min-height: 180px; }
 .jm-block-header { display: flex; align-items: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
@@ -137,7 +158,8 @@ table.jm-table tr:hover { background: #e8f4fc; }
 /* WiFi APs - Health tiles */
 .jm-health-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
 @media (max-width: 1000px) { .jm-health-tiles { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 600px) { .jm-health-tiles { grid-template-columns: 1fr; } }
+@media (max-width: 500px) { .jm-health-tiles { grid-template-columns: repeat(2, 1fr); gap: 8px; } }
+@media (max-width: 350px) { .jm-health-tiles { grid-template-columns: 1fr; } }
 .jm-health-tile { background: #fff; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); text-align: center; }
 .jm-health-tile .tile-value { font-size: 28px; font-weight: bold; color: #2c3e50; }
 .jm-health-tile .tile-label { font-size: 11px; color: #7f8c8d; text-transform: uppercase; margin-top: 5px; }

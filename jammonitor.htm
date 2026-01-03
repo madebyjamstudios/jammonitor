@@ -162,8 +162,9 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .jm-chart-container { background: #fff; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
 .jm-chart { width: 100%; height: 250px; }
 
-/* OMR Status iframe */
-.jm-omr-frame { width: 100%; height: calc(100vh - 200px); min-height: 500px; border: none; border-radius: 8px; background: #fff; }
+/* OMR Status iframe - cropped to hide LuCI navbar */
+.jm-omr-frame-wrapper { overflow: hidden; border-radius: 8px; height: calc(100vh - 200px); min-height: 500px; }
+.jm-omr-frame { width: 100%; height: calc(100% + 60px); border: none; background: #fff; margin-top: -60px; }
 
 /* WiFi APs - Health tiles */
 .jm-health-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
@@ -667,7 +668,9 @@ table.jm-table tr:hover { background: #e8f4fc; }
         <!-- OMR STATUS -->
         <div id="view-omr-status" class="jm-view">
             <h2 style="margin-top:0;color:#2c3e50;">OpenMPTCProuter Status</h2>
-            <iframe class="jm-omr-frame" id="omr-frame" src="about:blank"></iframe>
+            <div class="jm-omr-frame-wrapper">
+                <iframe class="jm-omr-frame" id="omr-frame" src="about:blank"></iframe>
+            </div>
         </div>
 
         <!-- DIAGNOSTICS -->

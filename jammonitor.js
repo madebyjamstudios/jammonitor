@@ -2385,19 +2385,24 @@ var JamMonitor = (function() {
     }
 
     function formatRate(bytes) {
+        // Convert bytes/sec to bits/sec (Mbps) for network speed display
+        var bits = bytes * 8;
         if (scale === 'gb') {
-            return (bytes / 1073741824).toFixed(3) + ' GB/s';
+            return (bits / 1000000000).toFixed(2) + ' Gbps';
         }
-        if (bytes < 1024) return bytes.toFixed(0) + ' B/s';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB/s';
-        return (bytes / 1048576).toFixed(2) + ' MB/s';
+        if (bits < 1000) return bits.toFixed(0) + ' bps';
+        if (bits < 1000000) return (bits / 1000).toFixed(1) + ' Kbps';
+        if (bits < 1000000000) return (bits / 1000000).toFixed(1) + ' Mbps';
+        return (bits / 1000000000).toFixed(2) + ' Gbps';
     }
 
     function formatRateShort(bytes) {
-        if (scale === 'gb') return (bytes / 1073741824).toFixed(2) + 'G';
-        if (bytes < 1024) return bytes.toFixed(0) + 'B';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(0) + 'K';
-        return (bytes / 1048576).toFixed(1) + 'M';
+        // Convert bytes/sec to bits/sec (Mbps) for network speed display
+        var bits = bytes * 8;
+        if (bits < 1000) return bits.toFixed(0) + ' bps';
+        if (bits < 1000000) return (bits / 1000).toFixed(0) + ' Kbps';
+        if (bits < 1000000000) return (bits / 1000000).toFixed(0) + ' Mbps';
+        return (bits / 1000000000).toFixed(1) + ' Gbps';
     }
 
     function formatBytesScale(bytes) {

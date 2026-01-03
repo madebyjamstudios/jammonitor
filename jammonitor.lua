@@ -57,17 +57,45 @@ function action_wifi_status()
                     ssids = {}
                 }
 
-                -- Get channel/txpower from iwinfo if available
-                local dev = radio_info.config and radio_info.config.path
-                if dev then
-                    local iwinfo = sys.exec("iwinfo " .. radio_name .. " info 2>/dev/null")
-                    if iwinfo and iwinfo ~= "" then
-                        local ch = iwinfo:match("Channel:%s*(%d+)")
-                        local txp = iwinfo:match("Tx%-Power:%s*(%d+)")
+                -- Get channel/txpower from iwinfo using first interface (not radio name)
+                local first_iface = radio_info.interfaces and radio_info.interfaces[1] and radio_info.interfaces[1].ifname
+                if first_iface then
+                    local iwinfo_out = sys.exec("iwinfo " .. first_iface .. " info 2>/dev/null")
+                    if iwinfo_out and iwinfo_out ~= "" then
+                        local ch = iwinfo_out:match("Channel:%s*(%d+)")
+                        local txp = iwinfo_out:match("Tx%-Power:%s*(%d+)")
+                        local freq = iwinfo_out:match("Channel:%s*%d+%s*%(([%d%.]+)%s*GHz%)")
                         if ch then radio.channel = ch end
                         if txp then radio.txpower = txp .. " dBm" end
+                        if freq then radio.band = freq .. " GHz" end
+                    end
+
+                    -- Get channel utilization from survey data
+                    -- Use the phy name (e.g., phy0) from the interface
+                    local phy_name = first_iface:match("^(%w+)") or first_iface
+                    local survey_out = sys.exec("iw " .. first_iface .. " survey dump 2>/dev/null")
+                    if survey_out and survey_out ~= "" then
+                        -- Find the "in use" frequency block and extract busy/active times
+                        local in_use_block = survey_out:match("%[in use%][^\n]*(.-)Survey")
+                        if not in_use_block then
+                            in_use_block = survey_out:match("%[in use%][^\n]*(.*)")
+                        end
+                        if in_use_block then
+                            local active = in_use_block:match("channel active time:%s*(%d+)")
+                            local busy = in_use_block:match("channel busy time:%s*(%d+)")
+                            if active and busy then
+                                local active_ms = tonumber(active) or 1
+                                local busy_ms = tonumber(busy) or 0
+                                if active_ms > 0 then
+                                    radio.utilization = math.floor((busy_ms / active_ms) * 100)
+                                end
+                            end
+                        end
                     end
                 end
+
+                -- Initialize client list for this radio
+                radio.client_list = {}
 
                 -- Get SSIDs from interfaces
                 if radio_info.interfaces then
@@ -77,10 +105,26 @@ function action_wifi_status()
                             ssid = (iface.config and iface.config.ssid) or "N/A",
                             mode = (iface.config and iface.config.mode) or "N/A"
                         }
-                        -- Get client count for this interface
+                        -- Get client details for this interface
                         if iface.ifname then
-                            local assoc = sys.exec("iwinfo " .. iface.ifname .. " assoclist 2>/dev/null | grep -c 'dBm' || echo 0")
-                            local client_count = tonumber(assoc:match("%d+")) or 0
+                            local assoc_out = sys.exec("iwinfo " .. iface.ifname .. " assoclist 2>/dev/null")
+                            local client_count = 0
+                            if assoc_out and assoc_out ~= "" then
+                                -- Parse each client block from assoclist
+                                -- Format: MAC  signal  noise  RX: rate  TX: rate
+                                for mac, signal, rx_rate, tx_rate in assoc_out:gmatch("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s+([%-]?%d+)%s+dBm.-RX:%s*([%d%.]+)%s*MBit/s.-TX:%s*([%d%.]+)%s*MBit/s") do
+                                    client_count = client_count + 1
+                                    table.insert(radio.client_list, {
+                                        mac = mac,
+                                        signal = tonumber(signal) or 0,
+                                        rx_rate = tonumber(rx_rate) or 0,
+                                        tx_rate = tonumber(tx_rate) or 0,
+                                        band = radio.band or "N/A",
+                                        interface = iface.ifname,
+                                        ssid = ssid_info.ssid
+                                    })
+                                end
+                            end
                             ssid_info.clients = client_count
                             radio.clients = radio.clients + client_count
                         end
@@ -1228,13 +1272,14 @@ function action_wan_policy()
         -- Get all network interfaces that are WANs (wan1, wan2, wan3, wan4)
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
-            -- Only include WAN interfaces with multipath capability
-            -- Match wan1, wan2, wwan, wwan1, 4g, lte, etc. or any interface with multipath set
-            -- Exclude system interfaces
-            local excluded = iface_name == "loopback" or iface_name == "lan" or iface_name == "guest" or iface_name == "omrvpn" or iface_name == "omr6in4" or iface_name:match("^br%-") or iface_name:match("^docker")
-            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            -- Include interfaces with proto=dhcp (typical WAN getting IP from ISP)
+            -- OR with multipath already configured (for any existing MPTCP setup)
+            -- Exclude loopback and bridge interfaces
+            local proto = s.proto or ""
+            local is_dhcp = proto == "dhcp"
             local has_multipath = s.multipath and s.multipath ~= ""
-            if not excluded and (is_wan_pattern or has_multipath) then
+            local is_excluded = iface_name == "loopback" or iface_name:match("^br%-")
+            if not is_excluded and (is_dhcp or has_multipath) then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""

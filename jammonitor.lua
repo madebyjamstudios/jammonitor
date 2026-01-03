@@ -1372,13 +1372,30 @@ function action_wan_policy()
             -- Check if user explicitly selected this interface (overrides exclusions)
             local user_selected = enabled_map[iface_name]
 
-            -- Only apply exclusions if NOT explicitly selected by user
-            local is_excluded = false
-            if not user_selected then
-                is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
+            -- ALWAYS exclude LAN/system interfaces from WAN policy (no override)
+            -- This prevents accidental lockouts
+            local is_lan_system = iface_name == "loopback" or iface_name == "lan" or iface_name == "guest" or
+                                  iface_name:match("^br%-") or iface_name:match("^lan") or iface_name:match("^guest")
+            if is_lan_system then
+                return  -- Skip this interface entirely
             end
 
-            if not is_excluded and (is_enabled or is_active_multipath) then
+            -- Only apply soft exclusions if NOT explicitly selected by user
+            local is_excluded = false
+            if not user_selected then
+                is_excluded = iface_name == "omrvpn"
+            end
+
+            -- When config exists, respect it fully (ignore multipath status)
+            -- When no config, use pattern match + active multipath as fallback
+            local should_show = false
+            if has_config then
+                should_show = is_enabled  -- Config has final say
+            else
+                should_show = is_enabled or is_active_multipath  -- Fallback
+            end
+
+            if not is_excluded and should_show then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""
@@ -1826,16 +1843,37 @@ function action_wan_ifaces()
             end
         end
 
-        -- Get all network interfaces from UCI (only exclude loopback)
+        -- Get all network interfaces from UCI (exclude system/LAN interfaces permanently)
         uci:foreach("network", "interface", function(s)
             local name = s[".name"]
-            -- Skip only loopback and bridge interfaces
-            if name ~= "loopback" and not name:match("^br%-") then
+            -- PERMANENTLY exclude LAN/system interfaces from WAN selector to prevent lockouts
+            local is_system_iface = name == "loopback" or name == "lan" or name == "guest" or
+                                    name:match("^br%-") or name:match("^lan") or name:match("^guest")
+            if not is_system_iface then
                 local device = s.device or s.ifname or ""
+                local multipath = s.multipath or "off"
+
+                -- Get interface status
+                local status_json = sys.exec("ifstatus " .. name .. " 2>/dev/null")
+                local is_up = false
+                local ip = nil
+                if status_json and status_json ~= "" then
+                    local status = json.parse(status_json)
+                    if status then
+                        is_up = status.up or false
+                        if status["ipv4-address"] and status["ipv4-address"][1] then
+                            ip = status["ipv4-address"][1].address
+                        end
+                    end
+                end
+
                 table.insert(result.all, {
                     name = name,
                     device = device,
-                    proto = s.proto or "dhcp"
+                    proto = s.proto or "dhcp",
+                    multipath = multipath,
+                    is_up = is_up,
+                    ip = ip
                 })
                 -- Auto-enable if matches WAN pattern and not in config yet
                 if #result.enabled == 0 then

@@ -2081,10 +2081,42 @@ var JamMonitor = (function() {
             });
     }
 
-    function saveAdvancedSettings() {
+    function saveAdvancedSettings(skipConfirm) {
         var saveBtn = document.getElementById('wan-advanced-save-btn');
         var errorDiv = document.getElementById('wan-advanced-error');
         var successDiv = document.getElementById('wan-advanced-success');
+
+        // Get currently selected interfaces
+        var checkboxes = document.querySelectorAll('#wan-iface-grid input[type="checkbox"]:checked');
+        var selectedIfaces = [];
+        checkboxes.forEach(function(cb) {
+            selectedIfaces.push(cb.value);
+        });
+
+        // Check for active interfaces being removed (only if we have original list)
+        if (!skipConfirm && wanIfacesOriginal.length > 0) {
+            var removedActive = [];
+            wanIfacesOriginal.forEach(function(ifaceName) {
+                // Check if this interface is being unchecked
+                if (selectedIfaces.indexOf(ifaceName) === -1) {
+                    var ifaceData = wanIfacesData[ifaceName];
+                    if (ifaceData && (ifaceData.is_up || ifaceData.multipath === 'master')) {
+                        var status = ifaceData.multipath === 'master' ? 'primary' :
+                                    (ifaceData.ip ? 'connected - ' + ifaceData.ip : 'up');
+                        removedActive.push(ifaceName + ' (' + status + ')');
+                    }
+                }
+            });
+
+            if (removedActive.length > 0) {
+                var msg = 'The following active interfaces will be removed from WAN Policy:\n\n' +
+                          removedActive.join('\n') +
+                          '\n\nThis will stop routing through these interfaces. Continue?';
+                if (!confirm(msg)) {
+                    return;  // User cancelled
+                }
+            }
+        }
 
         saveBtn.disabled = true;
         saveBtn.textContent = 'Applying...';
@@ -2108,13 +2140,6 @@ var JamMonitor = (function() {
                 stale_loss_cnt: parseInt(document.getElementById('adv-stale-loss').value, 10) || 4
             }
         };
-
-        // Save WAN interfaces first
-        var checkboxes = document.querySelectorAll('#wan-iface-grid input[type="checkbox"]:checked');
-        var selectedIfaces = [];
-        checkboxes.forEach(function(cb) {
-            selectedIfaces.push(cb.value);
-        });
 
         // Save both: WAN interfaces + advanced settings
         Promise.all([
@@ -2162,6 +2187,7 @@ var JamMonitor = (function() {
     // WAN Interface Selector
     // ============================================================
     var wanIfacesOriginal = [];
+    var wanIfacesData = {};  // Store full interface data for status checks
 
     function loadWanInterfaces() {
         var grid = document.getElementById('wan-iface-grid');
@@ -2175,6 +2201,12 @@ var JamMonitor = (function() {
                 wanIfacesOriginal = data.enabled || [];
                 var allIfaces = data.all || [];
 
+                // Store full interface data for status checks
+                wanIfacesData = {};
+                allIfaces.forEach(function(iface) {
+                    wanIfacesData[iface.name] = iface;
+                });
+
                 if (allIfaces.length === 0) {
                     grid.innerHTML = '<div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">No interfaces found</div>';
                     return;
@@ -2185,9 +2217,20 @@ var JamMonitor = (function() {
                     var isChecked = wanIfacesOriginal.indexOf(iface.name) !== -1;
                     var checkedClass = isChecked ? ' checked' : '';
                     var checkedAttr = isChecked ? ' checked' : '';
+
+                    // Build status badge
+                    var statusBadge = '';
+                    if (iface.multipath === 'master') {
+                        statusBadge = '<span style="color:#3498db;font-size:9px;margin-left:5px;">(primary)</span>';
+                    } else if (iface.is_up && iface.ip) {
+                        statusBadge = '<span style="color:#27ae60;font-size:9px;margin-left:5px;">(connected)</span>';
+                    } else if (iface.is_up) {
+                        statusBadge = '<span style="color:#f39c12;font-size:9px;margin-left:5px;">(up)</span>';
+                    }
+
                     html += '<label class="wan-iface-item' + checkedClass + '">';
                     html += '<input type="checkbox" name="wan-iface" value="' + iface.name + '"' + checkedAttr + ' onchange="JamMonitor.updateIfaceItem(this)">';
-                    html += '<span class="wan-iface-item-name">' + iface.name + '</span>';
+                    html += '<span class="wan-iface-item-name">' + iface.name + statusBadge + '</span>';
                     if (iface.device) {
                         html += '<span class="wan-iface-item-device">' + iface.device + '</span>';
                     }

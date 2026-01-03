@@ -188,6 +188,9 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .wan-status-indicator.disabled { background: #95a5a6; box-shadow: none; }
 .wan-status-indicator.loading { background: transparent; border: 2px solid #ddd; border-top-color: #3498db; border-radius: 50%; animation: wan-spin 0.6s linear infinite; box-shadow: none; width: 10px; height: 10px; }
 @keyframes wan-spin { to { transform: rotate(360deg); } }
+.tile-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #3498db; border-radius: 50%; animation: wan-spin 0.6s linear infinite; }
+.loading-row td { text-align: center; padding: 20px; }
+.content-spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #ddd; border-top-color: #3498db; border-radius: 50%; animation: wan-spin 0.6s linear infinite; vertical-align: middle; margin-right: 8px; }
 .wan-policy-right { display: flex; align-items: center; justify-content: flex-start; padding: 10px 20px 10px 40px; flex: 1; }
 .wan-policy-ip { font-family: monospace; color: #3498db; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .wan-policy-ip:hover { color: #2980b9; text-decoration-thickness: 2px; }
@@ -566,19 +569,19 @@ table.jm-table tr:hover { background: #e8f4fc; }
             <!-- Health Tiles -->
             <div class="jm-health-tiles">
                 <div class="jm-health-tile">
-                    <div class="tile-value" id="wifi-aps-online">--</div>
+                    <div class="tile-value" id="wifi-aps-online"><span class="tile-spinner"></span></div>
                     <div class="tile-label">APs Online</div>
                 </div>
                 <div class="jm-health-tile">
-                    <div class="tile-value" id="wifi-total-clients">--</div>
+                    <div class="tile-value" id="wifi-total-clients"><span class="tile-spinner"></span></div>
                     <div class="tile-label">Total Clients</div>
                 </div>
                 <div class="jm-health-tile">
-                    <div class="tile-value" id="wifi-worst-ap">--</div>
+                    <div class="tile-value" id="wifi-worst-ap"><span class="tile-spinner"></span></div>
                     <div class="tile-label">Worst AP</div>
                 </div>
                 <div class="jm-health-tile">
-                    <div class="tile-value" id="wifi-local-radios">--</div>
+                    <div class="tile-value" id="wifi-local-radios"><span class="tile-spinner"></span></div>
                     <div class="tile-label">Local Radios</div>
                 </div>
             </div>
@@ -587,7 +590,7 @@ table.jm-table tr:hover { background: #e8f4fc; }
             <div class="jm-block" style="margin-bottom:20px;">
                 <div class="jm-block-header"><span class="jm-block-title">Local Radios</span></div>
                 <div id="wifi-local-grid" class="jm-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin:0;">
-                    <p style="color:#999;margin:10px 0;">Loading...</p>
+                    <p style="color:#999;margin:15px 0;text-align:center;"><span class="content-spinner"></span>Loading radios...</p>
                 </div>
             </div>
 
@@ -599,7 +602,7 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 <table class="jm-table" style="margin-top:10px;">
                     <thead><tr><th>Device</th><th>MAC Address</th><th>Signal</th><th>Download</th><th>Upload</th><th>Band</th></tr></thead>
                     <tbody id="wifi-clients-tbody">
-                        <tr><td colspan="6" style="text-align:center;color:#999;">Loading...</td></tr>
+                        <tr class="loading-row"><td colspan="6"><span class="content-spinner"></span>Loading clients...</td></tr>
                     </tbody>
                 </table>
             </div>

@@ -1108,22 +1108,30 @@ var JamMonitor = (function() {
                 document.getElementById('wifi-local-radios').textContent = data.local_radios.length;
 
                 // Find worst AP (down radios, or highest utilization)
-                var worstAp = '--';
-                if (data.local_radios.length > 0) {
-                    var downRadios = data.local_radios.filter(function(r) { return !r.up; });
-                    if (downRadios.length > 0) {
-                        worstAp = downRadios[0].name;
+                var worstApEl = document.getElementById('wifi-worst-ap');
+                var downRadios = data.local_radios.filter(function(r) { return !r.up; });
+                if (downRadios.length > 0) {
+                    worstApEl.textContent = downRadios[0].name;
+                    worstApEl.style.color = '#e74c3c';
+                } else {
+                    // Check if any radio has utilization data yet
+                    var hasAnyUtilization = data.local_radios.some(function(r) { return r.utilization !== undefined; });
+                    if (!hasAnyUtilization) {
+                        worstApEl.innerHTML = '<span class="tile-spinner"></span>';
                     } else {
                         // Find radio with highest utilization
                         var sorted = data.local_radios.slice().sort(function(a, b) {
                             return (b.utilization || 0) - (a.utilization || 0);
                         });
                         if (sorted[0] && sorted[0].utilization > 50) {
-                            worstAp = sorted[0].name + ' (' + sorted[0].utilization + '%)';
+                            worstApEl.textContent = sorted[0].name + ' (' + sorted[0].utilization + '%)';
+                            worstApEl.style.color = sorted[0].utilization > 70 ? '#e74c3c' : '#f39c12';
+                        } else {
+                            worstApEl.textContent = 'All Good';
+                            worstApEl.style.color = '#27ae60';
                         }
                     }
                 }
-                document.getElementById('wifi-worst-ap').textContent = worstAp;
 
                 // Render local radios with utilization bars
                 var localGrid = document.getElementById('wifi-local-grid');
@@ -1136,7 +1144,7 @@ var JamMonitor = (function() {
                         var stateText = radio.up ? 'UP' : 'DOWN';
                         var hasUtilization = radio.utilization !== undefined;
                         var utilization = radio.utilization || 0;
-                        var utilizationText = hasUtilization ? utilization + '%' : '--';
+                        var utilizationText = hasUtilization ? utilization + '%' : '<span class="tile-spinner" style="width:12px;height:12px;"></span>';
                         var utilizationColor = utilization > 70 ? '#e74c3c' : (utilization > 40 ? '#f39c12' : '#27ae60');
                         html += '<div class="jm-block-compact">';
                         html += '<div class="jm-block-header" style="margin-bottom:4px;padding-bottom:4px;">';

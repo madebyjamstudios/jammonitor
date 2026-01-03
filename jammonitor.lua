@@ -1339,11 +1339,11 @@ function action_wan_policy()
 
         local result = { interfaces = {} }
 
-        -- Get all network interfaces that are WANs (wan1, wan2, wan3, wan4)
+        -- Get all network interfaces that are WANs (wan1, wan2, wan5test, etc.)
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
-            -- Name pattern identifies actual WANs (wan1, wwan1, 4g, lte, mobile, etc.)
-            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            -- Name pattern identifies WANs: starts with wan + digit (wan1, wan5test, etc.), wwan, 4g, lte, mobile
+            local is_wan_pattern = iface_name:match("^wan[0-9]") or iface_name:match("^wwan") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
             -- Active multipath means it's participating in bonding (not just "off")
             local is_active_multipath = s.multipath and (s.multipath == "master" or s.multipath == "on" or s.multipath == "backup")
             -- Exclude system interfaces
@@ -1457,9 +1457,10 @@ function action_wan_edit()
         return
     end
 
-    -- Validate interface name (wan1, wan2, wan3, wan4)
+    -- Validate interface name (wan1, wan5test, wwan0, 4g-modem, etc.)
     local iface = data.iface
-    if not iface or not iface:match("^wan[0-9]$") then
+    local is_valid = iface and (iface:match("^wan[0-9]") or iface:match("^wwan") or iface:match("^4g") or iface:match("^lte") or iface:match("^mobile"))
+    if not is_valid then
         http.write(json.stringify({ success = false, error = "Invalid interface name" }))
         return
     end

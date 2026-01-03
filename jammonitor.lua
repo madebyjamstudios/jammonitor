@@ -42,17 +42,78 @@ function action_wifi_status()
         }
     }
 
-    -- Build MAC -> hostname map from DHCP leases
+    -- Build MAC -> hostname map from multiple sources
     local mac_to_hostname = {}
+    local ip_to_hostname = {}
+
+    -- Source 1: DHCP leases (basic hostnames)
     local leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
     if leases and leases ~= "" then
         -- Format: timestamp mac ip hostname clientid
         for line in leases:gmatch("[^\n]+") do
-            local mac, hostname = line:match("^%S+%s+(%S+)%s+%S+%s+(%S+)")
+            local mac, ip, hostname = line:match("^%S+%s+(%S+)%s+(%S+)%s+(%S+)")
             if mac and hostname and hostname ~= "*" then
                 mac_to_hostname[mac:upper()] = hostname
+                if ip then ip_to_hostname[ip] = hostname end
             end
         end
+    end
+
+    -- Source 2: mDNS cache via umdns (gets full Apple device names like "Mario's iPhone")
+    local umdns = sys.exec("ubus call umdns browse 2>/dev/null")
+    if umdns and umdns ~= "" then
+        local mdns_data = json.parse(umdns)
+        if mdns_data then
+            for service, hosts in pairs(mdns_data) do
+                if type(hosts) == "table" then
+                    for hostname, info in pairs(hosts) do
+                        if type(info) == "table" and info.ipv4 then
+                            -- mDNS hostnames often have .local suffix, remove it
+                            local clean_name = hostname:gsub("%.local$", "")
+                            ip_to_hostname[info.ipv4] = clean_name
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Source 3: Static ethers file (user-defined MAC->name mappings)
+    local ethers = sys.exec("cat /etc/ethers 2>/dev/null")
+    if ethers and ethers ~= "" then
+        for line in ethers:gmatch("[^\n]+") do
+            local mac, name = line:match("^(%S+)%s+(%S+)")
+            if mac and name then
+                mac_to_hostname[mac:upper()] = name
+            end
+        end
+    end
+
+    -- Build MAC -> IP map from ARP table (for mDNS hostname lookup)
+    local mac_to_ip = {}
+    local arp = sys.exec("cat /proc/net/arp 2>/dev/null")
+    if arp and arp ~= "" then
+        for line in arp:gmatch("[^\n]+") do
+            local ip, mac = line:match("^(%d+%.%d+%.%d+%.%d+)%s+%S+%s+%S+%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+            if ip and mac then
+                mac_to_ip[mac:upper()] = ip
+            end
+        end
+    end
+
+    -- Helper function to get best hostname for a MAC address
+    local function get_hostname(mac)
+        local upper_mac = mac:upper()
+        -- Try direct MAC lookup first (DHCP, ethers)
+        if mac_to_hostname[upper_mac] then
+            return mac_to_hostname[upper_mac]
+        end
+        -- Try IP-based lookup (mDNS) - gets full Apple device names
+        local ip = mac_to_ip[upper_mac]
+        if ip and ip_to_hostname[ip] then
+            return ip_to_hostname[ip]
+        end
+        return ""
     end
 
     -- Get local radio info via ubus
@@ -123,7 +184,7 @@ function action_wifi_status()
                                 -- Format: MAC  signal  noise  RX: rate  TX: rate
                                 for mac, signal, rx_rate, tx_rate in assoc_out:gmatch("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s+([%-]?%d+)%s+dBm.-RX:%s*([%d%.]+)%s*MBit/s.-TX:%s*([%d%.]+)%s*MBit/s") do
                                     client_count = client_count + 1
-                                    local hostname = mac_to_hostname[mac:upper()] or ""
+                                    local hostname = get_hostname(mac)
                                     table.insert(radio.client_list, {
                                         mac = mac,
                                         hostname = hostname,

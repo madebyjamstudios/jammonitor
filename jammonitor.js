@@ -32,9 +32,6 @@ var JamMonitor = (function() {
     // Interface list
     var interfaces = [];
 
-    // WiFi APs - remote AP list stored in localStorage
-    var remoteApList = [];
-
     // WAN Policy data
     var wanPolicyData = [];
     var wanPolicyModes = {};
@@ -53,7 +50,6 @@ var JamMonitor = (function() {
 
     function init() {
         loadState();
-        loadRemoteApList();
 
         document.querySelectorAll('.jm-sidebar-item').forEach(function(item) {
             item.addEventListener('click', function() {
@@ -122,25 +118,6 @@ var JamMonitor = (function() {
             };
             localStorage.setItem(STORAGE_KEY + '_data', JSON.stringify(data));
         } catch (e) { console.error('Failed to save state:', e); }
-    }
-
-    function loadRemoteApList() {
-        try {
-            var saved = localStorage.getItem(STORAGE_KEY + '_remote_aps');
-            if (saved) {
-                remoteApList = JSON.parse(saved);
-            }
-            var editor = document.getElementById('ap-list-editor');
-            if (editor && remoteApList.length > 0) {
-                editor.value = JSON.stringify(remoteApList, null, 2);
-            }
-        } catch (e) { console.error('Failed to load remote AP list:', e); }
-    }
-
-    function saveRemoteApList() {
-        try {
-            localStorage.setItem(STORAGE_KEY + '_remote_aps', JSON.stringify(remoteApList));
-        } catch (e) { console.error('Failed to save remote AP list:', e); }
     }
 
     function switchView(view) {
@@ -1100,36 +1077,55 @@ var JamMonitor = (function() {
     // ============================================================
     // WiFi APs Tab
     // ============================================================
-    function updateWifiAps() {
-        var remoteIps = remoteApList.map(function(ap) { return ap.ip; }).join(',');
-        var url = window.location.pathname + '/wifi_status';
-        if (remoteIps) {
-            url += '?remote_ips=' + encodeURIComponent(remoteIps);
-        }
+    var prevSurveyData = {}; // Track previous survey values for delta calculation
 
-        fetch(url)
+    function updateWifiAps() {
+        fetch(window.location.pathname + '/wifi_status')
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                // Calculate real-time utilization from survey deltas
+                data.local_radios.forEach(function(radio) {
+                    if (radio.survey_active !== undefined && radio.survey_busy !== undefined) {
+                        var prev = prevSurveyData[radio.name];
+                        if (prev && radio.survey_active > prev.active) {
+                            var deltaActive = radio.survey_active - prev.active;
+                            var deltaBusy = radio.survey_busy - prev.busy;
+                            if (deltaActive > 0) {
+                                radio.utilization = Math.round((deltaBusy / deltaActive) * 100);
+                            }
+                        }
+                        // Store current values for next calculation
+                        prevSurveyData[radio.name] = {
+                            active: radio.survey_active,
+                            busy: radio.survey_busy
+                        };
+                    }
+                });
+
                 // Update health tiles
                 document.getElementById('wifi-aps-online').textContent = data.totals.aps_online + '/' + data.totals.aps_total;
                 document.getElementById('wifi-total-clients').textContent = data.totals.total_clients;
                 document.getElementById('wifi-local-radios').textContent = data.local_radios.length;
 
-                // Find worst AP (offline first, then by clients)
+                // Find worst AP (down radios, or highest utilization)
                 var worstAp = '--';
-                var offlineAps = data.remote_aps.filter(function(ap) { return !ap.online; });
-                if (offlineAps.length > 0) {
-                    var apInfo = remoteApList.find(function(a) { return a.ip === offlineAps[0].ip; });
-                    worstAp = apInfo ? apInfo.name : offlineAps[0].ip;
-                } else if (data.local_radios.length > 0) {
+                if (data.local_radios.length > 0) {
                     var downRadios = data.local_radios.filter(function(r) { return !r.up; });
                     if (downRadios.length > 0) {
                         worstAp = downRadios[0].name;
+                    } else {
+                        // Find radio with highest utilization
+                        var sorted = data.local_radios.slice().sort(function(a, b) {
+                            return (b.utilization || 0) - (a.utilization || 0);
+                        });
+                        if (sorted[0] && sorted[0].utilization > 50) {
+                            worstAp = sorted[0].name + ' (' + sorted[0].utilization + '%)';
+                        }
                     }
                 }
                 document.getElementById('wifi-worst-ap').textContent = worstAp;
 
-                // Render local radios
+                // Render local radios with utilization bars
                 var localGrid = document.getElementById('wifi-local-grid');
                 if (data.local_radios.length === 0) {
                     localGrid.innerHTML = '<p style="color:#999;margin:10px 0;">No local Wi-Fi radios detected</p>';
@@ -1138,82 +1134,68 @@ var JamMonitor = (function() {
                     data.local_radios.forEach(function(radio) {
                         var indicatorClass = radio.up ? 'green' : 'red';
                         var stateText = radio.up ? 'UP' : 'DOWN';
+                        var hasUtilization = radio.utilization !== undefined;
+                        var utilization = radio.utilization || 0;
+                        var utilizationText = hasUtilization ? utilization + '%' : '--';
+                        var utilizationColor = utilization > 70 ? '#e74c3c' : (utilization > 40 ? '#f39c12' : '#27ae60');
                         html += '<div class="jm-block-compact">';
                         html += '<div class="jm-block-header" style="margin-bottom:4px;padding-bottom:4px;">';
                         html += '<span class="jm-indicator ' + indicatorClass + '" style="width:8px;height:8px;"></span>';
                         html += '<span class="jm-block-title" style="font-size:12px;">' + escapeHtml(radio.name) + '</span>';
+                        if (radio.band) {
+                            html += '<span style="margin-left:auto;font-size:10px;color:#7f8c8d;">' + escapeHtml(radio.band) + '</span>';
+                        }
                         html += '</div>';
                         html += '<div class="jm-big-value">' + stateText + '</div>';
                         html += '<div class="jm-row"><span class="jm-label">Channel</span><span class="jm-value">' + escapeHtml(radio.channel) + '</span></div>';
                         html += '<div class="jm-row"><span class="jm-label">Tx Power</span><span class="jm-value">' + escapeHtml(radio.txpower) + '</span></div>';
                         html += '<div class="jm-row"><span class="jm-label">Clients</span><span class="jm-value">' + radio.clients + '</span></div>';
+                        // Utilization bar
+                        html += '<div class="jm-row" style="flex-direction:column;gap:2px;">';
+                        html += '<span class="jm-label" style="width:100%;">Utilization ' + utilizationText + '</span>';
+                        html += '<div style="width:100%;height:6px;background:#ecf0f1;border-radius:3px;overflow:hidden;">';
+                        html += '<div style="width:' + utilization + '%;height:100%;background:' + utilizationColor + ';"></div>';
+                        html += '</div></div>';
                         html += '</div>';
                     });
                     localGrid.innerHTML = html;
                 }
 
-                // Render remote APs table
-                var remoteTbody = document.getElementById('wifi-remote-tbody');
-                if (data.remote_aps.length === 0) {
-                    remoteTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;">No remote APs configured. Click "Edit AP List" to add.</td></tr>';
-                } else {
-                    var rows = '';
-                    data.remote_aps.forEach(function(ap) {
-                        var apInfo = remoteApList.find(function(a) { return a.ip === ap.ip; });
-                        var name = apInfo ? apInfo.name : ap.ip;
-                        var badgeClass = ap.online ? 'jm-badge-online' : 'jm-badge-offline';
-                        var badgeText = ap.online ? 'Online' : 'Offline';
-                        var latency = ap.online ? ap.latency.toFixed(1) + ' ms' : '--';
-                        var lastSeen = ap.online ? new Date(ap.last_seen * 1000).toLocaleTimeString() : '--';
-                        rows += '<tr>';
-                        rows += '<td><span class="jm-badge ' + badgeClass + '">' + badgeText + '</span></td>';
-                        rows += '<td>' + escapeHtml(name) + '</td>';
-                        rows += '<td>' + escapeHtml(ap.ip) + '</td>';
-                        rows += '<td>' + latency + '</td>';
-                        rows += '<td>' + lastSeen + '</td>';
-                        rows += '</tr>';
+                // Render connected clients table
+                var clientsTbody = document.getElementById('wifi-clients-tbody');
+                if (clientsTbody) {
+                    var allClients = [];
+                    data.local_radios.forEach(function(radio) {
+                        if (radio.client_list) {
+                            radio.client_list.forEach(function(client) {
+                                allClients.push(client);
+                            });
+                        }
                     });
-                    remoteTbody.innerHTML = rows;
+                    if (allClients.length === 0) {
+                        clientsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">No clients connected</td></tr>';
+                    } else {
+                        var rows = '';
+                        allClients.forEach(function(client) {
+                            var signalClass = client.signal > -50 ? 'color:#27ae60;' : (client.signal > -70 ? 'color:#f39c12;' : 'color:#e74c3c;');
+                            var deviceName = client.hostname || client.mac;
+                            rows += '<tr>';
+                            rows += '<td>' + escapeHtml(deviceName) + '</td>';
+                            rows += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(client.mac) + '</td>';
+                            rows += '<td style="' + signalClass + '">' + client.signal + ' dBm</td>';
+                            rows += '<td>' + client.rx_rate + ' Mbps</td>';
+                            rows += '<td>' + client.tx_rate + ' Mbps</td>';
+                            rows += '<td>' + escapeHtml(client.band || 'N/A') + '</td>';
+                            rows += '</tr>';
+                        });
+                        clientsTbody.innerHTML = rows;
+                    }
                 }
             })
             .catch(function(e) {
                 console.error('Failed to fetch WiFi status:', e);
                 document.getElementById('wifi-local-grid').innerHTML = '<p style="color:#e74c3c;margin:10px 0;">Failed to load WiFi status</p>';
             });
-    }
-
-    function toggleApEditor() {
-        var container = document.getElementById('ap-editor-container');
-        container.style.display = container.style.display === 'none' ? 'block' : 'none';
-    }
-
-    function saveApList() {
-        var editor = document.getElementById('ap-list-editor');
-        try {
-            var parsed = JSON.parse(editor.value);
-            if (!Array.isArray(parsed)) {
-                alert('AP list must be a JSON array');
-                return;
-            }
-            // Validate each entry
-            for (var i = 0; i < parsed.length; i++) {
-                if (!parsed[i].name || !parsed[i].ip) {
-                    alert('Each AP must have "name" and "ip" fields');
-                    return;
-                }
-                // Validate IP format
-                if (!parsed[i].ip.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                    alert('Invalid IP format: ' + parsed[i].ip);
-                    return;
-                }
-            }
-            remoteApList = parsed;
-            saveRemoteApList();
-            toggleApEditor();
-            updateWifiAps();
-        } catch (e) {
-            alert('Invalid JSON: ' + e.message);
-        }
     }
 
     // ============================================================
@@ -2473,8 +2455,6 @@ var JamMonitor = (function() {
         setScale: setScale,
         setInterface: setInterface,
         loadVnstat: loadVnstat,
-        toggleApEditor: toggleApEditor,
-        saveApList: saveApList,
         loadWanPolicy: loadWanPolicy,
         showWanIpPopup: showWanIpPopup,
         closeWanIpPopup: closeWanIpPopup,

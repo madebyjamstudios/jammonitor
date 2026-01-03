@@ -8,6 +8,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_policy"}, call("action_wan_policy"), nil)
     entry({"admin", "status", "jammonitor", "wan_edit"}, call("action_wan_edit"), nil)
     entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
+    entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
 end
 
 function action_exec()
@@ -1338,17 +1339,40 @@ function action_wan_policy()
         http.prepare_content("application/json")
 
         local result = { interfaces = {} }
+        local fs = require "nixio.fs"
 
-        -- Get all network interfaces that are WANs (wan1, wan2, wan5test, etc.)
+        -- Load enabled WANs from config file (or fall back to pattern matching)
+        local config_file = "/etc/jammonitor_wans"
+        local enabled_content = fs.readfile(config_file) or ""
+        local enabled_map = {}
+        local has_config = false
+        for line in enabled_content:gmatch("[^\r\n]+") do
+            local iface = line:match("^%s*(.-)%s*$")
+            if iface and iface ~= "" then
+                enabled_map[iface] = true
+                has_config = true
+            end
+        end
+
+        -- Get all network interfaces that are WANs
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
-            -- Name pattern identifies WANs: starts with wan + digit (wan1, wan5test, etc.), wwan, 4g, lte, mobile
-            local is_wan_pattern = iface_name:match("^wan[0-9]") or iface_name:match("^wwan") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
-            -- Active multipath means it's participating in bonding (not just "off")
+
+            -- Check if in enabled list (from config file)
+            local is_enabled = enabled_map[iface_name]
+
+            -- Fallback: pattern match if no config file exists
+            if not has_config then
+                is_enabled = iface_name:match("^wan[0-9]") or iface_name:match("^wwan") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            end
+
+            -- Active multipath means it's participating in bonding (always show)
             local is_active_multipath = s.multipath and (s.multipath == "master" or s.multipath == "on" or s.multipath == "backup")
+
             -- Exclude system interfaces
             local is_excluded = iface_name == "loopback" or iface_name == "omrvpn" or iface_name:match("^br%-")
-            if not is_excluded and (is_wan_pattern or is_active_multipath) then
+
+            if not is_excluded and (is_enabled or is_active_multipath) then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""
@@ -1457,9 +1481,24 @@ function action_wan_edit()
         return
     end
 
-    -- Validate interface name (wan1, wan5test, wwan0, 4g-modem, etc.)
+    -- Validate interface name
     local iface = data.iface
-    local is_valid = iface and (iface:match("^wan[0-9]") or iface:match("^wwan") or iface:match("^4g") or iface:match("^lte") or iface:match("^mobile"))
+    local fs = require "nixio.fs"
+
+    -- Check if in enabled list from config file
+    local config_file = "/etc/jammonitor_wans"
+    local enabled_content = fs.readfile(config_file) or ""
+    local is_in_config = false
+    for line in enabled_content:gmatch("[^\r\n]+") do
+        local cfg_iface = line:match("^%s*(.-)%s*$")
+        if cfg_iface == iface then
+            is_in_config = true
+            break
+        end
+    end
+
+    -- Valid if in config OR matches WAN pattern
+    local is_valid = iface and (is_in_config or iface:match("^wan[0-9]") or iface:match("^wwan") or iface:match("^4g") or iface:match("^lte") or iface:match("^mobile"))
     if not is_valid then
         http.write(json.stringify({ success = false, error = "Invalid interface name" }))
         return
@@ -1734,6 +1773,84 @@ function action_wan_advanced()
         -- Read stale_loss_cnt from sysctl
         local stale = sys.exec("sysctl -n net.mptcp.stale_loss_cnt 2>/dev/null")
         result.mptcp.stale_loss_cnt = tonumber(stale) or 4
+
+        http.write(json.stringify(result))
+    end
+end
+
+-- WAN Interface selector - manage which interfaces appear in WAN Policy
+function action_wan_ifaces()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local config_file = "/etc/jammonitor_wans"
+    local method = http.getenv("REQUEST_METHOD")
+
+    if method == "POST" then
+        -- Save selected interfaces
+        local raw = http.content()
+        local data = json.parse(raw)
+        if not data or not data.enabled then
+            http.write(json.stringify({ success = false, error = "Invalid JSON" }))
+            return
+        end
+
+        -- Write to config file (one interface per line)
+        local content = table.concat(data.enabled, "\n")
+        fs.writefile(config_file, content)
+
+        http.write(json.stringify({ success = true }))
+    else
+        -- GET: Return all interfaces and which are enabled
+        local result = { all = {}, enabled = {} }
+
+        -- Read enabled list from config file
+        local enabled_content = fs.readfile(config_file) or ""
+        local enabled_map = {}
+        for line in enabled_content:gmatch("[^\r\n]+") do
+            local iface = line:match("^%s*(.-)%s*$")
+            if iface and iface ~= "" then
+                table.insert(result.enabled, iface)
+                enabled_map[iface] = true
+            end
+        end
+
+        -- Get all network interfaces from UCI (exclude system ones)
+        local excluded = {
+            loopback = true,
+            lan = true,
+            guest = true,
+            omrvpn = true
+        }
+
+        uci:foreach("network", "interface", function(s)
+            local name = s[".name"]
+            -- Skip excluded and bridge interfaces
+            if not excluded[name] and not name:match("^br%-") then
+                local device = s.device or s.ifname or ""
+                table.insert(result.all, {
+                    name = name,
+                    device = device,
+                    proto = s.proto or "dhcp"
+                })
+                -- Auto-enable if matches WAN pattern and not in config yet
+                if #result.enabled == 0 then
+                    -- First run - auto-detect WANs
+                    local is_wan = name:match("^wan[0-9]") or name:match("^wwan") or name:match("^4g") or name:match("^lte") or name:match("^mobile")
+                    if is_wan then
+                        table.insert(result.enabled, name)
+                    end
+                end
+            end
+        end)
+
+        -- Sort by name
+        table.sort(result.all, function(a, b) return a.name < b.name end)
 
         http.write(json.stringify(result))
     end

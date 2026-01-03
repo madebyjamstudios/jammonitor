@@ -2046,6 +2046,7 @@ var JamMonitor = (function() {
             // Load settings on first open
             if (!advancedSettingsLoaded) {
                 loadAdvancedSettings();
+                loadWanInterfaces();
             }
         }
     }
@@ -2132,6 +2133,99 @@ var JamMonitor = (function() {
             saveBtn.textContent = 'Save and Apply';
             errorDiv.textContent = 'Network error: ' + e.message;
             errorDiv.style.display = 'block';
+        });
+    }
+
+    // ============================================================
+    // WAN Interface Selector
+    // ============================================================
+    var wanIfacesOriginal = [];
+
+    function loadWanInterfaces() {
+        var grid = document.getElementById('wan-iface-grid');
+        if (!grid) return;
+
+        grid.innerHTML = '<div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>';
+
+        fetch(window.location.pathname + '/wan_ifaces')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                wanIfacesOriginal = data.enabled || [];
+                var allIfaces = data.all || [];
+
+                if (allIfaces.length === 0) {
+                    grid.innerHTML = '<div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">No interfaces found</div>';
+                    return;
+                }
+
+                var html = '';
+                allIfaces.forEach(function(iface) {
+                    var isChecked = wanIfacesOriginal.indexOf(iface.name) !== -1;
+                    var checkedClass = isChecked ? ' checked' : '';
+                    var checkedAttr = isChecked ? ' checked' : '';
+                    html += '<label class="wan-iface-item' + checkedClass + '">';
+                    html += '<input type="checkbox" name="wan-iface" value="' + iface.name + '"' + checkedAttr + ' onchange="JamMonitor.updateIfaceItem(this)">';
+                    html += '<span class="wan-iface-item-name">' + iface.name + '</span>';
+                    if (iface.device) {
+                        html += '<span class="wan-iface-item-device">' + iface.device + '</span>';
+                    }
+                    html += '</label>';
+                });
+                grid.innerHTML = html;
+                updateIfaceStatus('');
+            })
+            .catch(function(e) {
+                console.error('Failed to load interfaces:', e);
+                grid.innerHTML = '<div style="color:#e74c3c;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Failed to load interfaces</div>';
+            });
+    }
+
+    function updateIfaceItem(checkbox) {
+        var item = checkbox.closest('.wan-iface-item');
+        if (checkbox.checked) {
+            item.classList.add('checked');
+        } else {
+            item.classList.remove('checked');
+        }
+        updateIfaceStatus('');
+    }
+
+    function updateIfaceStatus(msg, isError) {
+        var status = document.getElementById('wan-iface-status');
+        if (status) {
+            status.textContent = msg;
+            status.style.color = isError ? '#e74c3c' : '#27ae60';
+        }
+    }
+
+    function saveWanInterfaces() {
+        var checkboxes = document.querySelectorAll('#wan-iface-grid input[type="checkbox"]:checked');
+        var selected = [];
+        checkboxes.forEach(function(cb) {
+            selected.push(cb.value);
+        });
+
+        updateIfaceStatus('Saving...');
+
+        fetch(window.location.pathname + '/wan_ifaces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: selected })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+            if (result.success) {
+                wanIfacesOriginal = selected.slice();
+                updateIfaceStatus('Saved! Refresh WAN Policy to see changes.');
+                // Trigger WAN policy reload if on that tab
+                setTimeout(function() { updateIfaceStatus(''); }, 3000);
+            } else {
+                updateIfaceStatus(result.error || 'Save failed', true);
+            }
+        })
+        .catch(function(e) {
+            console.error('Save WAN interfaces error:', e);
+            updateIfaceStatus('Network error', true);
         });
     }
 
@@ -2596,6 +2690,9 @@ var JamMonitor = (function() {
         toggleDnsFields: toggleDnsFields,
         toggleAdvancedSettings: toggleAdvancedSettings,
         saveAdvancedSettings: saveAdvancedSettings,
+        loadWanInterfaces: loadWanInterfaces,
+        saveWanInterfaces: saveWanInterfaces,
+        updateIfaceItem: updateIfaceItem,
         toggleRemoteAps: toggleRemoteAps,
         editApList: editApList,
         cancelApEdit: cancelApEdit,

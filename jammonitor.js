@@ -1183,9 +1183,11 @@ var JamMonitor = (function() {
                             rows += '<td>' + escapeHtml(deviceName) + '</td>';
                             rows += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(client.mac) + '</td>';
                             rows += '<td style="' + signalClass + '">' + client.signal + ' dBm</td>';
-                            rows += '<td>' + client.rx_rate + ' Mbps</td>';
-                            rows += '<td>' + client.tx_rate + ' Mbps</td>';
-                            rows += '<td>' + escapeHtml(client.band || 'N/A') + '</td>';
+                            rows += '<td>' + formatBytesCompact(client.rx_bytes || 0) + '</td>';
+                            rows += '<td>' + formatBytesCompact(client.tx_bytes || 0) + '</td>';
+                            var bandInfo = client.band || 'N/A';
+                            if (client.wifi_gen) bandInfo += ' (' + client.wifi_gen + ')';
+                            rows += '<td>' + escapeHtml(bandInfo) + '</td>';
                             rows += '</tr>';
                         });
                         clientsTbody.innerHTML = rows;

@@ -114,22 +114,83 @@ function action_wifi_status()
                             ssid = (iface.config and iface.config.ssid) or "N/A",
                             mode = (iface.config and iface.config.mode) or "N/A"
                         }
-                        -- Get client details for this interface
+                        -- Get client details for this interface using iw station dump
+                        -- Provides per-client bytes and WiFi generation info
                         if iface.ifname then
-                            local assoc_out = sys.exec("iwinfo " .. iface.ifname .. " assoclist 2>/dev/null")
+                            local station_dump = sys.exec("iw dev " .. iface.ifname .. " station dump 2>/dev/null")
                             local client_count = 0
-                            if assoc_out and assoc_out ~= "" then
-                                -- Parse each client block from assoclist
-                                -- Format: MAC  signal  noise  RX: rate  TX: rate
-                                for mac, signal, rx_rate, tx_rate in assoc_out:gmatch("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s+([%-]?%d+)%s+dBm.-RX:%s*([%d%.]+)%s*MBit/s.-TX:%s*([%d%.]+)%s*MBit/s") do
+                            if station_dump and station_dump ~= "" then
+                                -- Parse each station block
+                                -- Split by "Station" to get individual client blocks
+                                for block in station_dump:gmatch("Station%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)%s*%b()(.-)Station") do
+                                end
+                                -- Better approach: parse line by line per station
+                                local current_mac = nil
+                                local current_data = {}
+                                for line in station_dump:gmatch("[^\n]+") do
+                                    local mac = line:match("^Station%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+                                    if mac then
+                                        -- Save previous client if exists
+                                        if current_mac and current_data.rx_bytes then
+                                            client_count = client_count + 1
+                                            local hostname = mac_to_hostname[current_mac:upper()] or ""
+                                            -- Detect WiFi generation from tx bitrate line
+                                            local wifi_gen = "WiFi 4"
+                                            if current_data.tx_bitrate then
+                                                if current_data.tx_bitrate:match("EHT%-MCS") then
+                                                    wifi_gen = "WiFi 7"
+                                                elseif current_data.tx_bitrate:match("HE%-MCS") then
+                                                    wifi_gen = "WiFi 6"
+                                                elseif current_data.tx_bitrate:match("VHT%-MCS") then
+                                                    wifi_gen = "WiFi 5"
+                                                end
+                                            end
+                                            table.insert(radio.client_list, {
+                                                mac = current_mac,
+                                                hostname = hostname,
+                                                signal = current_data.signal or 0,
+                                                rx_bytes = current_data.rx_bytes or 0,
+                                                tx_bytes = current_data.tx_bytes or 0,
+                                                wifi_gen = wifi_gen,
+                                                band = radio.band or "N/A"
+                                            })
+                                        end
+                                        -- Start new client
+                                        current_mac = mac
+                                        current_data = {}
+                                    elseif current_mac then
+                                        -- Parse data lines
+                                        local rx_bytes = line:match("rx bytes:%s*(%d+)")
+                                        local tx_bytes = line:match("tx bytes:%s*(%d+)")
+                                        local signal = line:match("signal:%s*([%-]?%d+)")
+                                        local tx_bitrate = line:match("tx bitrate:%s*(.+)")
+                                        if rx_bytes then current_data.rx_bytes = tonumber(rx_bytes) end
+                                        if tx_bytes then current_data.tx_bytes = tonumber(tx_bytes) end
+                                        if signal then current_data.signal = tonumber(signal) end
+                                        if tx_bitrate then current_data.tx_bitrate = tx_bitrate end
+                                    end
+                                end
+                                -- Don't forget the last client
+                                if current_mac and current_data.rx_bytes then
                                     client_count = client_count + 1
-                                    local hostname = mac_to_hostname[mac:upper()] or ""
+                                    local hostname = mac_to_hostname[current_mac:upper()] or ""
+                                    local wifi_gen = "WiFi 4"
+                                    if current_data.tx_bitrate then
+                                        if current_data.tx_bitrate:match("EHT%-MCS") then
+                                            wifi_gen = "WiFi 7"
+                                        elseif current_data.tx_bitrate:match("HE%-MCS") then
+                                            wifi_gen = "WiFi 6"
+                                        elseif current_data.tx_bitrate:match("VHT%-MCS") then
+                                            wifi_gen = "WiFi 5"
+                                        end
+                                    end
                                     table.insert(radio.client_list, {
-                                        mac = mac,
+                                        mac = current_mac,
                                         hostname = hostname,
-                                        signal = tonumber(signal) or 0,
-                                        rx_rate = tonumber(rx_rate) or 0,
-                                        tx_rate = tonumber(tx_rate) or 0,
+                                        signal = current_data.signal or 0,
+                                        rx_bytes = current_data.rx_bytes or 0,
+                                        tx_bytes = current_data.tx_bytes or 0,
+                                        wifi_gen = wifi_gen,
                                         band = radio.band or "N/A"
                                     })
                                 end

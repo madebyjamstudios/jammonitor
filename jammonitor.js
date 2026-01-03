@@ -1218,7 +1218,13 @@ var JamMonitor = (function() {
     // ============================================================
     // WAN Policy Tab - Category-based drag-and-drop
     // ============================================================
+    var wanDragInProgress = false;
+    var wanPendingChanges = {}; // Track interfaces with pending backend changes
+
     function loadWanPolicy(skipRender) {
+        // Don't reload while drag is in progress
+        if (wanDragInProgress) return;
+
         if (!skipRender) {
             // Clear all dropzones while loading
             document.querySelectorAll('.wan-category-dropzone').forEach(function(zone) {
@@ -1230,10 +1236,17 @@ var JamMonitor = (function() {
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 wanPolicyData = data.interfaces || [];
-                // Initialize modes from current multipath values
-                wanPolicyModes = {};
+                // Update modes from server, but preserve pending changes
                 wanPolicyData.forEach(function(iface) {
-                    wanPolicyModes[iface.name] = iface.multipath || 'off';
+                    // Only update from server if not pending
+                    if (!wanPendingChanges[iface.name]) {
+                        wanPolicyModes[iface.name] = iface.multipath || 'off';
+                    } else {
+                        // Check if server now matches our expected state
+                        if (iface.multipath === wanPendingChanges[iface.name]) {
+                            delete wanPendingChanges[iface.name];
+                        }
+                    }
                 });
                 renderWanPolicy();
             })
@@ -1246,16 +1259,19 @@ var JamMonitor = (function() {
     }
 
     function startWanPolicyPolling() {
-        // Poll every 3 seconds for 5 minutes after a change
+        // Poll every 5 seconds for 2 minutes after a change
         stopWanPolicyPolling();
-        wanPolicyPollEnd = Date.now() + (5 * 60 * 1000); // 5 minutes
+        wanPolicyPollEnd = Date.now() + (2 * 60 * 1000); // 2 minutes
         wanPolicyPollTimer = setInterval(function() {
             if (Date.now() > wanPolicyPollEnd || currentView !== 'wan-policy') {
                 stopWanPolicyPolling();
                 return;
             }
-            loadWanPolicy(true); // silent refresh
-        }, 3000);
+            // Don't poll if drag in progress
+            if (!wanDragInProgress) {
+                loadWanPolicy(true); // silent refresh
+            }
+        }, 5000);
     }
 
     function stopWanPolicyPolling() {
@@ -1739,6 +1755,7 @@ var JamMonitor = (function() {
                     e.preventDefault();
                     return false;
                 }
+                wanDragInProgress = true;
                 draggedEl = row;
                 draggedIfaceName = row.dataset.iface;
                 sourceZone = row.parentElement;
@@ -1755,6 +1772,7 @@ var JamMonitor = (function() {
                 row.classList.remove('dragging');
                 row.style.opacity = '';
                 row.dataset.canDrag = 'false';
+                wanDragInProgress = false;
                 dropzones.forEach(function(zone) {
                     zone.classList.remove('drag-over');
                 });
@@ -1811,6 +1829,7 @@ var JamMonitor = (function() {
                             if (bondedZone) {
                                 bondedZone.appendChild(existingPrimary);
                                 wanPolicyModes[existingName] = 'on';
+                                wanPendingChanges[existingName] = 'on';
                                 // Set loading state on swapped interface
                                 var swapIndicator = existingPrimary.querySelector('.wan-status-indicator');
                                 var swapText = existingPrimary.querySelector('.wan-policy-status');
@@ -1820,8 +1839,9 @@ var JamMonitor = (function() {
                         }
                     }
 
-                    // Update mode in memory
+                    // Update mode in memory and track as pending
                     wanPolicyModes[ifaceName] = newPriority;
+                    wanPendingChanges[ifaceName] = newPriority;
 
                     // Move element to target dropzone immediately
                     targetZone.appendChild(draggedEl);
@@ -1874,15 +1894,19 @@ var JamMonitor = (function() {
                 // Start polling for status updates
                 startWanPolicyPolling();
                 // Initial reload after short delay
-                setTimeout(function() { loadWanPolicy(true); }, 1500);
+                setTimeout(function() { loadWanPolicy(true); }, 2000);
             } else {
                 console.error('WAN policy error:', data.error);
+                // Clear pending changes on error
+                wanPendingChanges = {};
                 // Reload to show current state
                 loadWanPolicy(true);
             }
         })
         .catch(function(e) {
             console.error('WAN policy error:', e);
+            // Clear pending changes on error
+            wanPendingChanges = {};
             // Reload to show current state
             loadWanPolicy(true);
         });

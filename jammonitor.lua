@@ -1229,7 +1229,12 @@ function action_wan_policy()
         uci:foreach("network", "interface", function(s)
             local iface_name = s[".name"]
             -- Only include WAN interfaces with multipath capability
-            if iface_name:match("^wan[0-9]") then
+            -- Match wan1, wan2, wwan, wwan1, 4g, lte, etc. or any interface with multipath set
+            -- Exclude system interfaces
+            local dominated = iface_name == "loopback" or iface_name == "lan" or iface_name == "omrvpn" or iface_name == "omr6in4" or iface_name:match("^br%-") or iface_name:match("^docker")
+            local is_wan_pattern = iface_name:match("^wan[0-9]*$") or iface_name:match("^wwan[0-9]*$") or iface_name:match("^4g") or iface_name:match("^lte") or iface_name:match("^mobile")
+            local has_multipath = s.multipath and s.multipath ~= ""
+            if not dominated and (is_wan_pattern or has_multipath) then
                 local multipath = s.multipath or "off"
                 local proto = s.proto or "dhcp"
                 local device = s.device or s.ifname or ""

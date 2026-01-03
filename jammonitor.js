@@ -412,7 +412,7 @@ var JamMonitor = (function() {
             }
         });
 
-        // WAN info
+        // WAN info - get route first, then verify with public IP check
         exec('ip route show default | head -1').then(function(out) {
             var gwMatch = out.match(/via\s+(\S+)/);
             var devMatch = out.match(/dev\s+(\S+)/);
@@ -420,8 +420,16 @@ var JamMonitor = (function() {
             if (devMatch) {
                 var dev = devMatch[1];
                 document.getElementById('wan-iface').textContent = dev;
-                document.getElementById('wan-indicator').className = 'jm-indicator green';
-                document.getElementById('wan-status').textContent = 'Connected';
+                // Start with "Checking..." state
+                document.getElementById('wan-indicator').className = 'jm-indicator yellow';
+                document.getElementById('wan-status').textContent = 'Checking...';
+            } else {
+                // No default route at all
+                document.getElementById('wan-indicator').className = 'jm-indicator red';
+                document.getElementById('wan-status').textContent = 'No Route';
+                document.getElementById('wan-ip').textContent = '--';
+                document.getElementById('wan-gw').textContent = '--';
+                document.getElementById('wan-iface').textContent = '--';
             }
         });
 
@@ -429,8 +437,14 @@ var JamMonitor = (function() {
         exec('curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 api.ipify.org 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo ""').then(function(publicIp) {
             var ip = publicIp.trim();
             if (ip && ip.match(/^[0-9.]+$/)) {
+                // Public IP retrieved - actually connected to internet
                 document.getElementById('wan-ip').textContent = ip;
+                document.getElementById('wan-indicator').className = 'jm-indicator green';
+                document.getElementById('wan-status').textContent = 'Connected';
             } else {
+                // Public IP check failed - no internet connectivity
+                document.getElementById('wan-indicator').className = 'jm-indicator red';
+                document.getElementById('wan-status').textContent = 'No Internet';
                 // Fallback to interface IP if external check fails
                 exec('ip route show default | head -1').then(function(out) {
                     var devMatch = out.match(/dev\s+(\S+)/);
@@ -438,8 +452,12 @@ var JamMonitor = (function() {
                         exec('ip addr show dev ' + devMatch[1] + ' 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2').then(function(ifaceIp) {
                             if (ifaceIp.trim()) {
                                 document.getElementById('wan-ip').textContent = ifaceIp.trim() + ' (local)';
+                            } else {
+                                document.getElementById('wan-ip').textContent = '--';
                             }
                         });
+                    } else {
+                        document.getElementById('wan-ip').textContent = '--';
                     }
                 });
             }

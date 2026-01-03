@@ -1206,6 +1206,112 @@ var JamMonitor = (function() {
                 console.error('Failed to fetch WiFi status:', e);
                 document.getElementById('wifi-local-grid').innerHTML = '<p style="color:#e74c3c;margin:10px 0;">Failed to load WiFi status</p>';
             });
+
+        // Also update remote APs if configured
+        updateRemoteAps();
+    }
+
+    // ============================================================
+    // Remote APs
+    // ============================================================
+    var remoteApsExpanded = false;
+
+    function getRemoteApList() {
+        try {
+            return JSON.parse(localStorage.getItem('jammonitor_remote_aps') || '[]');
+        } catch(e) { return []; }
+    }
+
+    function saveRemoteApList(list) {
+        localStorage.setItem('jammonitor_remote_aps', JSON.stringify(list));
+    }
+
+    function toggleRemoteAps() {
+        remoteApsExpanded = !remoteApsExpanded;
+        var content = document.getElementById('remote-aps-content');
+        var header = document.querySelector('.jm-collapsible-header span');
+        var collapsible = document.querySelector('.jm-collapsible');
+        if (remoteApsExpanded) {
+            content.style.display = 'block';
+            header.textContent = '▼ Remote APs';
+            collapsible.classList.add('expanded');
+            updateRemoteAps();
+        } else {
+            content.style.display = 'none';
+            header.textContent = '▶ Remote APs';
+            collapsible.classList.remove('expanded');
+        }
+    }
+
+    function editApList() {
+        var list = getRemoteApList();
+        document.getElementById('ap-list-editor').value = JSON.stringify(list, null, 2);
+        document.getElementById('remote-ap-editor').style.display = 'block';
+        document.getElementById('edit-ap-btn').style.display = 'none';
+    }
+
+    function cancelApEdit() {
+        document.getElementById('remote-ap-editor').style.display = 'none';
+        document.getElementById('edit-ap-btn').style.display = 'block';
+    }
+
+    function saveApList() {
+        var text = document.getElementById('ap-list-editor').value.trim();
+        try {
+            var list = text ? JSON.parse(text) : [];
+            if (!Array.isArray(list)) throw new Error('Must be array');
+            // Validate entries
+            list = list.filter(function(ap) {
+                return ap && ap.name && ap.ip && /^\d+\.\d+\.\d+\.\d+$/.test(ap.ip);
+            });
+            saveRemoteApList(list);
+            cancelApEdit();
+            updateRemoteAps();
+        } catch(e) {
+            alert('Invalid JSON format. Use: [{"name":"AP-1","ip":"10.0.0.2"}]');
+        }
+    }
+
+    function updateRemoteAps() {
+        var list = getRemoteApList();
+        var countEl = document.getElementById('remote-ap-count');
+        var listEl = document.getElementById('remote-ap-list');
+
+        if (list.length === 0) {
+            countEl.textContent = '';
+            listEl.innerHTML = '<p style="color:#999;font-size:12px;text-align:center;">No remote APs configured</p>';
+            return;
+        }
+
+        countEl.textContent = '(' + list.length + ' configured)';
+
+        // Ping each AP
+        var ips = list.map(function(ap) { return ap.ip; }).join(',');
+        fetch(window.location.pathname + '/wifi_status?remote_ips=' + encodeURIComponent(ips))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var remoteData = {};
+                (data.remote_aps || []).forEach(function(ap) {
+                    remoteData[ap.ip] = ap;
+                });
+
+                var html = '';
+                list.forEach(function(ap) {
+                    var status = remoteData[ap.ip];
+                    var online = status && status.online;
+                    var latency = status && status.latency ? status.latency.toFixed(1) + ' ms' : '--';
+                    html += '<div class="jm-remote-ap-item">';
+                    html += '<span class="jm-remote-ap-status ' + (online ? 'online' : 'offline') + '"></span>';
+                    html += '<span style="flex:1;font-size:12px;">' + escapeHtml(ap.name) + '</span>';
+                    html += '<span style="font-size:11px;color:#7f8c8d;margin-right:15px;">' + escapeHtml(ap.ip) + '</span>';
+                    html += '<span style="font-size:11px;color:' + (online ? '#27ae60' : '#e74c3c') + ';">' + latency + '</span>';
+                    html += '</div>';
+                });
+                listEl.innerHTML = html;
+            })
+            .catch(function(e) {
+                console.error('Failed to ping remote APs:', e);
+            });
     }
 
     // ============================================================
@@ -2474,6 +2580,10 @@ var JamMonitor = (function() {
         toggleStaticFields: toggleStaticFields,
         toggleDnsFields: toggleDnsFields,
         toggleAdvancedSettings: toggleAdvancedSettings,
-        saveAdvancedSettings: saveAdvancedSettings
+        saveAdvancedSettings: saveAdvancedSettings,
+        toggleRemoteAps: toggleRemoteAps,
+        editApList: editApList,
+        cancelApEdit: cancelApEdit,
+        saveApList: saveApList
     };
 })();

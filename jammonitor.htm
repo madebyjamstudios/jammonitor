@@ -90,6 +90,16 @@
     .jm-health-tile .tile-label { font-size: 8px; }
 }
 
+/* Collapsible sections */
+.jm-collapsible-header { padding: 10px 15px; background: #f8f9fa; border-radius: 8px; cursor: pointer; user-select: none; }
+.jm-collapsible-header:hover { background: #ecf0f1; }
+.jm-collapsible.expanded .jm-collapsible-header { border-radius: 8px 8px 0 0; }
+.jm-remote-ap-item { display: flex; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
+.jm-remote-ap-item:last-child { border-bottom: none; }
+.jm-remote-ap-status { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; }
+.jm-remote-ap-status.online { background: #27ae60; }
+.jm-remote-ap-status.offline { background: #e74c3c; }
+
 /* Health blocks grid - 3x3 */
 .jm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
 @media (max-width: 1200px) { .jm-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -627,6 +637,30 @@ table.jm-table tr:hover { background: #e8f4fc; }
                         <tr class="loading-row"><td colspan="6"><span class="content-spinner"></span>Loading clients...</td></tr>
                     </tbody>
                 </table>
+            </div>
+
+            <!-- Remote APs (collapsible) -->
+            <div class="jm-collapsible" style="margin-bottom:20px;">
+                <div class="jm-collapsible-header" onclick="JamMonitor.toggleRemoteAps()">
+                    <span style="font-size:12px;color:#7f8c8d;">▶ Remote APs</span>
+                    <span id="remote-ap-count" style="font-size:11px;color:#95a5a6;margin-left:8px;"></span>
+                </div>
+                <div id="remote-aps-content" class="jm-collapsible-content" style="display:none;">
+                    <div style="padding:15px;background:#fff;border-radius:0 0 8px 8px;border:1px solid #eee;border-top:none;">
+                        <p style="font-size:11px;color:#7f8c8d;margin:0 0 10px;">Monitor external access points on your network by IP address.</p>
+                        <div id="remote-ap-editor" style="display:none;margin-bottom:15px;">
+                            <textarea id="ap-list-editor" style="width:100%;height:60px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #ddd;border-radius:4px;" placeholder='[{"name":"AP-Living","ip":"10.0.0.2"},{"name":"AP-Office","ip":"10.0.0.3"}]'></textarea>
+                            <div style="margin-top:8px;display:flex;gap:8px;">
+                                <button class="jm-btn jm-btn-sm" onclick="JamMonitor.saveApList()">Save</button>
+                                <button class="jm-btn jm-btn-sm" style="background:#95a5a6;" onclick="JamMonitor.cancelApEdit()">Cancel</button>
+                            </div>
+                        </div>
+                        <div id="remote-ap-list">
+                            <p style="color:#999;font-size:12px;text-align:center;">No remote APs configured</p>
+                        </div>
+                        <button class="jm-btn jm-btn-sm" style="margin-top:10px;background:#7f8c8d;" id="edit-ap-btn" onclick="JamMonitor.editApList()">+ Add APs</button>
+                    </div>
+                </div>
             </div>
         </div>
 

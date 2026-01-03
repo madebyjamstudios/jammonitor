@@ -236,6 +236,34 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .wan-edit-btn-cancel:hover { background: #ddd; }
 .wan-edit-error { color: #e74c3c; font-size: 12px; margin-top: 5px; }
 .wan-edit-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 1000; }
+
+/* Advanced Settings Collapsible Section */
+.wan-advanced-section { margin-top: 20px; }
+.wan-advanced-toggle { background: #2c3e50; color: #fff; padding: 12px 15px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: background 0.2s; }
+.wan-advanced-toggle:hover { background: #34495e; }
+.wan-advanced-arrow { font-size: 10px; transition: transform 0.2s; }
+.wan-advanced-arrow.open { transform: rotate(90deg); }
+.wan-advanced-content { display: none; margin-top: 10px; background: #fff; border-radius: 6px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+.wan-advanced-content.visible { display: block; }
+.wan-advanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 800px) { .wan-advanced-grid { grid-template-columns: 1fr; } }
+.wan-advanced-col { }
+.wan-advanced-title { font-weight: 600; font-size: 11px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 0.5px; padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid #eee; }
+.wan-advanced-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.wan-advanced-row:last-child { margin-bottom: 0; }
+.wan-advanced-label { width: 120px; color: #7f8c8d; flex-shrink: 0; }
+.wan-advanced-input { width: 70px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; text-align: center; }
+.wan-advanced-input:focus { outline: none; border-color: #3498db; }
+.wan-advanced-select { flex: 1; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; background: #fff; cursor: pointer; max-width: 150px; }
+.wan-advanced-select:focus { outline: none; border-color: #3498db; }
+.wan-advanced-unit { margin-left: 5px; color: #95a5a6; font-size: 11px; }
+.wan-advanced-actions { margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; gap: 10px; }
+.wan-advanced-btn { padding: 8px 16px; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+.wan-advanced-btn-save { background: #3498db; color: #fff; }
+.wan-advanced-btn-save:hover { background: #2980b9; }
+.wan-advanced-btn-save:disabled { background: #bdc3c7; cursor: not-allowed; }
+.wan-advanced-error { color: #e74c3c; font-size: 11px; margin-top: 8px; display: none; }
+.wan-advanced-success { color: #27ae60; font-size: 11px; margin-top: 8px; display: none; }
 </style>
 
 <div class="jm-container">
@@ -416,6 +444,93 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 <strong>Standby</strong> — Failover connections that remain dormant until Primary and Bonded interfaces fail. When failover occurs, all Standby interfaces activate together.<br>
                 <strong>Disabled</strong> — Interface is completely turned off and not used.<br>
                 <span style="color:#95a5a6;font-style:italic;">Tip: Click on a WAN name to edit its settings.</span>
+            </div>
+
+            <!-- Advanced Settings Collapsible Section -->
+            <div class="wan-advanced-section">
+                <div class="wan-advanced-toggle" onclick="JamMonitor.toggleAdvancedSettings()">
+                    <span class="wan-advanced-arrow" id="wan-advanced-arrow">▶</span>
+                    Advanced Settings
+                </div>
+                <div id="wan-advanced-content" class="wan-advanced-content">
+                    <div class="wan-advanced-grid">
+                        <!-- Failover Detection Column -->
+                        <div class="wan-advanced-col">
+                            <div class="wan-advanced-title">Failover Detection</div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Ping Timeout</span>
+                                <input type="number" class="wan-advanced-input" id="adv-timeout" min="1" max="10" value="1">
+                                <span class="wan-advanced-unit">sec</span>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Ping Count</span>
+                                <input type="number" class="wan-advanced-input" id="adv-count" min="1" max="5" value="1">
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Checks Before Down</span>
+                                <input type="number" class="wan-advanced-input" id="adv-tries" min="1" max="10" value="2">
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Check Interval</span>
+                                <input type="number" class="wan-advanced-input" id="adv-interval" min="1" max="10" value="1">
+                                <span class="wan-advanced-unit">sec</span>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Failure Interval</span>
+                                <input type="number" class="wan-advanced-input" id="adv-failure-interval" min="1" max="30" value="2">
+                                <span class="wan-advanced-unit">sec</span>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Checks Before Up</span>
+                                <input type="number" class="wan-advanced-input" id="adv-tries-up" min="1" max="10" value="2">
+                            </div>
+                        </div>
+                        <!-- MPTCP Bonding Column -->
+                        <div class="wan-advanced-col">
+                            <div class="wan-advanced-title">MPTCP Bonding</div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Scheduler</span>
+                                <select class="wan-advanced-select" id="adv-scheduler">
+                                    <option value="default">default</option>
+                                    <option value="bpf_minrtt">bpf_minrtt (low latency)</option>
+                                    <option value="bpf_rr">bpf_rr (round-robin)</option>
+                                    <option value="bpf_red">bpf_red (redundant)</option>
+                                    <option value="bpf_burst">bpf_burst (burst)</option>
+                                    <option value="bpf_first">bpf_first (first path)</option>
+                                    <option value="bpf_bkup">bpf_bkup (backup)</option>
+                                </select>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Path Manager</span>
+                                <select class="wan-advanced-select" id="adv-path-manager">
+                                    <option value="fullmesh">fullmesh</option>
+                                    <option value="ndiffports">ndiffports</option>
+                                </select>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Congestion</span>
+                                <select class="wan-advanced-select" id="adv-congestion">
+                                    <option value="bbr">bbr</option>
+                                    <option value="cubic">cubic</option>
+                                    <option value="reno">reno</option>
+                                </select>
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Max Subflows</span>
+                                <input type="number" class="wan-advanced-input" id="adv-subflows" min="1" max="16" value="8">
+                            </div>
+                            <div class="wan-advanced-row">
+                                <span class="wan-advanced-label">Stale Loss Count</span>
+                                <input type="number" class="wan-advanced-input" id="adv-stale-loss" min="1" max="10" value="4">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="wan-advanced-actions">
+                        <div id="wan-advanced-error" class="wan-advanced-error"></div>
+                        <div id="wan-advanced-success" class="wan-advanced-success"></div>
+                        <button class="wan-advanced-btn wan-advanced-btn-save" id="wan-advanced-save-btn" onclick="JamMonitor.saveAdvancedSettings()">Save and Apply</button>
+                    </div>
+                </div>
             </div>
 
         </div>

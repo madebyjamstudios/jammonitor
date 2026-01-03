@@ -7,6 +7,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wifi_status"}, call("action_wifi_status"), nil)
     entry({"admin", "status", "jammonitor", "wan_policy"}, call("action_wan_policy"), nil)
     entry({"admin", "status", "jammonitor", "wan_edit"}, call("action_wan_edit"), nil)
+    entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
 end
 
 function action_exec()
@@ -1501,4 +1502,119 @@ function action_wan_edit()
         iface = iface,
         changes_made = changes_made
     }))
+end
+
+-- Advanced settings endpoint for failover and MPTCP tuning
+function action_wan_advanced()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+
+    http.prepare_content("application/json")
+
+    local method = http.getenv("REQUEST_METHOD")
+
+    if method == "POST" then
+        -- Parse JSON body
+        local raw = http.content()
+        local data = json.parse(raw)
+        if not data then
+            http.write(json.stringify({ success = false, error = "Invalid JSON" }))
+            return
+        end
+
+        local changes_made = false
+
+        -- Update failover settings (omr-tracker.defaults)
+        if data.failover then
+            local f = data.failover
+            if f.timeout then
+                uci:set("omr-tracker", "defaults", "timeout", tostring(f.timeout))
+                changes_made = true
+            end
+            if f.count then
+                uci:set("omr-tracker", "defaults", "count", tostring(f.count))
+                changes_made = true
+            end
+            if f.tries then
+                uci:set("omr-tracker", "defaults", "tries", tostring(f.tries))
+                changes_made = true
+            end
+            if f.interval then
+                uci:set("omr-tracker", "defaults", "interval", tostring(f.interval))
+                changes_made = true
+            end
+            if f.failure_interval then
+                uci:set("omr-tracker", "defaults", "failure_interval", tostring(f.failure_interval))
+                changes_made = true
+            end
+            if f.tries_up then
+                uci:set("omr-tracker", "defaults", "tries_up", tostring(f.tries_up))
+                changes_made = true
+            end
+        end
+
+        -- Update MPTCP settings (network.globals)
+        if data.mptcp then
+            local m = data.mptcp
+            if m.scheduler then
+                uci:set("network", "globals", "mptcp_scheduler", m.scheduler)
+                changes_made = true
+            end
+            if m.path_manager then
+                uci:set("network", "globals", "mptcp_path_manager", m.path_manager)
+                changes_made = true
+            end
+            if m.congestion then
+                uci:set("network", "globals", "congestion", m.congestion)
+                changes_made = true
+            end
+            if m.subflows then
+                uci:set("network", "globals", "mptcp_subflows", tostring(m.subflows))
+                changes_made = true
+            end
+            if m.stale_loss_cnt then
+                -- stale_loss_cnt is a sysctl, set it directly
+                sys.exec("sysctl -w net.mptcp.stale_loss_cnt=" .. tostring(m.stale_loss_cnt) .. " >/dev/null 2>&1")
+                -- Also persist to sysctl.conf if possible
+                sys.exec("sed -i '/net.mptcp.stale_loss_cnt/d' /etc/sysctl.conf 2>/dev/null; echo 'net.mptcp.stale_loss_cnt=" .. tostring(m.stale_loss_cnt) .. "' >> /etc/sysctl.conf 2>/dev/null")
+            end
+        end
+
+        if changes_made then
+            uci:commit("omr-tracker")
+            uci:commit("network")
+            -- Restart omr-tracker to apply failover changes
+            sys.exec("/etc/init.d/omr-tracker restart >/dev/null 2>&1 &")
+        end
+
+        http.write(json.stringify({ success = true }))
+    else
+        -- GET: Read current settings
+        local result = {
+            failover = {},
+            mptcp = {}
+        }
+
+        -- Read failover settings from omr-tracker.defaults
+        result.failover.timeout = tonumber(uci:get("omr-tracker", "defaults", "timeout")) or 1
+        result.failover.count = tonumber(uci:get("omr-tracker", "defaults", "count")) or 1
+        result.failover.tries = tonumber(uci:get("omr-tracker", "defaults", "tries")) or 2
+        result.failover.interval = tonumber(uci:get("omr-tracker", "defaults", "interval")) or 1
+        result.failover.failure_interval = tonumber(uci:get("omr-tracker", "defaults", "failure_interval")) or 2
+        result.failover.tries_up = tonumber(uci:get("omr-tracker", "defaults", "tries_up")) or 2
+
+        -- Read MPTCP settings from network.globals
+        result.mptcp.scheduler = uci:get("network", "globals", "mptcp_scheduler") or "default"
+        result.mptcp.path_manager = uci:get("network", "globals", "mptcp_path_manager") or "fullmesh"
+        result.mptcp.congestion = uci:get("network", "globals", "congestion") or "bbr"
+        result.mptcp.subflows = tonumber(uci:get("network", "globals", "mptcp_subflows")) or 8
+
+        -- Read stale_loss_cnt from sysctl
+        local stale = sys.exec("sysctl -n net.mptcp.stale_loss_cnt 2>/dev/null")
+        result.mptcp.stale_loss_cnt = tonumber(stale) or 4
+
+        http.write(json.stringify(result))
+    end
 end

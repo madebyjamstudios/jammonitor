@@ -1888,6 +1888,115 @@ var JamMonitor = (function() {
         });
     }
 
+    // ============================================================
+    // Advanced Settings (Failover + MPTCP)
+    // ============================================================
+    var advancedSettingsLoaded = false;
+
+    function toggleAdvancedSettings() {
+        var content = document.getElementById('wan-advanced-content');
+        var arrow = document.getElementById('wan-advanced-arrow');
+        if (!content || !arrow) return;
+
+        var isVisible = content.classList.contains('visible');
+        if (isVisible) {
+            content.classList.remove('visible');
+            arrow.classList.remove('open');
+        } else {
+            content.classList.add('visible');
+            arrow.classList.add('open');
+            // Load settings on first open
+            if (!advancedSettingsLoaded) {
+                loadAdvancedSettings();
+            }
+        }
+    }
+
+    function loadAdvancedSettings() {
+        fetch(window.location.pathname + '/wan_advanced')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                advancedSettingsLoaded = true;
+                // Failover settings
+                if (data.failover) {
+                    var f = data.failover;
+                    if (f.timeout !== undefined) document.getElementById('adv-timeout').value = f.timeout;
+                    if (f.count !== undefined) document.getElementById('adv-count').value = f.count;
+                    if (f.tries !== undefined) document.getElementById('adv-tries').value = f.tries;
+                    if (f.interval !== undefined) document.getElementById('adv-interval').value = f.interval;
+                    if (f.failure_interval !== undefined) document.getElementById('adv-failure-interval').value = f.failure_interval;
+                    if (f.tries_up !== undefined) document.getElementById('adv-tries-up').value = f.tries_up;
+                }
+                // MPTCP settings
+                if (data.mptcp) {
+                    var m = data.mptcp;
+                    if (m.scheduler) document.getElementById('adv-scheduler').value = m.scheduler;
+                    if (m.path_manager) document.getElementById('adv-path-manager').value = m.path_manager;
+                    if (m.congestion) document.getElementById('adv-congestion').value = m.congestion;
+                    if (m.subflows !== undefined) document.getElementById('adv-subflows').value = m.subflows;
+                    if (m.stale_loss_cnt !== undefined) document.getElementById('adv-stale-loss').value = m.stale_loss_cnt;
+                }
+            })
+            .catch(function(e) {
+                console.error('Failed to load advanced settings:', e);
+            });
+    }
+
+    function saveAdvancedSettings() {
+        var saveBtn = document.getElementById('wan-advanced-save-btn');
+        var errorDiv = document.getElementById('wan-advanced-error');
+        var successDiv = document.getElementById('wan-advanced-success');
+
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Applying...';
+        errorDiv.style.display = 'none';
+        successDiv.style.display = 'none';
+
+        var data = {
+            failover: {
+                timeout: parseInt(document.getElementById('adv-timeout').value, 10) || 1,
+                count: parseInt(document.getElementById('adv-count').value, 10) || 1,
+                tries: parseInt(document.getElementById('adv-tries').value, 10) || 2,
+                interval: parseInt(document.getElementById('adv-interval').value, 10) || 1,
+                failure_interval: parseInt(document.getElementById('adv-failure-interval').value, 10) || 2,
+                tries_up: parseInt(document.getElementById('adv-tries-up').value, 10) || 2
+            },
+            mptcp: {
+                scheduler: document.getElementById('adv-scheduler').value || 'default',
+                path_manager: document.getElementById('adv-path-manager').value || 'fullmesh',
+                congestion: document.getElementById('adv-congestion').value || 'bbr',
+                subflows: parseInt(document.getElementById('adv-subflows').value, 10) || 8,
+                stale_loss_cnt: parseInt(document.getElementById('adv-stale-loss').value, 10) || 4
+            }
+        };
+
+        fetch(window.location.pathname + '/wan_advanced', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save and Apply';
+            if (result.success) {
+                successDiv.textContent = 'Settings saved successfully!';
+                successDiv.style.display = 'block';
+                setTimeout(function() { successDiv.style.display = 'none'; }, 3000);
+            } else {
+                errorDiv.textContent = result.error || 'Failed to save settings';
+                errorDiv.style.display = 'block';
+            }
+        })
+        .catch(function(e) {
+            console.error('Save advanced settings error:', e);
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save and Apply';
+            errorDiv.textContent = 'Network error: ' + e.message;
+            errorDiv.style.display = 'block';
+        });
+    }
+
     function loadOmrStatus() {
         var frame = document.getElementById('omr-frame');
         // Load the OMR status page in iframe
@@ -2343,6 +2452,8 @@ var JamMonitor = (function() {
         closeWanEditPopup: closeWanEditPopup,
         saveWanSettings: saveWanSettings,
         toggleStaticFields: toggleStaticFields,
-        toggleDnsFields: toggleDnsFields
+        toggleDnsFields: toggleDnsFields,
+        toggleAdvancedSettings: toggleAdvancedSettings,
+        saveAdvancedSettings: saveAdvancedSettings
     };
 })();

@@ -413,16 +413,13 @@ var JamMonitor = (function() {
         });
 
         // WAN info - get route first, then verify with public IP check
+        // Don't reset status during check - only update when result changes
         exec('ip route show default | head -1').then(function(out) {
             var gwMatch = out.match(/via\s+(\S+)/);
             var devMatch = out.match(/dev\s+(\S+)/);
             if (gwMatch) document.getElementById('wan-gw').textContent = gwMatch[1];
             if (devMatch) {
-                var dev = devMatch[1];
-                document.getElementById('wan-iface').textContent = dev;
-                // Start with "Checking..." state
-                document.getElementById('wan-indicator').className = 'jm-indicator yellow';
-                document.getElementById('wan-status').textContent = 'Checking...';
+                document.getElementById('wan-iface').textContent = devMatch[1];
             } else {
                 // No default route at all
                 document.getElementById('wan-indicator').className = 'jm-indicator red';
@@ -434,9 +431,9 @@ var JamMonitor = (function() {
         });
 
         // Get actual public IP from external service (what the internet sees)
-        exec('curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 api.ipify.org 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo ""').then(function(publicIp) {
+        exec('curl -s --max-time 3 ifconfig.me 2>/dev/null || curl -s --max-time 3 api.ipify.org 2>/dev/null || curl -s --max-time 3 icanhazip.com 2>/dev/null || echo ""').then(function(publicIp) {
             var ip = publicIp.trim();
-            if (ip && ip.match(/^[0-9.]+$/)) {
+            if (ip && ip.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) {
                 // Public IP retrieved - actually connected to internet
                 document.getElementById('wan-ip').textContent = ip;
                 document.getElementById('wan-indicator').className = 'jm-indicator green';

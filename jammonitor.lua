@@ -83,9 +83,7 @@ function action_wifi_status()
                         if freq then radio.band = freq .. " GHz" end
                     end
 
-                    -- Get channel utilization from survey data
-                    -- Use the phy name (e.g., phy0) from the interface
-                    local phy_name = first_iface:match("^(%w+)") or first_iface
+                    -- Get channel utilization from survey data (raw values for delta calc in JS)
                     local survey_out = sys.exec("iw " .. first_iface .. " survey dump 2>/dev/null")
                     if survey_out and survey_out ~= "" then
                         -- Find the "in use" frequency block and extract busy/active times
@@ -97,11 +95,9 @@ function action_wifi_status()
                             local active = in_use_block:match("channel active time:%s*(%d+)")
                             local busy = in_use_block:match("channel busy time:%s*(%d+)")
                             if active and busy then
-                                local active_ms = tonumber(active) or 1
-                                local busy_ms = tonumber(busy) or 0
-                                if active_ms > 0 then
-                                    radio.utilization = math.floor((busy_ms / active_ms) * 100)
-                                end
+                                -- Send raw values for JS to calculate delta
+                                radio.survey_active = tonumber(active) or 0
+                                radio.survey_busy = tonumber(busy) or 0
                             end
                         end
                     end

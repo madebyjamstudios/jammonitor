@@ -1077,10 +1077,31 @@ var JamMonitor = (function() {
     // ============================================================
     // WiFi APs Tab
     // ============================================================
+    var prevSurveyData = {}; // Track previous survey values for delta calculation
+
     function updateWifiAps() {
         fetch(window.location.pathname + '/wifi_status')
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                // Calculate real-time utilization from survey deltas
+                data.local_radios.forEach(function(radio) {
+                    if (radio.survey_active !== undefined && radio.survey_busy !== undefined) {
+                        var prev = prevSurveyData[radio.name];
+                        if (prev && radio.survey_active > prev.active) {
+                            var deltaActive = radio.survey_active - prev.active;
+                            var deltaBusy = radio.survey_busy - prev.busy;
+                            if (deltaActive > 0) {
+                                radio.utilization = Math.round((deltaBusy / deltaActive) * 100);
+                            }
+                        }
+                        // Store current values for next calculation
+                        prevSurveyData[radio.name] = {
+                            active: radio.survey_active,
+                            busy: radio.survey_busy
+                        };
+                    }
+                });
+
                 // Update health tiles
                 document.getElementById('wifi-aps-online').textContent = data.totals.aps_online + '/' + data.totals.aps_total;
                 document.getElementById('wifi-total-clients').textContent = data.totals.total_clients;
@@ -1113,7 +1134,9 @@ var JamMonitor = (function() {
                     data.local_radios.forEach(function(radio) {
                         var indicatorClass = radio.up ? 'green' : 'red';
                         var stateText = radio.up ? 'UP' : 'DOWN';
+                        var hasUtilization = radio.utilization !== undefined;
                         var utilization = radio.utilization || 0;
+                        var utilizationText = hasUtilization ? utilization + '%' : '--';
                         var utilizationColor = utilization > 70 ? '#e74c3c' : (utilization > 40 ? '#f39c12' : '#27ae60');
                         html += '<div class="jm-block-compact">';
                         html += '<div class="jm-block-header" style="margin-bottom:4px;padding-bottom:4px;">';
@@ -1129,7 +1152,7 @@ var JamMonitor = (function() {
                         html += '<div class="jm-row"><span class="jm-label">Clients</span><span class="jm-value">' + radio.clients + '</span></div>';
                         // Utilization bar
                         html += '<div class="jm-row" style="flex-direction:column;gap:2px;">';
-                        html += '<span class="jm-label" style="width:100%;">Utilization ' + utilization + '%</span>';
+                        html += '<span class="jm-label" style="width:100%;">Utilization ' + utilizationText + '</span>';
                         html += '<div style="width:100%;height:6px;background:#ecf0f1;border-radius:3px;overflow:hidden;">';
                         html += '<div style="width:' + utilization + '%;height:100%;background:' + utilizationColor + ';"></div>';
                         html += '</div></div>';

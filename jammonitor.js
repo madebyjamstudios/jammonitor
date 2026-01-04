@@ -2719,6 +2719,16 @@ var JamMonitor = (function() {
         }, 3000);
     }
 
+    function downloadHistory() {
+        var hours = document.getElementById('history-hours').value;
+        var status = document.getElementById('history-status');
+        status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
+        window.location.href = window.location.pathname + '/history?hours=' + hours;
+        setTimeout(function() {
+            status.innerHTML = '<span style="color:#27ae60;">Download started. Check your downloads folder.</span>';
+        }, 2000);
+    }
+
     function escapeHtml(str) {
         var div = document.createElement('div');
         div.textContent = str || '';
@@ -2744,6 +2754,7 @@ var JamMonitor = (function() {
     return {
         switchView: switchView,
         exportDiag: exportDiag,
+        downloadHistory: downloadHistory,
         setScale: setScale,
         setInterface: setInterface,
         loadVnstat: loadVnstat,

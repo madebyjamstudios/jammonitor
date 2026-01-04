@@ -9,6 +9,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_edit"}, call("action_wan_edit"), nil)
     entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
+    entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
 end
 
 function action_exec()
@@ -1890,5 +1891,84 @@ function action_wan_ifaces()
         table.sort(result.all, function(a, b) return a.name < b.name end)
 
         http.write(json.stringify(result))
+    end
+end
+
+-- Historical metrics download
+function action_history()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+
+    local hours = tonumber(http.formvalue("hours")) or 24
+    if hours < 1 then hours = 1 end
+    if hours > 720 then hours = 720 end
+
+    local db_path = "/mnt/data/jammonitor/history.db"
+    local cutoff = os.time() - (hours * 3600)
+
+    -- Check if database exists
+    local fs = require "nixio.fs"
+    if not fs.stat(db_path) then
+        http.prepare_content("application/json")
+        http.write(json.stringify({ error = "No historical data available. Is the collector running?" }))
+        return
+    end
+
+    -- Query metrics from SQLite
+    local query = string.format(
+        "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d ORDER BY ts",
+        cutoff
+    )
+    local result = sys.exec("sqlite3 -json '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+
+    if not result or result == "" then
+        -- Fallback to CSV format if -json not supported
+        result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+        if not result or result == "" then
+            http.prepare_content("application/json")
+            http.write(json.stringify({ error = "Failed to query database or no data in range" }))
+            return
+        end
+
+        -- Parse CSV into JSON array
+        local metrics = {}
+        for line in result:gmatch("[^\n]+") do
+            local ts, load, ram, temp, pings, ifaces = line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)|(.+)")
+            if ts then
+                table.insert(metrics, {
+                    ts = tonumber(ts),
+                    load = load,
+                    ram_pct = tonumber(ram),
+                    temp = tonumber(temp),
+                    wan_pings = pings,
+                    iface_status = ifaces
+                })
+            end
+        end
+
+        local bundle = {
+            generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            hours = hours,
+            sample_count = #metrics,
+            metrics = metrics
+        }
+
+        http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
+        http.prepare_content("application/json")
+        http.write(json.stringify(bundle))
+    else
+        -- SQLite returned JSON directly
+        local metrics = json.parse(result) or {}
+        local bundle = {
+            generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            hours = hours,
+            sample_count = #metrics,
+            metrics = metrics
+        }
+
+        http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
+        http.prepare_content("application/json")
+        http.write(json.stringify(bundle))
     end
 end

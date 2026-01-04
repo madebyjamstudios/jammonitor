@@ -719,6 +719,25 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()">Download Diagnostic Bundle</button>
                 <div id="diag-status" style="margin-top:15px;"></div>
             </div>
+
+            <div class="jm-block" style="max-width:600px;margin-top:20px;">
+                <h3 style="margin:0 0 10px;color:#2c3e50;">Historical Metrics</h3>
+                <p style="margin:0 0 15px;color:#7f8c8d;">Download historical metrics collected every second on local storage. Includes ping latency, CPU load, RAM usage, temperature, and interface status.</p>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <label style="color:#7f8c8d;">Time range:</label>
+                    <select id="history-hours" style="padding:8px 12px;border:1px solid #bdc3c7;border-radius:4px;">
+                        <option value="1">1 hour</option>
+                        <option value="6">6 hours</option>
+                        <option value="24" selected>24 hours</option>
+                        <option value="48">48 hours</option>
+                        <option value="72">72 hours</option>
+                        <option value="168">7 days</option>
+                        <option value="720">30 days</option>
+                    </select>
+                    <button class="jm-btn" onclick="JamMonitor.downloadHistory()">Download Historical Bundle</button>
+                </div>
+                <div id="history-status" style="margin-top:15px;"></div>
+            </div>
         </div>
 
         <!-- BANDWIDTH: Realtime -->

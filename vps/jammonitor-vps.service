@@ -1,0 +1,22 @@
+[Unit]
+Description=JamMonitor VPS - Historical Metrics Collector
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/jammonitor-vps
+
+# Configure these for your setup:
+Environment="ROUTER_URL=http://100.x.x.x/cgi-bin/luci/jammonitor/metrics"
+Environment="POLL_SECONDS=5"
+Environment="RETENTION_DAYS=30"
+Environment="PORT=8080"
+Environment="DB_PATH=/opt/jammonitor-vps/jammonitor.db"
+
+ExecStart=/usr/bin/python3 /opt/jammonitor-vps/jammonitor_vps.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

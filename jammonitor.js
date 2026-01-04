@@ -2228,7 +2228,7 @@ var JamMonitor = (function() {
                         statusBadge = '<span style="color:#f39c12;font-size:9px;margin-left:5px;">(up)</span>';
                     }
 
-                    html += '<label class="wan-iface-item' + checkedClass + '">';
+                    html += '<label class="wan-iface-item' + checkedClass + '" title="' + iface.name + '">';
                     html += '<input type="checkbox" name="wan-iface" value="' + iface.name + '"' + checkedAttr + ' onchange="JamMonitor.updateIfaceItem(this)">';
                     html += '<span class="wan-iface-item-name">' + iface.name + statusBadge + '</span>';
                     if (iface.device) {

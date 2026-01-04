@@ -1,0 +1,45 @@
+#!/bin/sh
+# JamMonitor Historical Metrics Collector
+# Runs every second, stores metrics in SQLite
+
+DB_PATH="/mnt/data/jammonitor/history.db"
+RETENTION_DAYS=30
+
+# Initialize database
+sqlite3 "$DB_PATH" "CREATE TABLE IF NOT EXISTS metrics (ts INTEGER PRIMARY KEY, load TEXT, ram_pct REAL, temp INTEGER, wan_pings TEXT, iface_status TEXT);"
+sqlite3 "$DB_PATH" "CREATE INDEX IF NOT EXISTS idx_ts ON metrics(ts);"
+
+COUNTER=0
+while true; do
+    TS=$(date +%s)
+    LOAD=$(cat /proc/loadavg | cut -d' ' -f1-3)
+    RAM=$(free | awk '/Mem:/{printf "%.1f", $3/$2*100}')
+    TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
+
+    # Pings
+    P1=$(ping -c1 -W1 1.1.1.1 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+    P2=$(ping -c1 -W1 8.8.8.8 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+    [ -z "$P1" ] && P1="null"
+    [ -z "$P2" ] && P2="null"
+    PINGS="{\"1.1.1.1\":$P1,\"8.8.8.8\":$P2}"
+
+    # Interface status
+    IFACES="{"
+    for iface in wan wan1 wan2 wan3 wan4; do
+        UP=$(ifstatus $iface 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)
+        [ "$UP" = "true" ] && IFACES="$IFACES\"$iface\":1," || IFACES="$IFACES\"$iface\":0,"
+    done
+    IFACES="${IFACES%,}}"
+
+    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD', $RAM, $TEMP, '$PINGS', '$IFACES');"
+
+    # Cleanup every hour
+    COUNTER=$((COUNTER + 1))
+    if [ $COUNTER -ge 3600 ]; then
+        CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
+        sqlite3 "$DB_PATH" "DELETE FROM metrics WHERE ts < $CUTOFF;"
+        COUNTER=0
+    fi
+
+    sleep 1
+done

@@ -1894,81 +1894,108 @@ function action_wan_ifaces()
     end
 end
 
--- Historical metrics download
+-- Historical metrics download - ONE bundle with EVERYTHING
 function action_history()
     local http = require "luci.http"
     local sys = require "luci.sys"
     local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
 
     local hours = tonumber(http.formvalue("hours")) or 24
     if hours < 1 then hours = 1 end
     if hours > 720 then hours = 720 end
 
     local db_path = "/mnt/data/jammonitor/history.db"
+    local log_path = "/mnt/data/jammonitor/syslog.txt"
     local cutoff = os.time() - (hours * 3600)
 
+    local bundle = {
+        generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        hours = hours,
+        metrics = {},
+        snapshots = {},
+        syslog = "",
+        current_state = {}
+    }
+
     -- Check if database exists
-    local fs = require "nixio.fs"
-    if not fs.stat(db_path) then
-        http.prepare_content("application/json")
-        http.write(json.stringify({ error = "No historical data available. Is the collector running?" }))
-        return
-    end
-
-    -- Query metrics from SQLite
-    local query = string.format(
-        "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d ORDER BY ts",
-        cutoff
-    )
-    local result = sys.exec("sqlite3 -json '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-
-    if not result or result == "" then
-        -- Fallback to CSV format if -json not supported
-        result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-        if not result or result == "" then
-            http.prepare_content("application/json")
-            http.write(json.stringify({ error = "Failed to query database or no data in range" }))
-            return
-        end
-
-        -- Parse CSV into JSON array
-        local metrics = {}
-        for line in result:gmatch("[^\n]+") do
-            local ts, load, ram, temp, pings, ifaces = line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)|(.+)")
-            if ts then
-                table.insert(metrics, {
-                    ts = tonumber(ts),
-                    load = load,
-                    ram_pct = tonumber(ram),
-                    temp = tonumber(temp),
-                    wan_pings = pings,
-                    iface_status = ifaces
-                })
+    if fs.stat(db_path) then
+        -- Query fast metrics
+        local query = string.format(
+            "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d ORDER BY ts",
+            cutoff
+        )
+        local result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+        if result and result ~= "" then
+            for line in result:gmatch("[^\n]+") do
+                local ts, load, ram, temp, pings, ifaces = line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)|(.+)")
+                if ts then
+                    table.insert(bundle.metrics, {
+                        ts = tonumber(ts),
+                        load = load,
+                        ram_pct = tonumber(ram),
+                        temp = tonumber(temp),
+                        wan_pings = pings,
+                        iface_status = ifaces
+                    })
+                end
             end
         end
 
-        local bundle = {
-            generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-            hours = hours,
-            sample_count = #metrics,
-            metrics = metrics
-        }
-
-        http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
-        http.prepare_content("application/json")
-        http.write(json.stringify(bundle))
-    else
-        -- SQLite returned JSON directly
-        local metrics = json.parse(result) or {}
-        local bundle = {
-            generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-            hours = hours,
-            sample_count = #metrics,
-            metrics = metrics
-        }
-
-        http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
-        http.prepare_content("application/json")
-        http.write(json.stringify(bundle))
+        -- Query slow snapshots (MPTCP, VPN, routes, conntrack, DNS)
+        query = string.format(
+            "SELECT ts, mptcp, vpn, routes, conntrack_count, dns FROM snapshots WHERE ts > %d ORDER BY ts",
+            cutoff
+        )
+        result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+        if result and result ~= "" then
+            for line in result:gmatch("[^\n]+") do
+                local ts, mptcp, vpn, routes, ct, dns = line:match("([^|]+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)")
+                if ts then
+                    table.insert(bundle.snapshots, {
+                        ts = tonumber(ts),
+                        mptcp = mptcp or "",
+                        vpn = vpn or "",
+                        routes = routes or "",
+                        conntrack_count = tonumber(ct) or 0,
+                        dns = dns or ""
+                    })
+                end
+            end
+        end
     end
+
+    -- Include syslog (last 50MB max, trimmed to time range if possible)
+    if fs.stat(log_path) then
+        local log_content = fs.readfile(log_path) or ""
+        -- Limit to last 2MB to keep bundle manageable
+        if #log_content > 2097152 then
+            log_content = log_content:sub(-2097152)
+        end
+        bundle.syslog = log_content
+    end
+
+    -- Include current system state (like diagnostic bundle)
+    bundle.current_state = {
+        timestamp = os.time(),
+        uptime = sys.exec("cat /proc/uptime 2>/dev/null"):gsub("%s+$", ""),
+        uname = sys.exec("uname -a 2>/dev/null"):gsub("%s+$", ""),
+        ip_addr = sys.exec("ip addr 2>/dev/null"),
+        ip_route = sys.exec("ip route 2>/dev/null"),
+        mptcp_endpoints = sys.exec("ip mptcp endpoint show 2>/dev/null"),
+        mptcp_limits = sys.exec("ip mptcp limits 2>/dev/null"),
+        conntrack_count = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null"):gsub("%s+$", ""),
+        conntrack_max = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null"):gsub("%s+$", ""),
+        memory = sys.exec("free 2>/dev/null"),
+        load = sys.exec("cat /proc/loadavg 2>/dev/null"):gsub("%s+$", ""),
+        dmesg_tail = sys.exec("dmesg 2>/dev/null | tail -200"),
+        errors = sys.exec("logread 2>/dev/null | grep -iE '(error|fail|warn|crit|down|timeout)' | tail -100")
+    }
+
+    bundle.sample_count = #bundle.metrics
+    bundle.snapshot_count = #bundle.snapshots
+
+    http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
+    http.prepare_content("application/json")
+    http.write(json.stringify(bundle))
 end

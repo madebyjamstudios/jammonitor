@@ -1,16 +1,38 @@
 #!/bin/sh
-# JamMonitor Historical Metrics Collector
-# Runs every second, stores metrics in SQLite
+# JamMonitor Historical Metrics Collector v2
+# Collects everything at smart intervals to minimize USB wear
 
 DB_PATH="/mnt/data/jammonitor/history.db"
+LOG_PATH="/mnt/data/jammonitor/syslog.txt"
 RETENTION_DAYS=30
+MAX_LOG_SIZE=52428800  # 50MB max syslog size
 
-# Initialize database
-sqlite3 "$DB_PATH" "CREATE TABLE IF NOT EXISTS metrics (ts INTEGER PRIMARY KEY, load TEXT, ram_pct REAL, temp INTEGER, wan_pings TEXT, iface_status TEXT);"
-sqlite3 "$DB_PATH" "CREATE INDEX IF NOT EXISTS idx_ts ON metrics(ts);"
+# Initialize database with all tables
+init_db() {
+    sqlite3 "$DB_PATH" "
+        CREATE TABLE IF NOT EXISTS metrics (
+            ts INTEGER PRIMARY KEY,
+            load TEXT,
+            ram_pct REAL,
+            temp INTEGER,
+            wan_pings TEXT,
+            iface_status TEXT
+        );
+        CREATE TABLE IF NOT EXISTS snapshots (
+            ts INTEGER PRIMARY KEY,
+            mptcp TEXT,
+            vpn TEXT,
+            routes TEXT,
+            conntrack_count INTEGER,
+            dns TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
+        CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+    "
+}
 
-COUNTER=0
-while true; do
+# Collect fast metrics (every second)
+collect_fast() {
     TS=$(date +%s)
     LOAD=$(cat /proc/loadavg | cut -d' ' -f1-3)
     RAM=$(free | awk '/Mem:/{printf "%.1f", $3/$2*100}')
@@ -25,20 +47,109 @@ while true; do
 
     # Interface status
     IFACES="{"
+    FIRST=1
     for iface in wan wan1 wan2 wan3 wan4; do
         UP=$(ifstatus $iface 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)
-        [ "$UP" = "true" ] && IFACES="$IFACES\"$iface\":1," || IFACES="$IFACES\"$iface\":0,"
+        [ $FIRST -eq 0 ] && IFACES="$IFACES,"
+        [ "$UP" = "true" ] && IFACES="$IFACES\"$iface\":1" || IFACES="$IFACES\"$iface\":0"
+        FIRST=0
     done
-    IFACES="${IFACES%,}}"
+    IFACES="$IFACES}"
 
     sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD', $RAM, $TEMP, '$PINGS', '$IFACES');"
+}
+
+# Collect slow snapshots (every minute)
+collect_slow() {
+    TS=$(date +%s)
+
+    # MPTCP endpoints and limits
+    MPTCP_EP=$(ip mptcp endpoint show 2>/dev/null | head -20 | tr '\n' '|' | sed "s/'//g")
+    MPTCP_LIM=$(ip mptcp limits 2>/dev/null | tr '\n' '|' | sed "s/'//g")
+    MPTCP="$MPTCP_EP;;$MPTCP_LIM"
+
+    # VPN status (simplified)
+    VPN=""
+    if command -v wg >/dev/null 2>&1; then
+        VPN=$(wg show interfaces 2>/dev/null | tr '\n' ',')
+    fi
+    GT=$(pgrep -c glorytun 2>/dev/null || echo 0)
+    OV=$(pgrep -c openvpn 2>/dev/null || echo 0)
+    VPN="wg:$VPN|gt:$GT|ovpn:$OV"
+
+    # Routes summary (default routes only)
+    ROUTES=$(ip route show default 2>/dev/null | head -10 | tr '\n' '|' | sed "s/'//g")
+
+    # Conntrack count
+    CT_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+
+    # DNS servers
+    DNS=$(grep nameserver /tmp/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+
+    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP', '$VPN', '$ROUTES', $CT_COUNT, '$DNS');"
+}
+
+# Stream syslog (continuous append with rotation)
+stream_syslog() {
+    # Rotate if too big
+    if [ -f "$LOG_PATH" ]; then
+        SIZE=$(stat -c%s "$LOG_PATH" 2>/dev/null || stat -f%z "$LOG_PATH" 2>/dev/null || echo 0)
+        if [ "$SIZE" -gt "$MAX_LOG_SIZE" ]; then
+            mv "$LOG_PATH" "${LOG_PATH}.old"
+        fi
+    fi
+
+    # Append recent syslog entries (last 100 lines since last check)
+    logread 2>/dev/null | tail -100 >> "$LOG_PATH"
+}
+
+# Cleanup old data
+cleanup() {
+    CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
+    sqlite3 "$DB_PATH" "DELETE FROM metrics WHERE ts < $CUTOFF;"
+    sqlite3 "$DB_PATH" "DELETE FROM snapshots WHERE ts < $CUTOFF;"
+
+    # Cleanup old syslog
+    if [ -f "${LOG_PATH}.old" ]; then
+        OLDTIME=$(stat -c%Y "${LOG_PATH}.old" 2>/dev/null || stat -f%m "${LOG_PATH}.old" 2>/dev/null || echo 0)
+        NOW=$(date +%s)
+        if [ $((NOW - OLDTIME)) -gt $((RETENTION_DAYS * 86400)) ]; then
+            rm -f "${LOG_PATH}.old"
+        fi
+    fi
+}
+
+# Main
+init_db
+
+FAST_COUNTER=0
+SLOW_COUNTER=0
+SYSLOG_COUNTER=0
+
+while true; do
+    # Fast metrics every second
+    collect_fast
+
+    FAST_COUNTER=$((FAST_COUNTER + 1))
+    SLOW_COUNTER=$((SLOW_COUNTER + 1))
+    SYSLOG_COUNTER=$((SYSLOG_COUNTER + 1))
+
+    # Slow snapshots every 60 seconds
+    if [ $SLOW_COUNTER -ge 60 ]; then
+        collect_slow
+        SLOW_COUNTER=0
+    fi
+
+    # Syslog stream every 10 seconds
+    if [ $SYSLOG_COUNTER -ge 10 ]; then
+        stream_syslog
+        SYSLOG_COUNTER=0
+    fi
 
     # Cleanup every hour
-    COUNTER=$((COUNTER + 1))
-    if [ $COUNTER -ge 3600 ]; then
-        CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
-        sqlite3 "$DB_PATH" "DELETE FROM metrics WHERE ts < $CUTOFF;"
-        COUNTER=0
+    if [ $FAST_COUNTER -ge 3600 ]; then
+        cleanup
+        FAST_COUNTER=0
     fi
 
     sleep 1

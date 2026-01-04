@@ -719,41 +719,6 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()">Download Diagnostic Bundle</button>
                 <div id="diag-status" style="margin-top:15px;"></div>
             </div>
-
-            <!-- VPS Historical Data -->
-            <div class="jm-block" style="max-width:600px;margin-top:20px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
-                    <h3 style="margin:0;color:#2c3e50;font-size:14px;">Historical Data (VPS)</h3>
-                    <span id="vps-status-badge" style="font-size:11px;padding:3px 8px;border-radius:10px;background:#95a5a6;color:#fff;">Not Configured</span>
-                </div>
-                <p style="margin:0 0 15px;color:#7f8c8d;font-size:12px;">Download extended metrics history from your VPS collector. Requires VPS setup with jammonitor-vps running.</p>
-
-                <div id="vps-config-section">
-                    <div style="margin-bottom:12px;">
-                        <label style="font-size:11px;color:#7f8c8d;display:block;margin-bottom:4px;">VPS Server URL</label>
-                        <div style="display:flex;gap:8px;">
-                            <input type="text" id="vps-url-input" placeholder="http://100.x.x.x:8080" style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
-                            <button class="jm-btn" style="padding:8px 12px;font-size:11px;" onclick="JamMonitor.saveVpsUrl()">Save</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="vps-download-section" style="display:none;border-top:1px solid #eee;padding-top:15px;margin-top:15px;">
-                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                        <select id="vps-hours-select" style="padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
-                            <option value="6">Last 6 hours</option>
-                            <option value="24" selected>Last 24 hours</option>
-                            <option value="48">Last 48 hours</option>
-                            <option value="72">Last 72 hours</option>
-                            <option value="168">Last 7 days</option>
-                            <option value="720">Last 30 days</option>
-                        </select>
-                        <button class="jm-btn" id="vps-download-btn" onclick="JamMonitor.downloadVpsBundle()">Download Historical Bundle</button>
-                    </div>
-                    <div id="vps-sample-count" style="margin-top:10px;font-size:11px;color:#95a5a6;"></div>
-                </div>
-                <div id="vps-download-status" style="margin-top:15px;"></div>
-            </div>
         </div>
 
         <!-- BANDWIDTH: Realtime -->

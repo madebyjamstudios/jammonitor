@@ -9,12 +9,6 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_edit"}, call("action_wan_edit"), nil)
     entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
-
-    -- Public metrics endpoint for VPS collector (Tailscale IP-gated)
-    local e = entry({"jammonitor", "metrics"}, call("action_metrics"), nil)
-    e.leaf = true
-    e.dependent = false
-    e.sysauth = false
 end
 
 function action_exec()
@@ -1897,98 +1891,4 @@ function action_wan_ifaces()
 
         http.write(json.stringify(result))
     end
-end
-
--- Public metrics endpoint for VPS historical data collection
--- IP-gated: Only Tailscale (100.64.0.0/10) and localhost allowed
-function action_metrics()
-    local http = require "luci.http"
-    local sys = require "luci.sys"
-    local json = require "luci.jsonc"
-
-    -- IP gate: only allow Tailscale range (100.64.0.0/10) and localhost
-    local remote = http.getenv("REMOTE_ADDR") or ""
-    local is_tailscale = remote:match("^100%.%d+%.%d+%.%d+")
-    local is_localhost = remote == "127.0.0.1" or remote == "::1"
-
-    if not (is_tailscale or is_localhost) then
-        http.status(403, "Forbidden")
-        http.prepare_content("application/json")
-        http.write(json.stringify({ error = "Access denied", remote = remote }))
-        return
-    end
-
-    http.prepare_content("application/json")
-
-    local metrics = {
-        timestamp = os.time()
-    }
-
-    -- CPU temperature
-    local temp = sys.exec("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null")
-    local temp_num = tonumber(temp:match("%d+"))
-    if temp_num then
-        if temp_num > 1000 then temp_num = temp_num / 1000 end
-        metrics.cpu_temp = temp_num
-    end
-
-    -- Load average
-    local loadavg = sys.exec("cat /proc/loadavg 2>/dev/null")
-    local l1, l5, l15 = loadavg:match("([%d.]+)%s+([%d.]+)%s+([%d.]+)")
-    metrics.cpu_load_1m = tonumber(l1)
-    metrics.cpu_load_5m = tonumber(l5)
-    metrics.cpu_load_15m = tonumber(l15)
-
-    -- RAM usage
-    local meminfo = sys.exec("free 2>/dev/null")
-    local mem_total, mem_used = meminfo:match("Mem:%s+(%d+)%s+(%d+)")
-    if mem_total and mem_used then
-        metrics.ram_percent = math.floor((tonumber(mem_used) / tonumber(mem_total)) * 1000) / 10
-    end
-
-    -- Conntrack
-    local ct_count = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null")
-    local ct_max = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null")
-    metrics.conntrack_count = tonumber(ct_count:match("%d+"))
-    metrics.conntrack_max = tonumber(ct_max:match("%d+"))
-
-    -- Ping tests (quick, 1-second timeout)
-    local function quick_ping(host)
-        local out = sys.exec("ping -c1 -W1 " .. host .. " 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2")
-        return tonumber(out:match("[%d.]+"))
-    end
-
-    metrics.ping_inet_ms = quick_ping("1.1.1.1")
-
-    -- VPS IP from OpenMPTCProuter config
-    local vps_ip = sys.exec("uci -q get openmptcprouter.vps.ip 2>/dev/null"):match("[%d.]+")
-    if vps_ip and vps_ip ~= "" then
-        metrics.ping_vps_ms = quick_ping(vps_ip)
-    end
-
-    -- Tunnel gateway ping
-    local tunnel_gw = sys.exec("ip route show dev tun0 2>/dev/null | grep -oE 'via [0-9.]+' | head -1 | cut -d' ' -f2"):match("[%d.]+")
-    if tunnel_gw and tunnel_gw ~= "" then
-        metrics.ping_tunnel_ms = quick_ping(tunnel_gw)
-    end
-
-    -- VPN/Tunnel status
-    local tun_ip = sys.exec("ip addr show dev tun0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2"):gsub("%s", "")
-    metrics.vpn_up = tun_ip ~= ""
-    if tun_ip ~= "" then
-        metrics.vpn_ip = tun_ip
-    end
-
-    -- MPTCP subflows
-    local mptcp_endpoints = sys.exec("ip mptcp endpoint show 2>/dev/null | wc -l")
-    metrics.mptcp_subflows = tonumber(mptcp_endpoints:match("%d+")) or 0
-
-    -- WAN status (first WAN with IP)
-    local wan_ip = sys.exec("ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | cut -d' ' -f2"):gsub("%s", "")
-    metrics.wan_up = wan_ip ~= ""
-    if wan_ip ~= "" then
-        metrics.wan_ip = wan_ip
-    end
-
-    http.write(json.stringify(metrics))
 end

@@ -1435,6 +1435,15 @@ var JamMonitor = (function() {
         checkbox.checked = bypassEnabled;
         checkbox.disabled = bypassToggling;
 
+        // Show switching state
+        if (bypassToggling) {
+            banner.classList.add('active');
+            icon.innerHTML = '&#8987;'; // Hourglass
+            title.textContent = 'Switching...';
+            desc.textContent = 'Please wait, applying network changes...';
+            return;
+        }
+
         if (bypassEnabled) {
             banner.classList.add('active');
             icon.innerHTML = '&#9888;'; // Warning sign

@@ -10,6 +10,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
     entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
+    entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
 end
 
 function action_exec()
@@ -1998,4 +1999,129 @@ function action_history()
     http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
     http.prepare_content("application/json")
     http.write(json.stringify(bundle))
+end
+
+-- VPS Bypass endpoint - toggle between bonded and direct WAN mode
+function action_bypass()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local bypass_flag = "/etc/jammonitor_bypass_enabled"
+    local saved_config = "/etc/jammonitor_bypass_saved"
+    local method = http.getenv("REQUEST_METHOD")
+
+    if method == "POST" then
+        -- Toggle bypass mode
+        local raw = http.content()
+        local data = json.parse(raw) or {}
+        local enable = data.enable
+
+        if enable then
+            -- ENABLE BYPASS: Save current config, disable all MPTCP
+            local saved_lines = {}
+            local primary_wan = nil
+
+            -- Find all WAN interfaces and save their multipath settings
+            uci:foreach("network", "interface", function(s)
+                local iface_name = s[".name"]
+                local multipath = s.multipath
+
+                -- Only save interfaces that have multipath configured
+                if multipath and (multipath == "master" or multipath == "on" or multipath == "backup") then
+                    table.insert(saved_lines, iface_name .. "=" .. multipath)
+
+                    -- Track the primary (master) interface
+                    if multipath == "master" then
+                        primary_wan = iface_name
+                    end
+
+                    -- Set all to off
+                    uci:set("network", iface_name, "multipath", "off")
+                end
+            end)
+
+            -- Save to file for restore + persistence
+            if #saved_lines > 0 then
+                fs.writefile(saved_config, table.concat(saved_lines, "\n"))
+            end
+
+            -- Write bypass flag (stores primary WAN name for reference)
+            fs.writefile(bypass_flag, primary_wan or "unknown")
+
+            -- Commit and apply
+            uci:commit("network")
+            sys.exec("/etc/init.d/network reload >/dev/null 2>&1 &")
+
+            http.write(json.stringify({
+                success = true,
+                bypass_enabled = true,
+                active_wan = primary_wan,
+                message = "VPS bypass enabled - traffic now going direct"
+            }))
+        else
+            -- DISABLE BYPASS: Restore saved config
+            local saved_content = fs.readfile(saved_config) or ""
+            local restored_count = 0
+
+            for line in saved_content:gmatch("[^\n]+") do
+                local iface, mode = line:match("^([^=]+)=(.+)$")
+                if iface and mode then
+                    uci:set("network", iface, "multipath", mode)
+                    restored_count = restored_count + 1
+                end
+            end
+
+            -- Remove bypass flag
+            fs.remove(bypass_flag)
+
+            -- Commit and apply
+            uci:commit("network")
+            sys.exec("/etc/init.d/network reload >/dev/null 2>&1 &")
+
+            http.write(json.stringify({
+                success = true,
+                bypass_enabled = false,
+                restored_count = restored_count,
+                message = "VPS bypass disabled - traffic now routed through VPS"
+            }))
+        end
+    else
+        -- GET: Return current bypass status
+        local bypass_enabled = fs.stat(bypass_flag) ~= nil
+        local active_wan = nil
+        local saved_config_data = {}
+
+        if bypass_enabled then
+            active_wan = (fs.readfile(bypass_flag) or ""):gsub("%s+$", "")
+        end
+
+        -- Read saved config if exists
+        local saved_content = fs.readfile(saved_config) or ""
+        for line in saved_content:gmatch("[^\n]+") do
+            local iface, mode = line:match("^([^=]+)=(.+)$")
+            if iface and mode then
+                saved_config_data[iface] = mode
+            end
+        end
+
+        -- If not bypassing, find current primary
+        if not bypass_enabled then
+            uci:foreach("network", "interface", function(s)
+                if s.multipath == "master" then
+                    active_wan = s[".name"]
+                end
+            end)
+        end
+
+        http.write(json.stringify({
+            bypass_enabled = bypass_enabled,
+            active_wan = active_wan,
+            saved_config = saved_config_data
+        }))
+    end
 end

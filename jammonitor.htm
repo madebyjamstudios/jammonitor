@@ -320,6 +320,28 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .wan-iface-btn-cancel { background: #95a5a6; color: #fff; }
 .wan-iface-btn-cancel:hover { background: #7f8c8d; }
 .wan-iface-status { font-size: 11px; margin-left: auto; }
+
+/* VPS Bypass Toggle */
+.bypass-banner { background: #fff; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.bypass-banner.active { background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 2px solid #f57c00; }
+.bypass-left { display: flex; align-items: center; gap: 15px; }
+.bypass-icon { font-size: 24px; }
+.bypass-text { }
+.bypass-title { font-weight: 600; font-size: 14px; color: #2c3e50; }
+.bypass-banner.active .bypass-title { color: #e65100; }
+.bypass-desc { font-size: 12px; color: #7f8c8d; margin-top: 2px; }
+.bypass-banner.active .bypass-desc { color: #bf360c; }
+.bypass-toggle { position: relative; width: 60px; height: 32px; flex-shrink: 0; }
+.bypass-toggle input { opacity: 0; width: 0; height: 0; }
+.bypass-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #95a5a6; transition: 0.3s; border-radius: 32px; }
+.bypass-slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 3px; bottom: 3px; background-color: white; transition: 0.3s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+.bypass-toggle input:checked + .bypass-slider { background-color: #f57c00; }
+.bypass-toggle input:checked + .bypass-slider:before { transform: translateX(28px); }
+.bypass-toggle input:disabled + .bypass-slider { opacity: 0.6; cursor: not-allowed; }
+.wan-policy-disabled { opacity: 0.5; pointer-events: none; }
+.wan-policy-disabled .wan-category-dropzone { background: #e0e0e0; }
+.wan-policy-disabled-overlay { background: rgba(255,255,255,0.7); padding: 20px; text-align: center; border-radius: 6px; margin-top: 10px; }
+.wan-policy-disabled-overlay p { color: #7f8c8d; margin: 0; font-size: 13px; }
 </style>
 
 <div class="jm-container">
@@ -472,7 +494,23 @@ table.jm-table tr:hover { background: #e8f4fc; }
         <!-- WAN POLICY -->
         <div id="view-wan-policy" class="jm-view">
             <h2 style="margin-top:0;color:#2c3e50;">WAN Policy</h2>
-            <p style="color:#7f8c8d;margin-bottom:15px;">Drag interfaces to change their bonding status. Primary accepts only one WAN.</p>
+
+            <!-- VPS Bypass Banner -->
+            <div class="bypass-banner" id="bypass-banner">
+                <div class="bypass-left">
+                    <span class="bypass-icon" id="bypass-icon">&#128274;</span>
+                    <div class="bypass-text">
+                        <div class="bypass-title" id="bypass-title">VPS Bypass: OFF</div>
+                        <div class="bypass-desc" id="bypass-desc">Traffic routed through VPS via MPTCP bonding</div>
+                    </div>
+                </div>
+                <label class="bypass-toggle">
+                    <input type="checkbox" id="bypass-checkbox" onchange="JamMonitor.toggleBypass()">
+                    <span class="bypass-slider"></span>
+                </label>
+            </div>
+
+            <p style="color:#7f8c8d;margin-bottom:15px;" id="wan-policy-hint">Drag interfaces to change their bonding status. Primary accepts only one WAN.</p>
 
             <div class="wan-policy-container" id="wan-policy-container">
                 <div class="wan-policy-category" data-priority="master">

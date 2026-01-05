@@ -38,6 +38,11 @@ var JamMonitor = (function() {
     var wanPolicyPollTimer = null;
     var wanPolicyPollEnd = 0;
 
+    // VPS Bypass state
+    var bypassEnabled = false;
+    var bypassActiveWan = null;
+    var bypassToggling = false;
+
     // Check if interface is a WAN or VPN (for bandwidth tracking)
     // OMR naming: lan1/2/3/4 are WANs, sfp-lan is SFP WAN, tun0 is VPN tunnel
     // Note: "wan" and "sfp-wan" are actually LAN ports in OMR, not WANs
@@ -1339,6 +1344,9 @@ var JamMonitor = (function() {
         // Don't reload while drag is in progress
         if (wanDragInProgress) return;
 
+        // Load bypass status first (or in parallel)
+        loadBypassStatus();
+
         if (!skipRender) {
             // Clear all dropzones while loading
             document.querySelectorAll('.wan-category-dropzone').forEach(function(zone) {
@@ -1393,6 +1401,114 @@ var JamMonitor = (function() {
             clearInterval(wanPolicyPollTimer);
             wanPolicyPollTimer = null;
         }
+    }
+
+    // ============================================================
+    // VPS Bypass Toggle
+    // ============================================================
+
+    function loadBypassStatus() {
+        return fetch(window.location.pathname + '/bypass')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                bypassEnabled = data.bypass_enabled || false;
+                bypassActiveWan = data.active_wan || null;
+                updateBypassUI();
+                return data;
+            })
+            .catch(function(e) {
+                console.error('Failed to load bypass status:', e);
+            });
+    }
+
+    function updateBypassUI() {
+        var banner = document.getElementById('bypass-banner');
+        var checkbox = document.getElementById('bypass-checkbox');
+        var icon = document.getElementById('bypass-icon');
+        var title = document.getElementById('bypass-title');
+        var desc = document.getElementById('bypass-desc');
+        var hint = document.getElementById('wan-policy-hint');
+        var container = document.getElementById('wan-policy-container');
+
+        if (!banner) return;
+
+        checkbox.checked = bypassEnabled;
+        checkbox.disabled = bypassToggling;
+
+        if (bypassEnabled) {
+            banner.classList.add('active');
+            icon.innerHTML = '&#9888;'; // Warning sign
+            title.textContent = 'VPS BYPASS ACTIVE';
+            desc.textContent = 'VPS connection is OFF - traffic going direct via ' + (bypassActiveWan || 'WAN');
+            hint.style.display = 'none';
+            container.classList.add('wan-policy-disabled');
+
+            // Add overlay message if not already there
+            if (!document.getElementById('bypass-disabled-msg')) {
+                var overlay = document.createElement('div');
+                overlay.id = 'bypass-disabled-msg';
+                overlay.className = 'wan-policy-disabled-overlay';
+                overlay.innerHTML = '<p>Turn off VPS Bypass to manage WAN priorities</p>';
+                container.parentNode.insertBefore(overlay, container.nextSibling);
+            }
+        } else {
+            banner.classList.remove('active');
+            icon.innerHTML = '&#128274;'; // Lock icon
+            title.textContent = 'VPS Bypass: OFF';
+            desc.textContent = 'Traffic routed through VPS via MPTCP bonding';
+            hint.style.display = 'block';
+            container.classList.remove('wan-policy-disabled');
+
+            // Remove overlay
+            var overlay = document.getElementById('bypass-disabled-msg');
+            if (overlay) overlay.remove();
+        }
+    }
+
+    function toggleBypass() {
+        if (bypassToggling) return;
+
+        var newState = !bypassEnabled;
+        var confirmMsg = newState
+            ? 'Enable VPS Bypass?\n\nThis will disable MPTCP bonding and route traffic directly through your primary WAN connection. The VPS tunnel will be turned off.'
+            : 'Disable VPS Bypass?\n\nThis will restore MPTCP bonding and route traffic through the VPS again.';
+
+        if (!confirm(confirmMsg)) {
+            // Reset checkbox to current state
+            document.getElementById('bypass-checkbox').checked = bypassEnabled;
+            return;
+        }
+
+        bypassToggling = true;
+        updateBypassUI();
+
+        fetch(window.location.pathname + '/bypass', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable: newState })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            bypassToggling = false;
+            if (data.success) {
+                bypassEnabled = data.bypass_enabled;
+                bypassActiveWan = data.active_wan;
+                updateBypassUI();
+                // Reload WAN policy to reflect changes
+                setTimeout(function() { loadWanPolicy(true); }, 2000);
+            } else {
+                alert('Failed to toggle bypass: ' + (data.error || 'Unknown error'));
+                document.getElementById('bypass-checkbox').checked = bypassEnabled;
+                updateBypassUI();
+            }
+        })
+        .catch(function(e) {
+            bypassToggling = false;
+            console.error('Bypass toggle error:', e);
+            alert('Failed to toggle bypass. Please check your connection.');
+            document.getElementById('bypass-checkbox').checked = bypassEnabled;
+            updateBypassUI();
+        });
     }
 
     function renderWanPolicy() {
@@ -2775,6 +2891,7 @@ var JamMonitor = (function() {
         toggleRemoteAps: toggleRemoteAps,
         editApList: editApList,
         cancelApEdit: cancelApEdit,
-        saveApList: saveApList
+        saveApList: saveApList,
+        toggleBypass: toggleBypass
     };
 })();

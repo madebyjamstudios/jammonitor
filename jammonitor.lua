@@ -27,6 +27,9 @@ function index()
     entry({"admin", "status", "jammonitor", "get_reservations"}, call("action_get_reservations"), nil)
     entry({"admin", "status", "jammonitor", "set_reservation"}, call("action_set_reservation"), nil)
     entry({"admin", "status", "jammonitor", "delete_reservation"}, call("action_delete_reservation"), nil)
+    -- Speed test endpoints
+    entry({"admin", "status", "jammonitor", "speedtest_start"}, call("action_speedtest_start"), nil)
+    entry({"admin", "status", "jammonitor", "speedtest_status"}, call("action_speedtest_status"), nil)
 end
 
 -- Helper: Validate interface name (alphanumeric, dash, underscore only)
@@ -2910,5 +2913,150 @@ function action_bypass()
             active_wan = active_wan,
             saved_config = saved_config_data
         }))
+    end
+end
+
+-- Speed Test Start endpoint - initiates a speed test for a specific WAN interface
+function action_speedtest_start()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    -- Check if curl exists
+    local curl_check = sys.exec("command -v curl 2>/dev/null")
+    if not curl_check or curl_check:match("^%s*$") then
+        http.write(json.stringify({
+            ok = false,
+            error = "curl not installed",
+            install_hint = "apk add curl"
+        }))
+        return
+    end
+
+    -- Get parameters
+    local ifname = http.formvalue("ifname")
+    local direction = http.formvalue("direction")
+    local size_mb = tonumber(http.formvalue("size_mb")) or 10
+    local timeout_s = tonumber(http.formvalue("timeout_s")) or 30
+
+    -- Validate interface name
+    local safe_iface = validate_iface(ifname)
+    if not safe_iface then
+        http.write(json.stringify({ok = false, error = "Invalid interface name"}))
+        return
+    end
+
+    -- Validate direction
+    if direction ~= "download" and direction ~= "upload" then
+        http.write(json.stringify({ok = false, error = "Invalid direction (must be download or upload)"}))
+        return
+    end
+
+    -- Clamp size and timeout to safe values
+    if size_mb < 5 then size_mb = 5 end
+    if size_mb > 200 then size_mb = 200 end
+    if timeout_s < 5 then timeout_s = 5 end
+    if timeout_s > 60 then timeout_s = 60 end
+
+    -- Get interface IP and device for binding
+    local status_json = sys.exec("ifstatus " .. safe_iface .. " 2>/dev/null")
+    local source_ip = nil
+    local l3_device = nil
+
+    if status_json and status_json ~= "" then
+        local status = json.parse(status_json)
+        if status then
+            l3_device = status.l3_device or status.device
+            if status["ipv4-address"] and status["ipv4-address"][1] then
+                source_ip = status["ipv4-address"][1].address
+            end
+        end
+    end
+
+    if not source_ip and not l3_device then
+        http.write(json.stringify({ok = false, error = "Interface has no IPv4 address or device"}))
+        return
+    end
+
+    -- Prefer source IP, fallback to device
+    local bind_arg = source_ip or l3_device
+
+    -- Generate job ID and file path
+    local job_id = safe_iface .. "_" .. os.time()
+    local job_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".json"
+    local bytes = size_mb * 1024 * 1024
+
+    -- Build curl command
+    local curl_cmd
+    if direction == "download" then
+        curl_cmd = string.format(
+            [[curl -4 -L --max-time %d --interface '%s' -o /dev/null -s -w '{"speed":%%{speed_download},"time":%%{time_total},"size":%%{size_download}}' 'https://speed.cloudflare.com/__down?bytes=%d']],
+            timeout_s, bind_arg, bytes
+        )
+    else
+        -- Upload test using dd to generate data
+        curl_cmd = string.format(
+            [[dd if=/dev/zero bs=1M count=%d 2>/dev/null | curl -4 -L --max-time %d --interface '%s' -X POST -o /dev/null -s -w '{"speed":%%{speed_upload},"time":%%{time_total},"size":%%{size_upload}}' --data-binary @- 'https://speed.cloudflare.com/__up']],
+            size_mb, timeout_s, bind_arg
+        )
+    end
+
+    -- Wrapper script that writes status to job file
+    local wrapper = string.format([[
+        echo '{"state":"running","ifname":"%s","direction":"%s","started_at":'$(date +%%s)'}' > %s
+        RESULT=$(%s 2>&1)
+        if echo "$RESULT" | grep -q '"speed"'; then
+            SPEED=$(echo "$RESULT" | sed 's/.*"speed":\([0-9.]*\).*/\1/')
+            TIME=$(echo "$RESULT" | sed 's/.*"time":\([0-9.]*\).*/\1/')
+            SIZE=$(echo "$RESULT" | sed 's/.*"size":\([0-9.]*\).*/\1/')
+            MBPS=$(awk "BEGIN {printf \"%%.2f\", $SPEED * 8 / 1000000}")
+            echo '{"state":"done","ifname":"%s","direction":"%s","mbps":'$MBPS',"bytes":'$SIZE',"seconds":'$TIME',"timestamp":'$(date +%%s)'}' > %s
+        else
+            ERRMSG=$(echo "$RESULT" | head -c 200 | tr '"' "'" | tr '\n' ' ')
+            echo '{"state":"error","ifname":"%s","direction":"%s","error":"'"$ERRMSG"'","timestamp":'$(date +%%s)'}' > %s
+        fi
+    ]], safe_iface, direction, job_file, curl_cmd, safe_iface, direction, job_file, safe_iface, direction, job_file)
+
+    -- Run in background
+    sys.exec("(" .. wrapper .. ") >/dev/null 2>&1 &")
+
+    http.write(json.stringify({
+        ok = true,
+        job_id = job_id,
+        started_at = os.time()
+    }))
+end
+
+-- Speed Test Status endpoint - returns the status of a speed test job
+function action_speedtest_status()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local job_id = http.formvalue("job_id")
+    if not job_id or not job_id:match("^[a-zA-Z0-9_%-]+$") then
+        http.write(json.stringify({ok = false, error = "Invalid job_id"}))
+        return
+    end
+
+    local job_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".json"
+    local content = fs.readfile(job_file)
+
+    if not content or content == "" then
+        http.write(json.stringify({ok = false, error = "Job not found"}))
+        return
+    end
+
+    local data = json.parse(content)
+    if data then
+        data.ok = true
+        http.write(json.stringify(data))
+    else
+        http.write(json.stringify({ok = false, error = "Invalid job data"}))
     end
 end

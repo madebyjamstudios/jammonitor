@@ -54,6 +54,11 @@ var JamMonitor = (function() {
     var pendingMeta = {};           // {mac: {alias, type}} - pending name/type changes
     var pendingReservations = {};   // {mac: {ip, name, action: 'add'|'update'|'remove'}}
 
+    // Speed test state
+    var speedTestSize = 10;          // Default 10MB
+    var speedTestResults = {};       // {wan1: {download: {...}, upload: {...}}, ...}
+    var speedTestRunning = {};       // {wan1_download: job_id, ...}
+
     // Check if interface is a WAN or VPN (for bandwidth tracking)
     // OMR naming: lan1/2/3/4 are WANs, sfp-lan is SFP WAN, tun0 is VPN tunnel
     // Note: "wan" and "sfp-wan" are actually LAN ports in OMR, not WANs
@@ -226,7 +231,7 @@ var JamMonitor = (function() {
         else if (view === 'clients') updateClients();
         else if (view === 'wifi-aps') updateWifiAps();
         else if (view === 'omr-status') loadOmrStatus();
-        else if (view === 'diagnostics') loadStorageStatus();
+        else if (view === 'diagnostics') { loadStorageStatus(); populateSpeedTestWans(); }
         else if (view.startsWith('bw-')) updateBandwidth(view);
     }
 
@@ -3407,6 +3412,220 @@ var JamMonitor = (function() {
         });
     }
 
+    // === SPEED TEST FUNCTIONS ===
+
+    function setSpeedTestSize(size, btn) {
+        speedTestSize = size;
+        // Update button states within the speed test card
+        var card = btn.closest('div[style*="border:2px solid #27ae60"]');
+        if (card) {
+            card.querySelectorAll('.jm-quick-range').forEach(function(b) {
+                b.classList.remove('active');
+            });
+        }
+        btn.classList.add('active');
+    }
+
+    function populateSpeedTestWans() {
+        var container = document.getElementById('speedtest-wans');
+        if (!container) return;
+
+        // Get WAN list from wan_policy endpoint
+        api('wan_policy').then(function(data) {
+            if (!data || !data.interfaces) {
+                container.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:20px;">Failed to load WAN interfaces</div>';
+                return;
+            }
+
+            var html = '';
+            data.interfaces.forEach(function(wan) {
+                // Only include WAN interfaces
+                if (!wan.name.match(/^wan/i)) return;
+
+                var lastDown = speedTestResults[wan.name] && speedTestResults[wan.name].download;
+                var lastUp = speedTestResults[wan.name] && speedTestResults[wan.name].upload;
+
+                var downStatus = lastDown ?
+                    '<span class="result">' + lastDown.mbps.toFixed(1) + ' Mbps</span>' :
+                    '<span>--</span>';
+                var upStatus = lastUp ?
+                    '<span class="result">' + lastUp.mbps.toFixed(1) + ' Mbps</span>' :
+                    '<span>--</span>';
+
+                var statusStyle = wan.up ? '' : 'opacity:0.5;';
+                var disabled = wan.up ? '' : 'disabled';
+                var ipDisplay = wan.ip || (wan.up ? 'Getting IP...' : 'No IP');
+
+                html += '<div class="speedtest-row" style="' + statusStyle + '" data-wan="' + escapeHtml(wan.name) + '">';
+                html += '<span class="wan-name">' + escapeHtml(wan.name) + '</span>';
+                html += '<span class="wan-ip">' + escapeHtml(ipDisplay) + '</span>';
+                html += '<div class="test-buttons">';
+                html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; Download</button>';
+                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + disabled + '>&#8593; Upload</button>';
+                html += '</div>';
+                html += '<div class="status" id="speedtest-status-' + escapeHtml(wan.name) + '">';
+                html += '<div>&#8595; ' + downStatus + '</div>';
+                html += '<div>&#8593; ' + upStatus + '</div>';
+                html += '</div>';
+                html += '</div>';
+            });
+
+            container.innerHTML = html || '<div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;">No WAN interfaces found</div>';
+        }).catch(function(err) {
+            console.error('populateSpeedTestWans error:', err);
+            container.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:20px;">Error loading WANs: ' + err.message + '</div>';
+        });
+    }
+
+    function runSpeedTest(ifname, direction) {
+        var key = ifname + '_' + direction;
+        if (speedTestRunning[key]) return; // Already running
+
+        // Disable buttons for this WAN
+        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        if (row) {
+            row.querySelectorAll('.test-btn').forEach(function(btn) {
+                btn.disabled = true;
+            });
+        }
+
+        // Show spinner
+        var statusEl = document.getElementById('speedtest-status-' + ifname);
+        var arrow = direction === 'download' ? '&#8595;' : '&#8593;';
+        var originalStatus = statusEl ? statusEl.innerHTML : '';
+        if (statusEl) {
+            statusEl.innerHTML = '<div>' + arrow + ' <span class="speedtest-spinner"></span> Testing...</div>';
+        }
+
+        // Calculate timeout based on size
+        var timeout = speedTestSize <= 10 ? 15 : (speedTestSize <= 25 ? 30 : 60);
+
+        // Start test
+        var url = window.location.pathname + '/speedtest_start?ifname=' + encodeURIComponent(ifname) +
+            '&direction=' + encodeURIComponent(direction) +
+            '&size_mb=' + speedTestSize +
+            '&timeout_s=' + timeout;
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.ok) {
+                    showSpeedTestError(data.error, data.install_hint);
+                    restoreSpeedTestRow(ifname, originalStatus);
+                    return;
+                }
+
+                speedTestRunning[key] = data.job_id;
+                pollSpeedTestStatus(data.job_id, ifname, direction, originalStatus);
+            })
+            .catch(function(err) {
+                showSpeedTestError('Request failed: ' + err.message);
+                restoreSpeedTestRow(ifname, originalStatus);
+            });
+    }
+
+    function pollSpeedTestStatus(job_id, ifname, direction, originalStatus) {
+        var key = ifname + '_' + direction;
+        var url = window.location.pathname + '/speedtest_status?job_id=' + encodeURIComponent(job_id);
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.ok) {
+                    showSpeedTestError(data.error);
+                    finishSpeedTest(ifname, direction, null);
+                    return;
+                }
+
+                if (data.state === 'running') {
+                    // Continue polling
+                    setTimeout(function() {
+                        pollSpeedTestStatus(job_id, ifname, direction, originalStatus);
+                    }, 1000);
+                    return;
+                }
+
+                if (data.state === 'done') {
+                    // Store result
+                    if (!speedTestResults[ifname]) speedTestResults[ifname] = {};
+                    speedTestResults[ifname][direction] = {
+                        mbps: data.mbps,
+                        bytes: data.bytes,
+                        seconds: data.seconds,
+                        timestamp: data.timestamp
+                    };
+                    finishSpeedTest(ifname, direction, data);
+                } else if (data.state === 'error') {
+                    showSpeedTestError(data.error);
+                    finishSpeedTest(ifname, direction, null);
+                }
+            })
+            .catch(function(err) {
+                showSpeedTestError('Poll failed: ' + err.message);
+                finishSpeedTest(ifname, direction, null);
+            });
+    }
+
+    function finishSpeedTest(ifname, direction, result) {
+        var key = ifname + '_' + direction;
+        delete speedTestRunning[key];
+
+        // Re-enable buttons
+        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        if (row) {
+            row.querySelectorAll('.test-btn').forEach(function(btn) {
+                btn.disabled = false;
+            });
+        }
+
+        // Update status display
+        var statusEl = document.getElementById('speedtest-status-' + ifname);
+        if (!statusEl) return;
+
+        var lastDown = speedTestResults[ifname] && speedTestResults[ifname].download;
+        var lastUp = speedTestResults[ifname] && speedTestResults[ifname].upload;
+
+        var downText = lastDown ?
+            '<span class="result">' + lastDown.mbps.toFixed(1) + ' Mbps</span> <span style="font-size:10px;color:#95a5a6;">(' + (lastDown.bytes/1024/1024).toFixed(0) + 'MB, ' + lastDown.seconds.toFixed(1) + 's)</span>' :
+            '<span>--</span>';
+        var upText = lastUp ?
+            '<span class="result">' + lastUp.mbps.toFixed(1) + ' Mbps</span> <span style="font-size:10px;color:#95a5a6;">(' + (lastUp.bytes/1024/1024).toFixed(0) + 'MB, ' + lastUp.seconds.toFixed(1) + 's)</span>' :
+            '<span>--</span>';
+
+        statusEl.innerHTML = '<div>&#8595; ' + downText + '</div><div>&#8593; ' + upText + '</div>';
+    }
+
+    function showSpeedTestError(message, installHint) {
+        var errorEl = document.getElementById('speedtest-error');
+        if (!errorEl) return;
+
+        var html = escapeHtml(message);
+        if (installHint) {
+            html += '<br><code style="background:#fee;padding:2px 6px;border-radius:4px;margin-top:8px;display:inline-block;">' + escapeHtml(installHint) + '</code>';
+        }
+
+        errorEl.innerHTML = html;
+        errorEl.style.display = 'block';
+
+        // Auto-hide after 10 seconds
+        setTimeout(function() {
+            errorEl.style.display = 'none';
+        }, 10000);
+    }
+
+    function restoreSpeedTestRow(ifname, originalStatus) {
+        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        if (row) {
+            row.querySelectorAll('.test-btn').forEach(function(btn) {
+                btn.disabled = false;
+            });
+        }
+        var statusEl = document.getElementById('speedtest-status-' + ifname);
+        if (statusEl && originalStatus) {
+            statusEl.innerHTML = originalStatus;
+        }
+    }
+
     function escapeHtml(str) {
         var div = document.createElement('div');
         div.textContent = str || '';
@@ -3457,6 +3676,8 @@ var JamMonitor = (function() {
         saveApList: saveApList,
         toggleBypass: toggleBypass,
         saveClientChanges: saveClientChanges,
-        resetClientChanges: resetClientChanges
+        resetClientChanges: resetClientChanges,
+        setSpeedTestSize: setSpeedTestSize,
+        runSpeedTest: runSpeedTest
     };
 })();

@@ -220,6 +220,22 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .jm-quick-range:hover { border-color: #3498db; color: #3498db; }
 .jm-quick-range.active { background: #3498db; color: #fff; border-color: #3498db; }
 
+/* Speed test rows */
+.speedtest-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; }
+.speedtest-row .wan-name { font-weight: 600; color: #2c3e50; min-width: 80px; }
+.speedtest-row .wan-ip { font-family: monospace; font-size: 11px; color: #7f8c8d; min-width: 110px; }
+.speedtest-row .test-buttons { display: flex; gap: 6px; }
+.speedtest-row .test-btn { padding: 6px 14px; font-size: 11px; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+.speedtest-row .test-btn.download { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }
+.speedtest-row .test-btn.download:hover:not(:disabled) { background: linear-gradient(135deg, #2980b9, #2471a3); }
+.speedtest-row .test-btn.upload { background: linear-gradient(135deg, #9b59b6, #8e44ad); color: #fff; }
+.speedtest-row .test-btn.upload:hover:not(:disabled) { background: linear-gradient(135deg, #8e44ad, #7d3c98); }
+.speedtest-row .test-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.speedtest-row .status { flex: 1; text-align: right; font-size: 12px; color: #7f8c8d; }
+.speedtest-row .result { font-weight: 600; color: #27ae60; }
+.speedtest-row .result.error { color: #e74c3c; }
+.speedtest-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #e0e0e0; border-top-color: #3498db; border-radius: 50%; animation: spin 1s linear infinite; }
+
 /* Bandwidth controls */
 .jm-bw-controls { background: #fff; border-radius: 8px; padding: 12px 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
 .jm-bw-controls label { font-size: 13px; color: #7f8c8d; font-weight: 600; }
@@ -927,6 +943,34 @@ table.jm-table tr:hover { background: #e8f4fc; }
                         Download Historical Data
                     </button>
                     <div id="history-status" style="margin-top:12px;text-align:center;"></div>
+                </div>
+
+                <!-- SPEED TEST -->
+                <div style="background:linear-gradient(135deg, #f0fff4 0%, #fff 100%);border:2px solid #27ae60;border-radius:12px;padding:28px;display:flex;flex-direction:column;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                        <span style="font-size:36px;">&#9889;</span>
+                        <div>
+                            <h3 style="margin:0;color:#27ae60;font-size:20px;">Per-WAN Speed Test</h3>
+                            <span style="color:#2ecc71;font-size:13px;font-weight:500;">Test individual WAN throughput (not bonded).</span>
+                        </div>
+                    </div>
+
+                    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:20px;">
+                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;">Test size:</div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="jm-quick-range active" data-size="10" onclick="JamMonitor.setSpeedTestSize(10, this)">Quick 10MB</button>
+                            <button class="jm-quick-range" data-size="25" onclick="JamMonitor.setSpeedTestSize(25, this)">Normal 25MB</button>
+                            <button class="jm-quick-range" data-size="100" onclick="JamMonitor.setSpeedTestSize(100, this)">Heavy 100MB</button>
+                        </div>
+                    </div>
+
+                    <!-- WAN rows container -->
+                    <div id="speedtest-wans" style="display:flex;flex-direction:column;gap:8px;flex:1;">
+                        <div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;">Loading WAN interfaces...</div>
+                    </div>
+
+                    <!-- Error message area -->
+                    <div id="speedtest-error" style="display:none;margin-top:12px;padding:12px;background:#fff5f5;border:1px solid #e74c3c;border-radius:8px;color:#c0392b;font-size:12px;"></div>
                 </div>
 
             </div>

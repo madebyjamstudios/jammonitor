@@ -2663,19 +2663,16 @@ function action_bypass()
             -- 3. Start omr-tracker
             sys.exec("/etc/init.d/omr-tracker start >/dev/null 2>&1")
 
-            -- 4. Reload firewall and network to restore all routing
-            sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
-            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
-
-            -- Wait for VPN to reconnect
-            sys.exec("sleep 5")
-
+            -- Send response BEFORE network reload (reload drops connection)
             http.write(json.stringify({
                 success = true,
                 bypass_enabled = false,
                 restored_count = restored_count,
                 message = "VPS bypass disabled - traffic now routed through VPS"
             }))
+
+            -- 4. Reload firewall and network in background (after response sent)
+            sys.exec("(sleep 1 && /etc/init.d/firewall reload && /etc/init.d/network reload) >/dev/null 2>&1 &")
         end
     else
         -- GET: Return current bypass status

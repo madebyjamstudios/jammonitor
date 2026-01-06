@@ -1510,10 +1510,9 @@ var JamMonitor = (function() {
         .catch(function(e) {
             bypassToggling = false;
             console.error('Bypass toggle error:', e);
-            // Network reload during bypass toggle can drop connection - reload to check actual state
-            setTimeout(function() {
-                loadWanPolicy(true);
-            }, 3000);
+            alert('Failed to toggle bypass. Please try again.');
+            document.getElementById('bypass-checkbox').checked = bypassEnabled;
+            updateBypassUI();
         });
     }
 

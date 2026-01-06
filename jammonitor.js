@@ -1037,6 +1037,8 @@ var JamMonitor = (function() {
             });
 
             var rows = '';
+
+            // LAN clients
             Object.keys(leases).sort(function(a, b) {
                 // Sort by IP numerically
                 var aParts = a.split('.').map(Number);
@@ -1054,6 +1056,31 @@ var JamMonitor = (function() {
                 rows += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(c.mac) + '</td>';
                 rows += '<td>' + rxStr + '</td><td>' + txStr + '</td><td>LAN</td></tr>';
             });
+
+            // Tailscale peers
+            if (data.tailscale) {
+                try {
+                    var ts = typeof data.tailscale === 'string' ? JSON.parse(data.tailscale) : data.tailscale;
+                    if (ts.Peer) {
+                        Object.keys(ts.Peer).forEach(function(key) {
+                            var peer = ts.Peer[key];
+                            var hostname = peer.HostName || peer.DNSName || 'Unknown';
+                            var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
+                            var online = peer.Online ? '<span style="color:#27ae60;">Online</span>' : '<span style="color:#999;">Offline</span>';
+                            var os = peer.OS || '';
+                            rows += '<tr style="background:#f0f9ff;">';
+                            rows += '<td>' + escapeHtml(hostname) + '</td>';
+                            rows += '<td>' + escapeHtml(ip) + '</td>';
+                            rows += '<td style="font-size:12px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';
+                            rows += '<td colspan="2">' + online + '</td>';
+                            rows += '<td style="color:#3498db;">Tailscale</td></tr>';
+                        });
+                    }
+                } catch (e) {
+                    console.error('Failed to parse Tailscale status:', e);
+                }
+            }
+
             tbody.innerHTML = rows || '<tr><td colspan="6" style="text-align:center;color:#999;">No clients found</td></tr>';
         });
     }
@@ -2843,9 +2870,37 @@ var JamMonitor = (function() {
                 return;
             }
 
-            var dbSize = data.database_size ? (data.database_size / 1024 / 1024).toFixed(1) + ' MB' : 'Unknown';
-            var freeSpace = data.free_space ? (data.free_space / 1024 / 1024 / 1024).toFixed(1) + ' GB free' : '';
-            infoDiv.innerHTML = '<span style="color:#27ae60;">Database: ' + dbSize + '</span>' + (freeSpace ? ' &middot; ' + freeSpace : '');
+            var parts = [];
+
+            // Entry count
+            if (data.entry_count) {
+                parts.push(data.entry_count.toLocaleString() + ' entries');
+            }
+
+            // Data range (oldest to newest)
+            if (data.oldest_ts && data.newest_ts) {
+                var oldest = new Date(data.oldest_ts * 1000);
+                var newest = new Date(data.newest_ts * 1000);
+                parts.push(oldest.toLocaleDateString() + ' - ' + newest.toLocaleDateString());
+            }
+
+            // Database size
+            if (data.database_size) {
+                parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB');
+            }
+
+            // Collector status
+            var collectorHtml = data.collector_running
+                ? '<span style="color:#27ae60;">Collector running</span>'
+                : '<span style="color:#e74c3c;">Collector stopped</span>';
+            parts.push(collectorHtml);
+
+            // Anomalies warning (last 24h)
+            if (data.recent_anomalies > 0) {
+                parts.push('<span style="color:#f39c12;">' + data.recent_anomalies + ' anomalies (24h)</span>');
+            }
+
+            infoDiv.innerHTML = parts.join(' &middot; ');
         });
     }
 

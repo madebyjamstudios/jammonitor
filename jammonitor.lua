@@ -297,6 +297,12 @@ function action_clients()
     -- Conntrack (limited to first 500 entries for performance)
     result.conntrack = sys.exec("conntrack -L 2>/dev/null | head -500") or ""
 
+    -- Tailscale peers (if tailscale is installed)
+    local ts_status = sys.exec("tailscale status --json 2>/dev/null") or ""
+    if ts_status ~= "" then
+        result.tailscale = ts_status
+    end
+
     http.write(json.stringify(result))
 end
 
@@ -366,11 +372,17 @@ function action_storage_status()
 
     http.prepare_content("application/json")
 
+    local db_path = "/mnt/data/jammonitor/history.db"
+
     local result = {
         mounted = false,
         collector_running = false,
         database_exists = false,
-        free_space = nil
+        free_space = nil,
+        entry_count = 0,
+        oldest_ts = nil,
+        newest_ts = nil,
+        recent_anomalies = 0
     }
 
     -- Check if /mnt/data is mounted
@@ -382,10 +394,29 @@ function action_storage_status()
     result.collector_running = pgrep:match("%d+") ~= nil
 
     -- Check if database exists
-    local db_stat = fs.stat("/mnt/data/jammonitor/history.db")
+    local db_stat = fs.stat(db_path)
     result.database_exists = db_stat ~= nil
     if db_stat then
         result.database_size = db_stat.size
+
+        -- Get entry count and date range
+        local count = sys.exec("sqlite3 '" .. db_path .. "' 'SELECT COUNT(*) FROM metrics' 2>/dev/null") or ""
+        result.entry_count = tonumber(count:match("%d+")) or 0
+
+        local oldest = sys.exec("sqlite3 '" .. db_path .. "' 'SELECT MIN(ts) FROM metrics' 2>/dev/null") or ""
+        result.oldest_ts = tonumber(oldest:match("%d+"))
+
+        local newest = sys.exec("sqlite3 '" .. db_path .. "' 'SELECT MAX(ts) FROM metrics' 2>/dev/null") or ""
+        result.newest_ts = tonumber(newest:match("%d+"))
+
+        -- Count recent anomalies (last 24h): packet loss (-1 ping) or interface down
+        local cutoff = os.time() - 86400
+        local anomaly_query = string.format(
+            "SELECT COUNT(*) FROM metrics WHERE ts > %d AND (wan_pings LIKE '%%:-1%%' OR wan_pings LIKE '%%:null%%' OR iface_status LIKE '%%wan1\":0%%')",
+            cutoff
+        )
+        local anomalies = sys.exec("sqlite3 '" .. db_path .. "' \"" .. anomaly_query .. "\" 2>/dev/null") or ""
+        result.recent_anomalies = tonumber(anomalies:match("%d+")) or 0
     end
 
     -- Get free space

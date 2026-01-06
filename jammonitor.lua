@@ -19,6 +19,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_advanced"}, call("action_wan_advanced"), nil)
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
     entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
+    entry({"admin", "status", "jammonitor", "history_clients"}, call("action_history_clients"), nil)
     entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
     entry({"admin", "status", "jammonitor", "storage_status"}, call("action_storage_status"), nil)
     -- Client metadata and DHCP reservations
@@ -2622,6 +2623,104 @@ function action_history()
     http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
     http.prepare_content("application/json")
     http.write(json.stringify(bundle))
+end
+
+-- Per-client traffic for a specific time bucket (hourly/daily/monthly popup)
+function action_history_clients()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    local range = http.formvalue("range") or "hourly"
+    local start_ts = tonumber(http.formvalue("start")) or 0
+
+    -- Validate range
+    if range ~= "hourly" and range ~= "daily" and range ~= "monthly" then
+        range = "hourly"
+    end
+
+    -- Calculate time range based on bucket type
+    local end_ts
+    if range == "hourly" then
+        end_ts = start_ts + 3600
+    elseif range == "daily" then
+        end_ts = start_ts + 86400
+    else -- monthly (approximate 31 days)
+        end_ts = start_ts + 31 * 86400
+    end
+
+    local db_path = "/mnt/data/jammonitor/history.db"
+    local devices = {}
+
+    -- Check if database exists
+    if fs.stat(db_path) then
+        -- Query both raw and hourly rollup tables, union and aggregate
+        -- For raw: match ts in range
+        -- For hourly: match hour_ts in range (hourly buckets that overlap)
+        local query = string.format([[
+            SELECT ip, mac, hostname, SUM(rx_bytes) as rx, SUM(tx_bytes) as tx
+            FROM (
+                SELECT ip, mac, hostname, rx_bytes, tx_bytes FROM client_traffic
+                WHERE ts >= %d AND ts < %d
+                UNION ALL
+                SELECT ip, mac, hostname, rx_bytes, tx_bytes FROM client_traffic_hourly
+                WHERE hour_ts >= %d AND hour_ts < %d
+            )
+            GROUP BY ip
+            ORDER BY (rx + tx) DESC
+            LIMIT 100
+        ]], start_ts, end_ts, start_ts, end_ts)
+
+        -- Escape for shell
+        query = query:gsub("\n", " ")
+        local result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+
+        if result and result ~= "" then
+            -- Build current DHCP hostname map for enrichment
+            local dhcp_map = {}
+            local dhcp_leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
+            if dhcp_leases and dhcp_leases ~= "" then
+                for line in dhcp_leases:gmatch("[^\n]+") do
+                    local mac, ip, host = line:match("^%S+%s+(%S+)%s+(%S+)%s+(%S+)")
+                    if ip and host and host ~= "*" then
+                        dhcp_map[ip] = host
+                    end
+                end
+            end
+
+            for line in result:gmatch("[^\n]+") do
+                local ip, mac, hostname, rx, tx = line:match("([^|]+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)")
+                if ip then
+                    -- Use current DHCP hostname if stored one is stale
+                    local display_name = hostname
+                    if (not display_name or display_name == "" or display_name == "*") and dhcp_map[ip] then
+                        display_name = dhcp_map[ip]
+                    end
+                    if not display_name or display_name == "" then
+                        display_name = "*"
+                    end
+
+                    table.insert(devices, {
+                        ip = ip,
+                        mac = mac or "unknown",
+                        hostname = display_name,
+                        rx = tonumber(rx) or 0,
+                        tx = tonumber(tx) or 0
+                    })
+                end
+            end
+        end
+    end
+
+    http.prepare_content("application/json")
+    http.write(json.stringify({
+        ok = true,
+        range = range,
+        start = start_ts,
+        ["end"] = end_ts,
+        devices = devices
+    }))
 end
 
 -- VPS Bypass endpoint - toggle between bonded and direct WAN mode

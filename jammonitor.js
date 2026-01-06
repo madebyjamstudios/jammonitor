@@ -2891,17 +2891,25 @@ var JamMonitor = (function() {
 
                     if (trafficData) {
                         trafficData.forEach(function(entry) {
-                            var key;
+                            var key, start_ts;
                             if (period === 'hourly') {
                                 key = String(entry.time.hour).padStart(2, '0') + ':00';
+                                // Calculate start timestamp for this hour (today)
+                                var d = new Date();
+                                d.setHours(entry.time.hour, 0, 0, 0);
+                                start_ts = Math.floor(d.getTime() / 1000);
                             } else if (period === 'daily') {
                                 key = entry.date.month + '/' + entry.date.day;
+                                var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, 0, 0, 0);
+                                start_ts = Math.floor(d.getTime() / 1000);
                             } else {
                                 key = entry.date.year + '-' + String(entry.date.month).padStart(2, '0');
+                                var d = new Date(entry.date.year, entry.date.month - 1, 1, 0, 0, 0);
+                                start_ts = Math.floor(d.getTime() / 1000);
                             }
 
                             if (!aggregated[key]) {
-                                aggregated[key] = { label: key, rx: 0, tx: 0 };
+                                aggregated[key] = { label: key, rx: 0, tx: 0, start_ts: start_ts };
                             }
                             aggregated[key].rx += entry.rx || 0;
                             aggregated[key].tx += entry.tx || 0;
@@ -2918,8 +2926,8 @@ var JamMonitor = (function() {
 
                 var chartId = 'chart-' + period;
 
-                drawBarChart(chartId, traffic);
-                updateVnstatTable(tbodyId, traffic);
+                drawBarChart(chartId, traffic, period);
+                updateVnstatTable(tbodyId, traffic, period);
                 hideChartLoading(period);
             } catch (e) {
                 var tbody = document.getElementById(tbodyId);
@@ -3064,7 +3072,7 @@ var JamMonitor = (function() {
         ctx.fillText('Total', w - 115, 50);
     }
 
-    function drawBarChart(canvasId, data) {
+    function drawBarChart(canvasId, data, period) {
         var canvas = document.getElementById(canvasId);
         if (!canvas) return;
 
@@ -3081,11 +3089,16 @@ var JamMonitor = (function() {
 
         ctx.clearRect(0, 0, w, h);
 
+        // Store bar positions for click detection
+        var barPositions = [];
+
         if (data.length === 0) {
             ctx.fillStyle = '#999';
             ctx.font = '14px sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText('No data available', w/2, h/2);
+            canvas.onclick = null;
+            canvas.style.cursor = 'default';
             return;
         }
 
@@ -3122,6 +3135,14 @@ var JamMonitor = (function() {
             var rxH = (d.rx / max) * ch;
             var txH = (d.tx / max) * ch;
 
+            // Store bar position for click detection
+            barPositions.push({
+                x: x,
+                width: barW,
+                start_ts: d.start_ts,
+                label: d.label
+            });
+
             // Download bar (bottom)
             ctx.fillStyle = '#27ae60';
             ctx.fillRect(x, pad.top + ch - rxH, barW, rxH);
@@ -3156,6 +3177,21 @@ var JamMonitor = (function() {
         ctx.fillRect(w - 130, 40, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.fillText('Total (stacked)', w - 115, 50);
+
+        // Add click handler for bar click detection
+        canvas.style.cursor = 'pointer';
+        canvas.onclick = function(e) {
+            var canvasRect = canvas.getBoundingClientRect();
+            var clickX = e.clientX - canvasRect.left;
+
+            for (var i = 0; i < barPositions.length; i++) {
+                var bar = barPositions[i];
+                if (clickX >= bar.x && clickX <= bar.x + bar.width && bar.start_ts) {
+                    showBandwidthBucketPopup(period, bar.start_ts, bar.label);
+                    break;
+                }
+            }
+        };
     }
 
     function updateBwTable(tbodyId, data) {
@@ -3172,17 +3208,29 @@ var JamMonitor = (function() {
         tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;">No data</td></tr>';
     }
 
-    function updateVnstatTable(tbodyId, data) {
+    function updateVnstatTable(tbodyId, data, period) {
         var tbody = document.getElementById(tbodyId);
         if (!tbody) return;
         var html = '';
         data.slice().reverse().forEach(function(d) {
-            html += '<tr><td>' + d.label + '</td>';
+            var rowAttrs = d.start_ts ? ' class="bw-bucket-row" data-range="' + period + '" data-start="' + d.start_ts + '"' : '';
+            html += '<tr' + rowAttrs + '><td>' + d.label + '</td>';
             html += '<td>' + formatBytesScale(d.rx) + '</td>';
             html += '<td>' + formatBytesScale(d.tx) + '</td>';
             html += '<td>' + formatBytesScale(d.rx + d.tx) + '</td></tr>';
         });
         tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;">No data</td></tr>';
+
+        // Add click handler for clickable rows
+        tbody.onclick = function(e) {
+            var row = e.target.closest('.bw-bucket-row');
+            if (row && row.dataset.start) {
+                var range = row.dataset.range;
+                var start = parseInt(row.dataset.start, 10);
+                var label = row.querySelector('td').textContent;
+                showBandwidthBucketPopup(range, start, label);
+            }
+        };
     }
 
     function setScale(s) {
@@ -3672,6 +3720,87 @@ var JamMonitor = (function() {
         ].join('.');
     }
 
+    // === BANDWIDTH BUCKET POPUP ===
+
+    function showBandwidthBucketPopup(range, startTs, labelText) {
+        // Remove existing popup if any
+        var existing = document.getElementById('bw-bucket-popup-overlay');
+        if (existing) existing.remove();
+
+        // Create overlay
+        var overlay = document.createElement('div');
+        overlay.id = 'bw-bucket-popup-overlay';
+        overlay.className = 'jm-popup-overlay';
+
+        // Create popup
+        var popup = document.createElement('div');
+        popup.className = 'jm-popup bw-bucket-popup';
+        popup.innerHTML = '<div class="jm-popup-header">' +
+            '<span>Device Breakdown - ' + escapeHtml(labelText) + '</span>' +
+            '<button class="jm-popup-close" onclick="JamMonitor.closeBwBucketPopup()">&times;</button>' +
+            '</div>' +
+            '<div class="jm-popup-body">' +
+            '<div class="bw-bucket-loading"><div class="chart-spinner"></div><div>Loading device data...</div></div>' +
+            '</div>' +
+            '<div class="jm-popup-footer">' +
+            '<button class="jm-btn" onclick="JamMonitor.closeBwBucketPopup()">Close</button>' +
+            '</div>';
+
+        overlay.appendChild(popup);
+        document.body.appendChild(overlay);
+
+        // Click outside to close
+        overlay.onclick = function(e) {
+            if (e.target === overlay) closeBwBucketPopup();
+        };
+
+        // Prevent popup clicks from closing
+        popup.onclick = function(e) {
+            e.stopPropagation();
+        };
+
+        // Fetch data
+        api('history_clients', { range: range, start: startTs }).then(function(data) {
+            var body = popup.querySelector('.jm-popup-body');
+
+            if (!data || !data.ok || !data.devices || data.devices.length === 0) {
+                body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">No device data for this period.<br><small style="color:#bdc3c7;">Data collection started recently or no traffic recorded.</small></div>';
+                return;
+            }
+
+            // Build table
+            var html = '<table class="bw-bucket-table">';
+            html += '<thead><tr><th>IP Address</th><th>Name</th><th>Source</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead>';
+            html += '<tbody>';
+
+            data.devices.forEach(function(dev) {
+                var name = dev.hostname && dev.hostname !== '*' ? dev.hostname : '(unknown)';
+                var source = dev.mac && dev.mac !== 'unknown' ? 'LAN' : 'Unknown';
+                var total = (dev.rx || 0) + (dev.tx || 0);
+
+                html += '<tr>';
+                html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
+                html += '<td>' + escapeHtml(name) + '</td>';
+                html += '<td>' + source + '</td>';
+                html += '<td>' + formatBytesCompact(dev.rx || 0) + '</td>';
+                html += '<td>' + formatBytesCompact(dev.tx || 0) + '</td>';
+                html += '<td style="font-weight:600;">' + formatBytesCompact(total) + '</td>';
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            body.innerHTML = html;
+        }).catch(function(err) {
+            var body = popup.querySelector('.jm-popup-body');
+            body.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:40px;">Error loading device data</div>';
+        });
+    }
+
+    function closeBwBucketPopup() {
+        var overlay = document.getElementById('bw-bucket-popup-overlay');
+        if (overlay) overlay.remove();
+    }
+
     document.addEventListener('DOMContentLoaded', init);
 
     return {
@@ -3704,6 +3833,7 @@ var JamMonitor = (function() {
         saveClientChanges: saveClientChanges,
         resetClientChanges: resetClientChanges,
         setSpeedTestSize: setSpeedTestSize,
-        runSpeedTest: runSpeedTest
+        runSpeedTest: runSpeedTest,
+        closeBwBucketPopup: closeBwBucketPopup
     };
 })();

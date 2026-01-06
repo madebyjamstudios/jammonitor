@@ -24,8 +24,11 @@ trap "rm -f '$PIDFILE'" EXIT INT TERM
 
 DB_PATH="/mnt/data/jammonitor/history.db"
 LOG_PATH="/mnt/data/jammonitor/syslog.txt"
+CLIENT_SNAPSHOT="/tmp/jammonitor_client_last"
 RETENTION_DAYS=30
-MAX_LOG_SIZE=104857600  # 100MB max syslog size
+RETENTION_DAYS_RAW=30      # Keep raw per-client data for 30 days
+DISK_THRESHOLD=80          # Start cleanup when disk usage exceeds this %
+MAX_LOG_SIZE=104857600     # 100MB max syslog size
 WAN_CONFIG="/etc/jammonitor_wans"
 
 # Ensure data directory exists
@@ -69,8 +72,28 @@ init_db() {
             conntrack_count INTEGER,
             dns TEXT
         );
+        CREATE TABLE IF NOT EXISTS client_traffic (
+            ts INTEGER,
+            ip TEXT,
+            mac TEXT,
+            hostname TEXT,
+            rx_bytes INTEGER,
+            tx_bytes INTEGER,
+            PRIMARY KEY (ts, ip)
+        );
+        CREATE TABLE IF NOT EXISTS client_traffic_hourly (
+            hour_ts INTEGER,
+            ip TEXT,
+            mac TEXT,
+            hostname TEXT,
+            rx_bytes INTEGER,
+            tx_bytes INTEGER,
+            PRIMARY KEY (hour_ts, ip)
+        );
         CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
         CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+        CREATE INDEX IF NOT EXISTS idx_client_ts ON client_traffic(ts);
+        CREATE INDEX IF NOT EXISTS idx_client_hourly_ts ON client_traffic_hourly(hour_ts);
     "
 }
 
@@ -143,6 +166,117 @@ collect_slow() {
     sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP_ESC', '$VPN_ESC', '$ROUTES_ESC', $CT_COUNT, '$DNS_ESC');" 2>/dev/null
 }
 
+# Collect per-client traffic (every minute)
+# Tracks delta bytes per IP since last sample
+collect_client_traffic() {
+    TS=$(date +%s)
+    CURRENT_FILE="${CLIENT_SNAPSHOT}.current"
+    LAST_FILE="${CLIENT_SNAPSHOT}.last"
+
+    # Build MAC->hostname lookup from DHCP leases
+    # Format: timestamp mac ip hostname clientid
+    HOSTNAME_MAP=""
+    if [ -f /tmp/dhcp.leases ]; then
+        while read -r exp mac ip host rest; do
+            [ -n "$mac" ] && [ -n "$host" ] && [ "$host" != "*" ] && \
+                HOSTNAME_MAP="${HOSTNAME_MAP}${mac}=${host}\n"
+        done < /tmp/dhcp.leases
+    fi
+
+    # Build IP->MAC lookup from ARP table
+    MAC_MAP=""
+    while read -r ip type flags mac mask iface; do
+        [ "$ip" = "IP" ] && continue  # Skip header
+        [ -n "$ip" ] && [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] && \
+            MAC_MAP="${MAC_MAP}${ip}=${mac}\n"
+    done < /proc/net/arp
+
+    # Parse conntrack and aggregate bytes per source IP
+    # conntrack format: ... src=IP ... bytes=X ... bytes=Y ...
+    # First bytes is TX (outgoing), second is RX (incoming)
+    > "$CURRENT_FILE"
+    conntrack -L 2>/dev/null | head -1000 | while read -r line; do
+        # Extract source IP (local client)
+        src=$(echo "$line" | grep -oE 'src=[0-9.]+' | head -1 | cut -d= -f2)
+        [ -z "$src" ] && continue
+
+        # Skip non-local IPs (external sources)
+        case "$src" in
+            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) ;;
+            *) continue ;;
+        esac
+
+        # Extract bytes (first=TX, second=RX from client perspective)
+        bytes=$(echo "$line" | grep -oE 'bytes=[0-9]+' | cut -d= -f2 | tr '\n' ' ')
+        tx=$(echo "$bytes" | awk '{print $1}')
+        rx=$(echo "$bytes" | awk '{print $2}')
+        [ -z "$tx" ] && tx=0
+        [ -z "$rx" ] && rx=0
+
+        echo "${src} ${tx} ${rx}" >> "$CURRENT_FILE"
+    done
+
+    # Aggregate by IP (sum all entries for same IP)
+    AGGREGATED_FILE="${CLIENT_SNAPSHOT}.agg"
+    awk '{
+        ip=$1; tx=$2; rx=$3
+        total_tx[ip] += tx
+        total_rx[ip] += rx
+    } END {
+        for (ip in total_tx) {
+            print ip, total_tx[ip], total_rx[ip]
+        }
+    }' "$CURRENT_FILE" > "$AGGREGATED_FILE" 2>/dev/null
+
+    # Compare with last snapshot to get deltas
+    if [ -f "$LAST_FILE" ]; then
+        while read -r ip tx rx; do
+            [ -z "$ip" ] && continue
+
+            # Get previous values
+            prev=$(grep "^${ip} " "$LAST_FILE" 2>/dev/null | head -1)
+            if [ -n "$prev" ]; then
+                prev_tx=$(echo "$prev" | awk '{print $2}')
+                prev_rx=$(echo "$prev" | awk '{print $3}')
+            else
+                prev_tx=0
+                prev_rx=0
+            fi
+
+            # Calculate delta (handle counter reset)
+            delta_tx=$((tx - prev_tx))
+            delta_rx=$((rx - prev_rx))
+            [ $delta_tx -lt 0 ] && delta_tx=$tx
+            [ $delta_rx -lt 0 ] && delta_rx=$rx
+
+            # Skip if no traffic
+            [ $delta_tx -eq 0 ] && [ $delta_rx -eq 0 ] && continue
+
+            # Resolve MAC and hostname
+            mac=$(printf "$MAC_MAP" | grep "^${ip}=" | head -1 | cut -d= -f2)
+            [ -z "$mac" ] && mac="unknown"
+            hostname="*"
+            if [ "$mac" != "unknown" ]; then
+                hostname=$(printf "$HOSTNAME_MAP" | grep -i "^${mac}=" | head -1 | cut -d= -f2)
+                [ -z "$hostname" ] && hostname="*"
+            fi
+
+            # Escape for SQL
+            ip_esc=$(sql_escape "$ip")
+            mac_esc=$(sql_escape "$mac")
+            host_esc=$(sql_escape "$hostname")
+
+            # Insert into database
+            sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO client_traffic VALUES ($TS, '$ip_esc', '$mac_esc', '$host_esc', $delta_rx, $delta_tx);" 2>/dev/null
+
+        done < "$AGGREGATED_FILE"
+    fi
+
+    # Save current as last for next iteration
+    mv "$AGGREGATED_FILE" "$LAST_FILE" 2>/dev/null
+    rm -f "$CURRENT_FILE" 2>/dev/null
+}
+
 # Stream syslog (continuous append with rotation)
 stream_syslog() {
     # Rotate if too big
@@ -157,11 +291,63 @@ stream_syslog() {
     logread 2>/dev/null | tail -100 >> "$LOG_PATH"
 }
 
+# Rollup old per-client traffic to hourly summaries
+rollup_client_traffic() {
+    CUTOFF_RAW=$(($(date +%s) - RETENTION_DAYS_RAW * 86400))
+
+    # Check if there's data to roll up
+    COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM client_traffic WHERE ts < $CUTOFF_RAW;" 2>/dev/null)
+    [ -z "$COUNT" ] || [ "$COUNT" -eq 0 ] && return
+
+    logger -t jammonitor "Rolling up $COUNT old client_traffic entries to hourly"
+
+    # Aggregate into hourly buckets (use INSERT OR IGNORE + UPDATE to merge)
+    sqlite3 "$DB_PATH" "
+        INSERT OR REPLACE INTO client_traffic_hourly (hour_ts, ip, mac, hostname, rx_bytes, tx_bytes)
+        SELECT
+            (ts / 3600) * 3600 as hour_ts,
+            ip,
+            mac,
+            hostname,
+            COALESCE((SELECT rx_bytes FROM client_traffic_hourly WHERE hour_ts = (ts / 3600) * 3600 AND ip = client_traffic.ip), 0) + SUM(rx_bytes),
+            COALESCE((SELECT tx_bytes FROM client_traffic_hourly WHERE hour_ts = (ts / 3600) * 3600 AND ip = client_traffic.ip), 0) + SUM(tx_bytes)
+        FROM client_traffic
+        WHERE ts < $CUTOFF_RAW
+        GROUP BY (ts / 3600) * 3600, ip;
+
+        DELETE FROM client_traffic WHERE ts < $CUTOFF_RAW;
+    " 2>/dev/null
+}
+
+# Dynamic cleanup when disk usage exceeds threshold
+dynamic_cleanup() {
+    # Get disk usage percentage for /mnt/data
+    USAGE=$(df /mnt/data 2>/dev/null | awk 'NR==2 {gsub(/%/,""); print $5}')
+    [ -z "$USAGE" ] && return
+
+    if [ "$USAGE" -gt "$DISK_THRESHOLD" ]; then
+        # Delete oldest week of hourly rollups
+        OLDEST=$(sqlite3 "$DB_PATH" "SELECT MIN(hour_ts) FROM client_traffic_hourly;" 2>/dev/null)
+        [ -z "$OLDEST" ] || [ "$OLDEST" = "" ] && return
+
+        CUTOFF=$((OLDEST + 7 * 86400))
+        sqlite3 "$DB_PATH" "DELETE FROM client_traffic_hourly WHERE hour_ts < $CUTOFF;" 2>/dev/null
+        logger -t jammonitor "Cleaned old hourly rollups, disk was ${USAGE}%"
+
+        # Also run vacuum to reclaim space
+        sqlite3 "$DB_PATH" "VACUUM;" 2>/dev/null
+    fi
+}
+
 # Cleanup old data
 cleanup() {
     CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
     sqlite3 "$DB_PATH" "DELETE FROM metrics WHERE ts < $CUTOFF;"
     sqlite3 "$DB_PATH" "DELETE FROM snapshots WHERE ts < $CUTOFF;"
+
+    # Rollup and cleanup per-client traffic
+    rollup_client_traffic
+    dynamic_cleanup
 
     # Cleanup old syslog
     if [ -f "${LOG_PATH}.old" ]; then
@@ -179,9 +365,10 @@ init_db
 COUNTER=0
 
 while true; do
-    # Collect metrics and snapshots every minute
+    # Collect metrics, snapshots, and per-client traffic every minute
     collect_metrics
     collect_slow
+    collect_client_traffic
     stream_syslog
 
     COUNTER=$((COUNTER + 1))

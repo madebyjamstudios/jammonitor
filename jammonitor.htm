@@ -210,6 +210,23 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .jm-popup-buttons .btn-secondary:hover { background: #dfe6e9; }
 .jm-popup-buttons .btn-danger { background: #e74c3c; color: #fff; }
 .jm-popup-buttons .btn-danger:hover { background: #c0392b; }
+/* Bandwidth bucket popup */
+.jm-popup-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+.jm-popup-header span { font-size: 16px; font-weight: 600; color: #2c3e50; }
+.jm-popup-close { background: none; border: none; font-size: 24px; color: #7f8c8d; cursor: pointer; padding: 0; line-height: 1; }
+.jm-popup-close:hover { color: #2c3e50; }
+.jm-popup-body { max-height: 400px; overflow-y: auto; }
+.jm-popup-footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee; text-align: right; }
+.bw-bucket-popup { min-width: 550px; max-width: 90vw; }
+.bw-bucket-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+.bw-bucket-table th { text-align: left; padding: 10px 12px; background: #f8f9fa; font-weight: 600; color: #2c3e50; border-bottom: 2px solid #e0e0e0; }
+.bw-bucket-table td { padding: 10px 12px; border-bottom: 1px solid #eee; }
+.bw-bucket-table tr:hover { background: #f8f9fa; }
+.bw-bucket-loading { text-align: center; padding: 40px; color: #7f8c8d; }
+.bw-bucket-loading .chart-spinner { margin: 0 auto 12px auto; }
+/* Clickable bandwidth table rows */
+.bw-bucket-row { cursor: pointer; transition: background 0.15s; }
+.bw-bucket-row:hover { background: #f0f7ff; }
 
 /* Buttons */
 .jm-btn { padding: 12px 24px; background: #3498db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }
@@ -1018,7 +1035,7 @@ table.jm-table tr:hover { background: #e8f4fc; }
                 <div class="chart-loading" id="loading-hourly"><div class="chart-spinner"></div></div>
                 <canvas class="jm-chart" id="chart-hourly"></canvas>
             </div>
-            <table class="jm-table"><thead><tr><th>Hour</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-hourly-tbody"></tbody></table>
+            <table class="jm-table"><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-hourly-tbody"></tbody></table>
         </div>
 
         <!-- BANDWIDTH: Daily -->

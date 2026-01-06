@@ -2467,27 +2467,28 @@ function action_bypass()
             -- Write bypass flag (stores primary WAN name for reference)
             atomic_write(bypass_flag, primary_wan or "unknown")
 
+            -- Disable omrvpn interface via UCI (keeps it present but disabled)
+            uci:set("network", "omrvpn", "disabled", "1")
+
             -- Commit and apply
             uci:commit("network")
 
-            -- Stop omr-tracker FIRST (it monitors and restarts VPN services)
+            -- Disable omr-tracker service (monitors and restarts VPN services)
+            sys.exec("/etc/init.d/omr-tracker disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/omr-tracker stop >/dev/null 2>&1")
+            -- Kill any remaining instances
             sys.exec("killall omr-tracker omr-tracker-ss >/dev/null 2>&1")
 
             -- Disable and stop OpenVPN
             sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
-            sys.exec("killall openvpn >/dev/null 2>&1")
 
             -- Disable and stop Shadowsocks (transparent TCP proxy to VPS)
             sys.exec("/etc/init.d/shadowsocks-rust disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
-            sys.exec("killall sslocal >/dev/null 2>&1")
 
-            -- Bring down omrvpn interface
-            sys.exec("ifdown omrvpn >/dev/null 2>&1")
-
-            -- Bring down tun0 if still up
-            sys.exec("ip link set tun0 down >/dev/null 2>&1")
+            -- Reload network to apply disabled interface
+            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
 
             -- Wait for everything to stop and routing to settle
             sys.exec("sleep 3")
@@ -2537,6 +2538,9 @@ function action_bypass()
             -- Remove bypass flag
             fs.remove(bypass_flag)
 
+            -- Re-enable omrvpn interface via UCI
+            uci:delete("network", "omrvpn", "disabled")
+
             -- Commit network changes
             uci:commit("network")
 
@@ -2548,13 +2552,14 @@ function action_bypass()
             sys.exec("/etc/init.d/openvpn enable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
 
-            -- Bring up omrvpn interface
-            sys.exec("ifup omrvpn >/dev/null 2>&1")
+            -- Re-enable and start omr-tracker (monitors VPN health)
+            sys.exec("/etc/init.d/omr-tracker enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/omr-tracker start >/dev/null 2>&1")
 
             -- Reload firewall to restore nftables redirect rules
             sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
 
-            -- Reload network (this also restarts omr-tracker)
+            -- Reload network (applies interface changes)
             sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
 
             -- Wait for VPN to reconnect and stabilize (needs more time)

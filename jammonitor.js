@@ -3439,8 +3439,9 @@ var JamMonitor = (function() {
 
             var html = '';
             data.interfaces.forEach(function(wan) {
-                // Only include WAN interfaces
-                if (!wan.name.match(/^wan/i)) return;
+                // Only include active WANs (skip disabled and VPN tunnels)
+                if (wan.multipath === 'off') return;
+                if (wan.name.match(/^(omrvpn|tun[0-9]|tailscale)/i)) return;
 
                 var lastDown = speedTestResults[wan.name] && speedTestResults[wan.name].download;
                 var lastUp = speedTestResults[wan.name] && speedTestResults[wan.name].upload;

@@ -1246,7 +1246,6 @@ var JamMonitor = (function() {
                 var displayName = meta.alias || c.hostname;
                 var deviceType = meta.type || detectDeviceType(c.hostname);
                 var icon = getDeviceIcon(deviceType);
-                var statusDot = '<span style="color:#27ae60;">●</span>';
                 var hasReservation = reservedMacs[macLower];
                 var ipTitle = hasReservation ? 'Static reservation' : formatExpiry(c.expiry);
                 var tagIcon = hasReservation
@@ -1256,7 +1255,7 @@ var JamMonitor = (function() {
 
                 rows += '<tr style="' + rowStyle + '">';
                 rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';
-                rows += '<td style="text-align:center;">' + statusDot + icon + '</td>';
+                rows += '<td style="text-align:center;">' + icon + '</td>';
                 rows += '<td class="client-name" data-mac="' + escapeHtml(c.mac) + '">' + escapeHtml(displayName) + '</td>';
                 rows += '<td>' + (t.rx > 0 ? formatBytesCompact(t.rx) : '--') + '</td>';
                 rows += '<td>' + (t.tx > 0 ? formatBytesCompact(t.tx) : '--') + '</td>';
@@ -1275,17 +1274,15 @@ var JamMonitor = (function() {
                             var peer = ts.Peer[key];
                             var hostname = peer.HostName || peer.DNSName || 'Unknown';
                             var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
-                            var statusDot = peer.Online
-                                ? '<span style="color:#27ae60;">●</span>'
-                                : '<span style="color:#bdc3c7;">●</span>';
+                            var offlineClass = peer.Online ? '' : 'client-offline';
                             var deviceType = detectDeviceType(hostname);
                             var icon = getDeviceIcon(deviceType);
                             var os = peer.OS || '--';
 
-                            rows += '<tr style="background:#f0f9ff;">';
+                            rows += '<tr class="' + offlineClass + '" style="background:#f0f9ff;">';
                             rows += '<td>' + escapeHtml(ip) + '</td>';
-                            rows += '<td style="text-align:center;">' + statusDot + icon + '</td>';
-                            rows += '<td>' + escapeHtml(hostname) + '</td>';
+                            rows += '<td style="text-align:center;">' + icon + '</td>';
+                            rows += '<td class="client-name">' + escapeHtml(hostname) + '</td>';
                             rows += '<td>--</td><td>--</td>';
                             rows += '<td style="color:#3498db;">Tailscale</td>';
                             rows += '<td style="font-size:11px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';

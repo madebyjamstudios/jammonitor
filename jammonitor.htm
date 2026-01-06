@@ -149,6 +149,11 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .client-name:hover { text-decoration: underline; color: #3498db; }
 .client-name:hover::after { content: " \270F"; font-size: 11px; opacity: 0.6; }
 
+/* Offline client styling (Tailscale) */
+.client-offline { color: #999; }
+.client-offline td { color: #999; }
+.client-offline .client-name { text-decoration: line-through; }
+
 /* Reservation tag - button style */
 .reservation-tag { cursor: pointer; text-align: center; }
 .reservation-tag span {
@@ -710,11 +715,11 @@ table.jm-table tr:hover { background: #e8f4fc; }
             <table class="jm-table" id="clients-table">
                 <thead><tr>
                     <th>IP Address</th>
-                    <th style="width:40px;"></th>
+                    <th style="width:40px;">Type</th>
                     <th>Name</th>
                     <th>Download</th>
                     <th>Upload</th>
-                    <th>Type</th>
+                    <th>Source</th>
                     <th style="width:130px;">MAC Address</th>
                     <th style="width:40px;"></th>
                 </tr></thead>

@@ -3459,7 +3459,7 @@ var JamMonitor = (function() {
 
                 html += '<div class="speedtest-row" style="' + statusStyle + '" data-wan="' + escapeHtml(wan.name) + '">';
                 html += '<span class="wan-ip">' + escapeHtml(ipDisplay) + '</span>';
-                html += '<span class="wan-name">' + escapeHtml(wan.name) + '</span>';
+                html += '<span class="wan-name" title="' + escapeHtml(wan.name) + '">' + escapeHtml(wan.name) + '</span>';
                 html += '<div class="test-buttons">';
                 html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; Download</button>';
                 html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + disabled + '>&#8593; Upload</button>';

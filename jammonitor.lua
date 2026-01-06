@@ -51,6 +51,18 @@ local function validate_ip(ip)
     return ip
 end
 
+-- Helper: Atomic file write (write to temp, then rename)
+local function atomic_write(path, content)
+    local fs = require "nixio.fs"
+    local tmp = path .. ".tmp"
+    local ok = fs.writefile(tmp, content)
+    if ok then
+        os.rename(tmp, path)
+        return true
+    end
+    return false
+end
+
 -- System stats: load, cpu, temp, ram, uptime, conntrack
 function action_system_stats()
     local http = require "luci.http"
@@ -2610,18 +2622,6 @@ function action_history()
     http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
     http.prepare_content("application/json")
     http.write(json.stringify(bundle))
-end
-
--- Helper: Atomic file write (write to temp, then rename)
-local function atomic_write(path, content)
-    local fs = require "nixio.fs"
-    local tmp = path .. ".tmp"
-    local ok = fs.writefile(tmp, content)
-    if ok then
-        os.rename(tmp, path)
-        return true
-    end
-    return false
 end
 
 -- VPS Bypass endpoint - toggle between bonded and direct WAN mode

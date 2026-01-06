@@ -2467,30 +2467,40 @@ function action_bypass()
             -- Write bypass flag (stores primary WAN name for reference)
             atomic_write(bypass_flag, primary_wan or "unknown")
 
-            -- Disable omrvpn interface via UCI (keeps it present but disabled)
-            uci:set("network", "omrvpn", "disabled", "1")
-
-            -- Commit and apply
+            -- Commit multipath changes
             uci:commit("network")
 
-            -- Disable omr-tracker service (monitors and restarts VPN services)
-            sys.exec("/etc/init.d/omr-tracker disable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/omr-tracker stop >/dev/null 2>&1")
-            -- Kill any remaining instances
-            sys.exec("killall omr-tracker omr-tracker-ss >/dev/null 2>&1")
+            -- Add global omr-bypass rule to route all traffic through primary WAN
+            -- This uses OMR's built-in bypass mechanism instead of fighting services
+            local bypass_uci = require "luci.model.uci".cursor()
 
-            -- Disable and stop OpenVPN
-            sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
+            -- Add a bypass rule for all traffic (0.0.0.0/0 = all destinations)
+            -- This tells OMR to bypass the VPN for all destinations
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "ips")
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "ip", "0.0.0.0/0")
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "interface", primary_wan or "lan1")
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "comment", "JamMonitor VPS Bypass - All Traffic")
+            bypass_uci:commit("omr-bypass")
 
-            -- Disable and stop Shadowsocks (transparent TCP proxy to VPS)
-            sys.exec("/etc/init.d/shadowsocks-rust disable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
+            -- Restart omr-bypass to apply the new rule
+            sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
 
-            -- Reload network to apply disabled interface
-            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
+            -- Add IP policy rule to bypass OMR's routing and use main table directly
+            -- Priority 100 is higher than OMR's rules (typically 5270+)
+            sys.exec("ip rule add from all lookup main priority 100 2>/dev/null || true")
 
-            -- Wait for everything to stop and routing to settle
+            -- Remove/disable the shadowsocks TCP redirect
+            -- This is the nftables rule that sends all TCP to port 1100 (shadowsocks)
+            sys.exec("nft flush chain inet fw4 srcnat_wan 2>/dev/null || true")
+            sys.exec("nft delete table inet omr-bypass-dstip 2>/dev/null || true")
+
+            -- Add a direct default route via primary WAN (higher metric to not conflict)
+            local wan_gw = sys.exec("ip route show dev " .. (primary_wan or "lan1") .. " 2>/dev/null | grep -oP 'default via \\K[0-9.]+'"):gsub("%s+$", "")
+            if wan_gw ~= "" then
+                sys.exec("ip route add default via " .. wan_gw .. " dev " .. (primary_wan or "lan1") .. " metric 1 2>/dev/null || true")
+            end
+
+            -- Wait for rules to apply
             sys.exec("sleep 3")
 
             -- Verify the change took effect
@@ -2538,31 +2548,30 @@ function action_bypass()
             -- Remove bypass flag
             fs.remove(bypass_flag)
 
-            -- Re-enable omrvpn interface via UCI
-            uci:delete("network", "omrvpn", "disabled")
+            -- Remove the global omr-bypass rule we added
+            local bypass_uci = require "luci.model.uci".cursor()
+            bypass_uci:delete("omr-bypass", "jammonitor_bypass")
+            bypass_uci:commit("omr-bypass")
 
             -- Commit network changes
             uci:commit("network")
 
-            -- Re-enable and start Shadowsocks (transparent TCP proxy)
-            sys.exec("/etc/init.d/shadowsocks-rust enable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/shadowsocks-rust start >/dev/null 2>&1")
+            -- Restart omr-bypass to remove our bypass rule
+            sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
 
-            -- Re-enable and start OpenVPN (manages tun0 and routes to VPS)
-            sys.exec("/etc/init.d/openvpn enable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
+            -- Remove the IP policy rule we added
+            sys.exec("ip rule del from all lookup main priority 100 2>/dev/null || true")
 
-            -- Re-enable and start omr-tracker (monitors VPN health)
-            sys.exec("/etc/init.d/omr-tracker enable >/dev/null 2>&1")
-            sys.exec("/etc/init.d/omr-tracker start >/dev/null 2>&1")
+            -- Remove the direct default route we added
+            sys.exec("ip route del default metric 1 2>/dev/null || true")
 
-            -- Reload firewall to restore nftables redirect rules
+            -- Reload firewall to restore nftables redirect rules (shadowsocks redirect)
             sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
 
-            -- Reload network (applies interface changes)
+            -- Reload network (applies interface changes and restarts routing)
             sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
 
-            -- Wait for VPN to reconnect and stabilize (needs more time)
+            -- Wait for VPN to reconnect and stabilize
             sys.exec("sleep 5")
 
             http.write(json.stringify({

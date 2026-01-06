@@ -750,31 +750,91 @@ table.jm-table tr:hover { background: #e8f4fc; }
 
         <!-- DIAGNOSTICS -->
         <div id="view-diagnostics" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Diagnostics</h2>
-            <div class="jm-block" style="max-width:600px;">
-                <p style="margin:0 0 15px;color:#7f8c8d;">Generate and download a diagnostic bundle containing system logs, network state, VPN status, and configuration for troubleshooting.</p>
-                <p style="margin:0 0 15px;font-size:12px;color:#95a5a6;">Includes: syslog, dmesg, routing tables, interface status, WireGuard status, MPTCP info, OMR config, connectivity tests, and error summaries.</p>
-                <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()">Download Diagnostic Bundle</button>
-                <div id="diag-status" style="margin-top:15px;"></div>
-            </div>
+            <h2 style="margin-top:0;color:#2c3e50;">Diagnostics & Data Export</h2>
 
-            <div class="jm-block" style="max-width:600px;margin-top:20px;">
-                <h3 style="margin:0 0 10px;color:#2c3e50;">Historical Metrics</h3>
-                <p style="margin:0 0 15px;color:#7f8c8d;">Download historical metrics collected every second on local storage. Includes ping latency, CPU load, RAM usage, temperature, and interface status.</p>
-                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                    <label style="color:#7f8c8d;">Time range:</label>
-                    <select id="history-hours" style="padding:8px 12px;border:1px solid #bdc3c7;border-radius:4px;">
-                        <option value="1">1 hour</option>
-                        <option value="6">6 hours</option>
-                        <option value="24" selected>24 hours</option>
-                        <option value="48">48 hours</option>
-                        <option value="72">72 hours</option>
-                        <option value="168">7 days</option>
-                        <option value="720">30 days</option>
-                    </select>
-                    <button class="jm-btn" onclick="JamMonitor.downloadHistory()">Download Historical Bundle</button>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:24px;margin-top:10px;">
+
+                <!-- EMERGENCY SNAPSHOT -->
+                <div style="background:linear-gradient(135deg, #fff5f5 0%, #fff 100%);border:2px solid #e74c3c;border-radius:12px;padding:28px;display:flex;flex-direction:column;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                        <span style="font-size:36px;">&#9889;</span>
+                        <div>
+                            <h3 style="margin:0;color:#c0392b;font-size:20px;">Emergency Snapshot</h3>
+                            <span style="color:#e74c3c;font-size:13px;font-weight:500;">Something just broke? Grab this now.</span>
+                        </div>
+                    </div>
+
+                    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:20px;flex:1;">
+                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;">What's inside:</div>
+                        <ul style="margin:0;padding-left:20px;color:#5a6c7d;font-size:13px;line-height:1.8;">
+                            <li>Live system logs (last ~15-30 min)</li>
+                            <li>Current routing & interface state</li>
+                            <li>VPN tunnel status & MPTCP info</li>
+                            <li>Active connections & errors</li>
+                            <li>Full system configuration</li>
+                        </ul>
+                    </div>
+
+                    <div style="background:#fdf2f2;border-radius:8px;padding:12px;margin-bottom:20px;">
+                        <div style="display:flex;align-items:center;gap:8px;color:#c0392b;font-size:12px;">
+                            <span style="font-size:14px;">&#8987;</span>
+                            <span><strong>Time-sensitive:</strong> Ring buffer overwrites every 15-30 min. Download immediately after issues occur.</span>
+                        </div>
+                    </div>
+
+                    <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()" style="background:#e74c3c;border-color:#c0392b;font-size:15px;padding:14px 24px;width:100%;">
+                        Download Emergency Snapshot
+                    </button>
+                    <div id="diag-status" style="margin-top:12px;text-align:center;"></div>
                 </div>
-                <div id="history-status" style="margin-top:15px;"></div>
+
+                <!-- HISTORICAL ANALYSIS -->
+                <div style="background:linear-gradient(135deg, #f0f9ff 0%, #fff 100%);border:2px solid #3498db;border-radius:12px;padding:28px;display:flex;flex-direction:column;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                        <span style="font-size:36px;">&#128202;</span>
+                        <div>
+                            <h3 style="margin:0;color:#2980b9;font-size:20px;">Historical Analysis</h3>
+                            <span style="color:#3498db;font-size:13px;font-weight:500;">Investigate trends over days or weeks.</span>
+                        </div>
+                    </div>
+
+                    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:20px;flex:1;">
+                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;">What's inside:</div>
+                        <ul style="margin:0;padding-left:20px;color:#5a6c7d;font-size:13px;line-height:1.8;">
+                            <li>Ping latency history (1.1.1.1, 8.8.8.8)</li>
+                            <li>Interface up/down events</li>
+                            <li>CPU load, RAM, temperature</li>
+                            <li>Network state snapshots</li>
+                            <li>Stored on USB - persists across reboots</li>
+                        </ul>
+                    </div>
+
+                    <div style="background:#f0f7fd;border-radius:8px;padding:12px;margin-bottom:20px;">
+                        <div style="display:flex;align-items:center;gap:8px;color:#2980b9;font-size:12px;">
+                            <span style="font-size:14px;">&#128190;</span>
+                            <span><strong>Long-term storage:</strong> Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.</span>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
+                        <label style="color:#5a6c7d;font-size:14px;white-space:nowrap;">Time range:</label>
+                        <select id="history-hours" style="flex:1;padding:12px 14px;border:2px solid #bdc3c7;border-radius:6px;font-size:14px;background:#fff;">
+                            <option value="1">Last 1 hour</option>
+                            <option value="6">Last 6 hours</option>
+                            <option value="24" selected>Last 24 hours</option>
+                            <option value="48">Last 2 days</option>
+                            <option value="72">Last 3 days</option>
+                            <option value="168">Last 7 days</option>
+                            <option value="720">Last 30 days</option>
+                        </select>
+                    </div>
+
+                    <button class="jm-btn" onclick="JamMonitor.downloadHistory()" style="background:#3498db;border-color:#2980b9;font-size:15px;padding:14px 24px;width:100%;">
+                        Download Historical Data
+                    </button>
+                    <div id="history-status" style="margin-top:12px;text-align:center;"></div>
+                </div>
+
             </div>
         </div>
 

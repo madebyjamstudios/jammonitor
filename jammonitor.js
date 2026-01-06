@@ -2813,10 +2813,61 @@ var JamMonitor = (function() {
         }, 3000);
     }
 
+    // History range selection
+    var historyMode = 'hours'; // 'hours' or 'custom'
+
+    function setHistoryRange(value, btn) {
+        // Update active button
+        document.querySelectorAll('.jm-quick-range').forEach(function(b) {
+            b.classList.remove('active');
+        });
+        if (btn) btn.classList.add('active');
+
+        var customRange = document.getElementById('history-custom-range');
+        var hoursInput = document.getElementById('history-hours');
+
+        if (value === 'custom') {
+            historyMode = 'custom';
+            customRange.style.display = 'block';
+            // Set default dates (last 7 days)
+            var today = new Date();
+            var weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+            document.getElementById('history-to').value = today.toISOString().slice(0, 10);
+            document.getElementById('history-from').value = weekAgo.toISOString().slice(0, 10);
+        } else {
+            historyMode = 'hours';
+            customRange.style.display = 'none';
+            hoursInput.value = value;
+        }
+    }
+
     function downloadHistory() {
-        var hours = document.getElementById('history-hours').value;
         var status = document.getElementById('history-status');
-        status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
+        var url, filename;
+
+        if (historyMode === 'custom') {
+            var fromDate = document.getElementById('history-from').value;
+            var toDate = document.getElementById('history-to').value;
+            if (!fromDate || !toDate) {
+                status.innerHTML = '<span style="color:#e74c3c;">Please select both From and To dates.</span>';
+                return;
+            }
+            // Convert dates to timestamps (start of from day, end of to day)
+            var fromTs = Math.floor(new Date(fromDate).getTime() / 1000);
+            var toTs = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
+            if (fromTs > toTs) {
+                status.innerHTML = '<span style="color:#e74c3c;">From date must be before To date.</span>';
+                return;
+            }
+            url = window.location.pathname + '/history?from=' + fromTs + '&to=' + toTs;
+            filename = 'jammonitor-history-' + fromDate + '-to-' + toDate + '.json';
+            status.innerHTML = '<span style="color:#7f8c8d;">Fetching data from ' + fromDate + ' to ' + toDate + '...</span>';
+        } else {
+            var hours = document.getElementById('history-hours').value;
+            url = window.location.pathname + '/history?hours=' + hours;
+            filename = 'jammonitor-history-' + hours + 'h-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
+            status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
+        }
 
         // First check if storage is available
         api('storage_status').then(function(storageData) {
@@ -2830,7 +2881,6 @@ var JamMonitor = (function() {
             }
 
             // Use fetch to download with proper error handling
-            var url = window.location.pathname + '/history?hours=' + hours;
             fetch(url)
                 .then(function(response) {
                     if (!response.ok) {
@@ -2843,7 +2893,7 @@ var JamMonitor = (function() {
                     var downloadUrl = window.URL.createObjectURL(blob);
                     var a = document.createElement('a');
                     a.href = downloadUrl;
-                    a.download = 'jammonitor-history-' + hours + 'h-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
+                    a.download = filename;
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
@@ -2883,6 +2933,7 @@ var JamMonitor = (function() {
         switchView: switchView,
         exportDiag: exportDiag,
         downloadHistory: downloadHistory,
+        setHistoryRange: setHistoryRange,
         setScale: setScale,
         setInterface: setInterface,
         loadVnstat: loadVnstat,

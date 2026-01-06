@@ -2297,17 +2297,34 @@ function action_history()
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
+    -- Support both hours-based and custom date range queries
+    local from_ts = tonumber(http.formvalue("from"))
+    local to_ts = tonumber(http.formvalue("to"))
     local hours = tonumber(http.formvalue("hours")) or 24
-    if hours < 1 then hours = 1 end
-    if hours > 720 then hours = 720 end
 
     local db_path = "/mnt/data/jammonitor/history.db"
     local log_path = "/mnt/data/jammonitor/syslog.txt"
-    local cutoff = os.time() - (hours * 3600)
+    local cutoff, end_time
+
+    if from_ts and to_ts then
+        -- Custom date range mode
+        cutoff = from_ts
+        end_time = to_ts
+        -- Calculate hours for display
+        hours = math.ceil((to_ts - from_ts) / 3600)
+    else
+        -- Hours-based mode (backward compatible)
+        if hours < 1 then hours = 1 end
+        if hours > 720 then hours = 720 end
+        cutoff = os.time() - (hours * 3600)
+        end_time = os.time()
+    end
 
     local bundle = {
         generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         hours = hours,
+        from_ts = cutoff,
+        to_ts = end_time,
         metrics = {},
         snapshots = {},
         syslog = "",
@@ -2316,10 +2333,10 @@ function action_history()
 
     -- Check if database exists
     if fs.stat(db_path) then
-        -- Query fast metrics
+        -- Query fast metrics (with upper bound for custom range)
         local query = string.format(
-            "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d ORDER BY ts",
-            cutoff
+            "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d AND ts <= %d ORDER BY ts",
+            cutoff, end_time
         )
         local result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
         if result and result ~= "" then
@@ -2340,8 +2357,8 @@ function action_history()
 
         -- Query slow snapshots (MPTCP, VPN, routes, conntrack, DNS)
         query = string.format(
-            "SELECT ts, mptcp, vpn, routes, conntrack_count, dns FROM snapshots WHERE ts > %d ORDER BY ts",
-            cutoff
+            "SELECT ts, mptcp, vpn, routes, conntrack_count, dns FROM snapshots WHERE ts > %d AND ts <= %d ORDER BY ts",
+            cutoff, end_time
         )
         result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
         if result and result ~= "" then

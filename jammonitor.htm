@@ -149,6 +149,9 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .jm-btn:hover { background: #2980b9; }
 .jm-btn:disabled { background: #bdc3c7; cursor: not-allowed; }
 .jm-btn-sm { padding: 6px 12px; font-size: 12px; }
+.jm-quick-range { padding: 8px 14px; background: #fff; color: #5a6c7d; border: 2px solid #e0e6ed; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+.jm-quick-range:hover { border-color: #3498db; color: #3498db; }
+.jm-quick-range.active { background: #3498db; color: #fff; border-color: #3498db; }
 
 /* Bandwidth controls */
 .jm-bw-controls { background: #fff; border-radius: 8px; padding: 12px 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
@@ -816,18 +819,36 @@ table.jm-table tr:hover { background: #e8f4fc; }
                         </div>
                     </div>
 
-                    <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
-                        <label style="color:#5a6c7d;font-size:14px;white-space:nowrap;">Time range:</label>
-                        <select id="history-hours" style="flex:1;padding:12px 14px;border:2px solid #bdc3c7;border-radius:6px;font-size:14px;background:#fff;">
-                            <option value="1">Last 1 hour</option>
-                            <option value="6">Last 6 hours</option>
-                            <option value="24" selected>Last 24 hours</option>
-                            <option value="48">Last 2 days</option>
-                            <option value="72">Last 3 days</option>
-                            <option value="168">Last 7 days</option>
-                            <option value="720">Last 30 days</option>
-                        </select>
+                    <!-- Quick Select -->
+                    <div style="margin-bottom:16px;">
+                        <label style="color:#5a6c7d;font-size:13px;display:block;margin-bottom:6px;">Quick select:</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="jm-quick-range active" data-hours="24" onclick="JamMonitor.setHistoryRange(24, this)">24h</button>
+                            <button class="jm-quick-range" data-hours="72" onclick="JamMonitor.setHistoryRange(72, this)">3 days</button>
+                            <button class="jm-quick-range" data-hours="168" onclick="JamMonitor.setHistoryRange(168, this)">7 days</button>
+                            <button class="jm-quick-range" data-hours="336" onclick="JamMonitor.setHistoryRange(336, this)">14 days</button>
+                            <button class="jm-quick-range" data-hours="720" onclick="JamMonitor.setHistoryRange(720, this)">30 days</button>
+                            <button class="jm-quick-range" data-hours="custom" onclick="JamMonitor.setHistoryRange('custom', this)">Custom</button>
+                        </div>
                     </div>
+
+                    <!-- Custom Date Range (hidden by default) -->
+                    <div id="history-custom-range" style="display:none;margin-bottom:16px;background:#fff;border-radius:8px;padding:14px;border:1px solid #e0e6ed;">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                            <div>
+                                <label style="color:#5a6c7d;font-size:12px;display:block;margin-bottom:4px;">From:</label>
+                                <input type="date" id="history-from" style="width:100%;padding:10px;border:1px solid #bdc3c7;border-radius:4px;font-size:14px;">
+                            </div>
+                            <div>
+                                <label style="color:#5a6c7d;font-size:12px;display:block;margin-bottom:4px;">To:</label>
+                                <input type="date" id="history-to" style="width:100%;padding:10px;border:1px solid #bdc3c7;border-radius:4px;font-size:14px;">
+                            </div>
+                        </div>
+                        <div style="margin-top:8px;font-size:11px;color:#7f8c8d;">Select specific days from stored history (up to 30 days available)</div>
+                    </div>
+
+                    <!-- Hidden field for hours value -->
+                    <input type="hidden" id="history-hours" value="24">
 
                     <button class="jm-btn" onclick="JamMonitor.downloadHistory()" style="background:#3498db;border-color:#2980b9;font-size:15px;padding:14px 24px;width:100%;">
                         Download Historical Data

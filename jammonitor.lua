@@ -2470,7 +2470,10 @@ function action_bypass()
             -- Commit and apply
             uci:commit("network")
 
-            -- Disable and stop OpenVPN (disable prevents omr-tracker from restarting it)
+            -- Stop omr-tracker FIRST (it monitors and restarts VPN services)
+            sys.exec("killall omr-tracker omr-tracker-ss >/dev/null 2>&1")
+
+            -- Disable and stop OpenVPN
             sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
             sys.exec("killall openvpn >/dev/null 2>&1")
@@ -2480,7 +2483,7 @@ function action_bypass()
             sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
             sys.exec("killall sslocal >/dev/null 2>&1")
 
-            -- Bring down omrvpn interface (prevents netifd from restarting VPN)
+            -- Bring down omrvpn interface
             sys.exec("ifdown omrvpn >/dev/null 2>&1")
 
             -- Bring down tun0 if still up
@@ -2551,7 +2554,7 @@ function action_bypass()
             -- Reload firewall to restore nftables redirect rules
             sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
 
-            -- Reload network
+            -- Reload network (this also restarts omr-tracker)
             sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
 
             -- Wait for VPN to reconnect and stabilize (needs more time)

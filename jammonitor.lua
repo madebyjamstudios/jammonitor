@@ -2473,22 +2473,29 @@ function action_bypass()
             -- OMR-bypass doesn't support 0.0.0.0/0 wildcard, so we must stop the VPN services
             -- Order matters: stop the monitor first, then the services it monitors
 
-            -- 1. Disable and stop omr-tracker (monitors and restarts VPN services)
+            -- 1. Disable hotplug script that restarts omr-tracker on interface changes
+            sys.exec("mv /etc/hotplug.d/iface/40-omr-tracker /etc/hotplug.d/iface/40-omr-tracker.disabled 2>/dev/null")
+
+            -- 2. Disable and stop omr-tracker (monitors and restarts VPN services)
             sys.exec("/etc/init.d/omr-tracker disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/omr-tracker stop >/dev/null 2>&1")
             sys.exec("killall -9 omr-tracker omr-tracker-ss 2>/dev/null")
 
-            -- 2. Disable and stop OpenVPN (manages tun0)
+            -- 3. Disable and stop OpenVPN (both openvpn and openvpnbonding services)
             sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpnbonding disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpnbonding stop >/dev/null 2>&1")
             sys.exec("killall -9 openvpn 2>/dev/null")
 
-            -- 3. Disable and stop Shadowsocks (TCP proxy to VPS)
+            -- 4. Disable and stop Shadowsocks (both shadowsocks-rust and shadowsocks-libev)
             sys.exec("/etc/init.d/shadowsocks-rust disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
-            sys.exec("killall -9 sslocal ss-redir 2>/dev/null")
+            sys.exec("/etc/init.d/shadowsocks-libev disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/shadowsocks-libev stop >/dev/null 2>&1")
+            sys.exec("killall -9 sslocal ss-redir ss-local 2>/dev/null")
 
-            -- 4. Bring down tun0 interface
+            -- 5. Bring down tun0 interface
             sys.exec("ip link set tun0 down 2>/dev/null")
 
             -- Wait for services to stop
@@ -2542,15 +2549,22 @@ function action_bypass()
             -- Commit network changes
             uci:commit("network")
 
+            -- Restore hotplug script
+            sys.exec("mv /etc/hotplug.d/iface/40-omr-tracker.disabled /etc/hotplug.d/iface/40-omr-tracker 2>/dev/null")
+
             -- Re-enable and start VPN services in correct order
 
-            -- 1. Re-enable and start Shadowsocks
+            -- 1. Re-enable and start Shadowsocks (both variants)
+            sys.exec("/etc/init.d/shadowsocks-libev enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/shadowsocks-libev start >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust enable >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust start >/dev/null 2>&1")
 
-            -- 2. Re-enable and start OpenVPN
+            -- 2. Re-enable and start OpenVPN (both variants)
             sys.exec("/etc/init.d/openvpn enable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpnbonding enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpnbonding start >/dev/null 2>&1")
 
             -- 3. Re-enable and start omr-tracker (monitors VPN health)
             sys.exec("/etc/init.d/omr-tracker enable >/dev/null 2>&1")

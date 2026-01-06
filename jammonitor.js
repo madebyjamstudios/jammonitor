@@ -102,30 +102,37 @@ var JamMonitor = (function() {
         loadClientMeta();
         loadReservations();
 
-        // Client list click handlers
-        document.getElementById('clients-tbody').addEventListener('click', function(e) {
-            // Name editing
-            var nameCell = e.target.closest('.client-name');
-            if (nameCell && nameCell.dataset.mac) {
-                var mac = nameCell.dataset.mac.toLowerCase();
-                var currentName = nameCell.textContent;
-                var newName = prompt('Enter device name:', currentName);
-                if (newName && newName !== currentName) {
-                    // Save to pending, not immediately
-                    if (!pendingMeta[mac]) pendingMeta[mac] = {};
-                    pendingMeta[mac].alias = newName;
-                    nameCell.textContent = newName;
-                    nameCell.classList.add('client-pending-name');
-                    updatePendingUI();
+        // Client list click handlers (with safety check)
+        var clientsTbody = document.getElementById('clients-tbody');
+        if (clientsTbody) {
+            clientsTbody.addEventListener('click', function(e) {
+                // Name editing - check for click on cell or its contents
+                var nameCell = e.target.closest('.client-name');
+                if (nameCell) {
+                    var mac = nameCell.dataset.mac;
+                    if (!mac) return;  // Tailscale peers don't have MAC
+                    mac = mac.toLowerCase();
+                    var currentName = nameCell.textContent.trim();
+                    var newName = prompt('Enter device name:', currentName);
+                    if (newName !== null && newName.trim() !== '' && newName.trim() !== currentName) {
+                        // Save to pending, not immediately
+                        if (!pendingMeta[mac]) pendingMeta[mac] = {};
+                        pendingMeta[mac].alias = newName.trim();
+                        nameCell.textContent = newName.trim();
+                        nameCell.classList.add('client-pending-name');
+                        updatePendingUI();
+                    }
+                    return;
                 }
-                return;
-            }
-            // Reservation popup
-            var resTag = e.target.closest('.reservation-tag');
-            if (resTag) {
-                showReservationPopup(resTag.dataset.mac, resTag.dataset.ip, resTag.dataset.name);
-            }
-        });
+                // Reservation popup
+                var resTag = e.target.closest('.reservation-tag');
+                if (resTag && resTag.dataset.mac) {
+                    showReservationPopup(resTag.dataset.mac, resTag.dataset.ip, resTag.dataset.name);
+                }
+            });
+        } else {
+            console.error('JamMonitor: clients-tbody not found');
+        }
 
         // Start polling
         startPolling();

@@ -6,7 +6,7 @@
 DB_PATH="/mnt/data/jammonitor/history.db"
 LOG_PATH="/mnt/data/jammonitor/syslog.txt"
 RETENTION_DAYS=30
-MAX_LOG_SIZE=52428800  # 50MB max syslog size
+MAX_LOG_SIZE=104857600  # 100MB max syslog size
 WAN_CONFIG="/etc/jammonitor_wans"
 
 # Ensure data directory exists

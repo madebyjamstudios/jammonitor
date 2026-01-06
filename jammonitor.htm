@@ -222,8 +222,8 @@ table.jm-table tr:hover { background: #e8f4fc; }
 
 /* Speed test rows */
 .speedtest-row { display: flex; align-items: center; gap: 16px; padding: 14px 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; }
-.speedtest-row .wan-name { font-weight: 600; color: #2c3e50; width: 160px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.speedtest-row .wan-ip { font-family: monospace; font-size: 12px; color: #7f8c8d; width: 130px; flex-shrink: 0; }
+.speedtest-row .wan-ip { font-family: monospace; font-size: 12px; color: #7f8c8d; flex: 0 0 130px; }
+.speedtest-row .wan-name { font-weight: 600; color: #2c3e50; flex: 0 0 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .speedtest-row .test-buttons { display: flex; gap: 8px; flex-shrink: 0; }
 .speedtest-row .test-btn { padding: 8px 16px; font-size: 12px; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
 .speedtest-row .test-btn.download { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }

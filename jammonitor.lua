@@ -2470,11 +2470,13 @@ function action_bypass()
             -- Commit and apply
             uci:commit("network")
 
-            -- Stop OpenVPN (manages tun0 and routes to VPS)
+            -- Disable and stop OpenVPN (disable prevents omr-tracker from restarting it)
+            sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
             sys.exec("killall openvpn >/dev/null 2>&1")
 
-            -- Stop Shadowsocks (transparent TCP proxy to VPS)
+            -- Disable and stop Shadowsocks (transparent TCP proxy to VPS)
+            sys.exec("/etc/init.d/shadowsocks-rust disable >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
             sys.exec("killall sslocal >/dev/null 2>&1")
 
@@ -2535,10 +2537,12 @@ function action_bypass()
             -- Commit network changes
             uci:commit("network")
 
-            -- Restart Shadowsocks (transparent TCP proxy)
+            -- Re-enable and start Shadowsocks (transparent TCP proxy)
+            sys.exec("/etc/init.d/shadowsocks-rust enable >/dev/null 2>&1")
             sys.exec("/etc/init.d/shadowsocks-rust start >/dev/null 2>&1")
 
-            -- Restart OpenVPN (manages tun0 and routes to VPS)
+            -- Re-enable and start OpenVPN (manages tun0 and routes to VPS)
+            sys.exec("/etc/init.d/openvpn enable >/dev/null 2>&1")
             sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
 
             -- Bring up omrvpn interface

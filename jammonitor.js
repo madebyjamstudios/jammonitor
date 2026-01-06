@@ -106,22 +106,39 @@ var JamMonitor = (function() {
         var clientsTbody = document.getElementById('clients-tbody');
         if (clientsTbody) {
             clientsTbody.addEventListener('click', function(e) {
-                // Name editing - check for click on cell or its contents
-                var nameCell = e.target.closest('.client-name');
-                if (nameCell) {
-                    var mac = nameCell.dataset.mac;
-                    if (!mac) return;  // Tailscale peers don't have MAC
-                    mac = mac.toLowerCase();
-                    var currentName = nameCell.textContent.trim();
-                    var newName = prompt('Enter device name:', currentName);
-                    if (newName !== null && newName.trim() !== '' && newName.trim() !== currentName) {
-                        // Save to pending, not immediately
-                        if (!pendingMeta[mac]) pendingMeta[mac] = {};
-                        pendingMeta[mac].alias = newName.trim();
-                        nameCell.textContent = newName.trim();
-                        nameCell.classList.add('client-pending-name');
+                // Inline edit - Save button
+                if (e.target.classList.contains('btn-save')) {
+                    var cell = e.target.closest('.client-name');
+                    var mac = cell && cell.dataset.mac;
+                    if (!mac) return;
+                    var input = cell.querySelector('.name-edit input');
+                    var newName = input.value.trim();
+                    var originalName = input.dataset.original;
+                    if (newName && newName !== originalName) {
+                        if (!pendingMeta[mac.toLowerCase()]) pendingMeta[mac.toLowerCase()] = {};
+                        pendingMeta[mac.toLowerCase()].alias = newName;
+                        cell.querySelector('.name-display').textContent = newName;
+                        input.dataset.original = newName;
+                        cell.classList.add('client-pending-name');
                         updatePendingUI();
                     }
+                    cell.classList.remove('editing');
+                    return;
+                }
+                // Inline edit - Cancel button
+                if (e.target.classList.contains('btn-cancel')) {
+                    var cell = e.target.closest('.client-name');
+                    if (cell) {
+                        var input = cell.querySelector('.name-edit input');
+                        input.value = input.dataset.original;
+                        cell.classList.remove('editing');
+                    }
+                    return;
+                }
+                // Click on input - add editing class to keep form visible
+                if (e.target.matches('.name-edit input')) {
+                    var cell = e.target.closest('.client-name');
+                    if (cell) cell.classList.add('editing');
                     return;
                 }
                 // Reservation popup
@@ -1390,14 +1407,21 @@ var JamMonitor = (function() {
                     rowStyle = 'background:#f0fff4;';  // Has reservation - green tint
                 }
 
-                // Name cell styling
+                // Name cell with inline edit form
                 var nameClass = 'client-name';
                 if (metaPending) nameClass += ' client-pending-name';
+                var nameCell = '<span class="name-display">' + escapeHtml(displayName) + '</span>' +
+                    '<div class="name-edit">' +
+                    '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '">' +
+                    '<div class="name-edit-buttons">' +
+                    '<button class="btn-save">Save</button>' +
+                    '<button class="btn-cancel">Cancel</button>' +
+                    '</div></div>';
 
                 rows += '<tr style="' + rowStyle + '">';
                 rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';
                 rows += '<td style="text-align:center;">' + icon + '</td>';
-                rows += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + escapeHtml(displayName) + '</td>';
+                rows += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + nameCell + '</td>';
                 rows += '<td>' + (t.rx > 0 ? formatBytesCompact(t.rx) : '--') + '</td>';
                 rows += '<td>' + (t.tx > 0 ? formatBytesCompact(t.tx) : '--') + '</td>';
                 rows += '<td>LAN</td>';

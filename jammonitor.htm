@@ -144,9 +144,19 @@ table.jm-table th { background: #2c3e50; color: #fff; font-weight: 600; font-siz
 table.jm-table tr:nth-child(even) { background: #f8f9fa; }
 table.jm-table tr:hover { background: #e8f4fc; }
 
-/* Client name editable (LAN only) - full cell hover */
-#clients-table td.client-name { cursor: pointer; }
-#clients-table td.client-name:hover { background: #d0e8ff !important; }
+/* Client name inline editing */
+#clients-table td.client-name { cursor: pointer; position: relative; }
+#clients-table td.client-name .name-display { display: block; }
+#clients-table td.client-name .name-edit { display: none; }
+#clients-table td.client-name:hover .name-display { display: none; }
+#clients-table td.client-name:hover .name-edit { display: block; }
+#clients-table td.client-name.editing .name-display { display: none; }
+#clients-table td.client-name.editing .name-edit { display: block; }
+.name-edit input { width: 100%; padding: 4px 6px; border: 1px solid #3498db; border-radius: 3px; font-size: 12px; box-sizing: border-box; }
+.name-edit-buttons { margin-top: 4px; display: flex; gap: 4px; }
+.name-edit-buttons button { padding: 2px 8px; font-size: 10px; border: none; border-radius: 3px; cursor: pointer; }
+.name-edit-buttons .btn-save { background: #27ae60; color: #fff; }
+.name-edit-buttons .btn-cancel { background: #95a5a6; color: #fff; }
 
 /* Offline client styling (Tailscale) */
 .client-offline { color: #999; }

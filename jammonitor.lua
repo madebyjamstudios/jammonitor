@@ -2478,6 +2478,9 @@ function action_bypass()
             sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
             sys.exec("killall sslocal >/dev/null 2>&1")
 
+            -- Bring down omrvpn interface (prevents netifd from restarting VPN)
+            sys.exec("ifdown omrvpn >/dev/null 2>&1")
+
             -- Bring down tun0 if still up
             sys.exec("ip link set tun0 down >/dev/null 2>&1")
 
@@ -2537,6 +2540,9 @@ function action_bypass()
 
             -- Restart OpenVPN (manages tun0 and routes to VPS)
             sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
+
+            -- Bring up omrvpn interface
+            sys.exec("ifup omrvpn >/dev/null 2>&1")
 
             -- Reload firewall to restore nftables redirect rules
             sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")

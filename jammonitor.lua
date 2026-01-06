@@ -2476,31 +2476,18 @@ function action_bypass()
 
             -- Add a bypass rule for all traffic (0.0.0.0/0 = all destinations)
             -- This tells OMR to bypass the VPN for all destinations
+            -- Goes in "IPs and Networks" section of OMR-Bypass
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "ips")
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "enabled", "1")
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "ip", "0.0.0.0/0")
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "interface", primary_wan or "lan1")
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "comment", "JamMonitor VPS Bypass - All Traffic")
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "note", "JamMonitor VPS Bypass - All Traffic")
             bypass_uci:commit("omr-bypass")
 
             -- Restart omr-bypass to apply the new rule
             sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
 
-            -- Add IP policy rule to bypass OMR's routing and use main table directly
-            -- Priority 100 is higher than OMR's rules (typically 5270+)
-            sys.exec("ip rule add from all lookup main priority 100 2>/dev/null || true")
-
-            -- Remove/disable the shadowsocks TCP redirect
-            -- This is the nftables rule that sends all TCP to port 1100 (shadowsocks)
-            sys.exec("nft flush chain inet fw4 srcnat_wan 2>/dev/null || true")
-            sys.exec("nft delete table inet omr-bypass-dstip 2>/dev/null || true")
-
-            -- Add a direct default route via primary WAN (higher metric to not conflict)
-            local wan_gw = sys.exec("ip route show dev " .. (primary_wan or "lan1") .. " 2>/dev/null | grep -oP 'default via \\K[0-9.]+'"):gsub("%s+$", "")
-            if wan_gw ~= "" then
-                sys.exec("ip route add default via " .. wan_gw .. " dev " .. (primary_wan or "lan1") .. " metric 1 2>/dev/null || true")
-            end
-
-            -- Wait for rules to apply
+            -- Wait for omr-bypass to apply
             sys.exec("sleep 3")
 
             -- Verify the change took effect
@@ -2559,20 +2546,8 @@ function action_bypass()
             -- Restart omr-bypass to remove our bypass rule
             sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
 
-            -- Remove the IP policy rule we added
-            sys.exec("ip rule del from all lookup main priority 100 2>/dev/null || true")
-
-            -- Remove the direct default route we added
-            sys.exec("ip route del default metric 1 2>/dev/null || true")
-
-            -- Reload firewall to restore nftables redirect rules (shadowsocks redirect)
-            sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
-
-            -- Reload network (applies interface changes and restarts routing)
-            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
-
-            -- Wait for VPN to reconnect and stabilize
-            sys.exec("sleep 5")
+            -- Wait for routing to settle
+            sys.exec("sleep 3")
 
             http.write(json.stringify({
                 success = true,

@@ -2470,24 +2470,28 @@ function action_bypass()
             -- Commit multipath changes
             uci:commit("network")
 
-            -- Add global omr-bypass rule to route all traffic through primary WAN
-            -- This uses OMR's built-in bypass mechanism instead of fighting services
-            local bypass_uci = require "luci.model.uci".cursor()
+            -- OMR-bypass doesn't support 0.0.0.0/0 wildcard, so we must stop the VPN services
+            -- Order matters: stop the monitor first, then the services it monitors
 
-            -- Add a bypass rule for all LAN traffic (0.0.0.0/0 = any source)
-            -- Uses lan_ip type like Guest WiFi and Dante bypasses
-            -- Goes in "Source lan IP address or network" section of OMR-Bypass
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "lan_ip")
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "enabled", "1")
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "ip", "0.0.0.0/0")
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "interface", primary_wan or "lan1")
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "note", "JamMonitor VPS Bypass - All Traffic")
-            bypass_uci:commit("omr-bypass")
+            -- 1. Disable and stop omr-tracker (monitors and restarts VPN services)
+            sys.exec("/etc/init.d/omr-tracker disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/omr-tracker stop >/dev/null 2>&1")
+            sys.exec("killall -9 omr-tracker omr-tracker-ss 2>/dev/null")
 
-            -- Restart omr-bypass to apply the new rule
-            sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
+            -- 2. Disable and stop OpenVPN (manages tun0)
+            sys.exec("/etc/init.d/openvpn disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
+            sys.exec("killall -9 openvpn 2>/dev/null")
 
-            -- Wait for omr-bypass to apply
+            -- 3. Disable and stop Shadowsocks (TCP proxy to VPS)
+            sys.exec("/etc/init.d/shadowsocks-rust disable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
+            sys.exec("killall -9 sslocal ss-redir 2>/dev/null")
+
+            -- 4. Bring down tun0 interface
+            sys.exec("ip link set tun0 down 2>/dev/null")
+
+            -- Wait for services to stop
             sys.exec("sleep 3")
 
             -- Verify the change took effect
@@ -2535,19 +2539,29 @@ function action_bypass()
             -- Remove bypass flag
             fs.remove(bypass_flag)
 
-            -- Remove the global omr-bypass rule we added
-            local bypass_uci = require "luci.model.uci".cursor()
-            bypass_uci:delete("omr-bypass", "jammonitor_bypass")
-            bypass_uci:commit("omr-bypass")
-
             -- Commit network changes
             uci:commit("network")
 
-            -- Restart omr-bypass to remove our bypass rule
-            sys.exec("/etc/init.d/omr-bypass restart >/dev/null 2>&1")
+            -- Re-enable and start VPN services in correct order
 
-            -- Wait for routing to settle
-            sys.exec("sleep 3")
+            -- 1. Re-enable and start Shadowsocks
+            sys.exec("/etc/init.d/shadowsocks-rust enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/shadowsocks-rust start >/dev/null 2>&1")
+
+            -- 2. Re-enable and start OpenVPN
+            sys.exec("/etc/init.d/openvpn enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
+
+            -- 3. Re-enable and start omr-tracker (monitors VPN health)
+            sys.exec("/etc/init.d/omr-tracker enable >/dev/null 2>&1")
+            sys.exec("/etc/init.d/omr-tracker start >/dev/null 2>&1")
+
+            -- 4. Reload firewall and network to restore all routing
+            sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
+            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
+
+            -- Wait for VPN to reconnect
+            sys.exec("sleep 5")
 
             http.write(json.stringify({
                 success = true,

@@ -2584,13 +2584,29 @@ function action_bypass()
                 end
             end
 
-            http.write(json.stringify({
-                success = true,
-                bypass_enabled = true,
-                active_wan = primary_wan,
-                verified = verify_ok,
-                message = "VPS bypass enabled - traffic now going direct"
-            }))
+            if verify_ok then
+                http.write(json.stringify({
+                    success = true,
+                    bypass_enabled = true,
+                    active_wan = primary_wan,
+                    message = "VPS bypass enabled - traffic now going direct"
+                }))
+            else
+                -- Verification failed - try to rollback
+                for _, line in ipairs(saved_lines) do
+                    local iface, mode = line:match("^([^=]+)=(.+)$")
+                    if iface and mode then
+                        uci:set("network", iface, "multipath", mode)
+                    end
+                end
+                uci:commit("network")
+                fs.remove(bypass_flag)
+                fs.remove("/etc/jammonitor_bypass_vpn")
+                http.write(json.stringify({
+                    success = false,
+                    error = "Failed to set multipath to off - changes rolled back"
+                }))
+            end
         else
             -- DISABLE BYPASS: Restore saved config
             local saved_content = fs.readfile(saved_config) or ""
@@ -2663,13 +2679,35 @@ function action_bypass()
             -- 3. Start omr-tracker
             sys.exec("/etc/init.d/omr-tracker start >/dev/null 2>&1")
 
-            -- Send response BEFORE network reload (reload drops connection)
-            http.write(json.stringify({
-                success = true,
-                bypass_enabled = false,
-                restored_count = restored_count,
-                message = "VPS bypass disabled - traffic now routed through VPS"
-            }))
+            -- Verify multipath settings were restored
+            local verify_uci = require "luci.model.uci".cursor()
+            local verify_ok = true
+            for line in saved_content:gmatch("[^\n]+") do
+                local iface, expected_mode = line:match("^([^=]+)=(.+)$")
+                if iface and expected_mode then
+                    local actual_mode = verify_uci:get("network", iface, "multipath")
+                    if actual_mode ~= expected_mode then
+                        verify_ok = false
+                        break
+                    end
+                end
+            end
+
+            if verify_ok then
+                -- Send response BEFORE network reload (reload drops connection)
+                http.write(json.stringify({
+                    success = true,
+                    bypass_enabled = false,
+                    restored_count = restored_count,
+                    message = "VPS bypass disabled - traffic now routed through VPS"
+                }))
+            else
+                http.write(json.stringify({
+                    success = false,
+                    error = "Failed to restore multipath settings"
+                }))
+                return
+            end
 
             -- 4. Reload firewall and network in background (after response sent)
             sys.exec("(sleep 1 && /etc/init.d/firewall reload && /etc/init.d/network reload) >/dev/null 2>&1 &")

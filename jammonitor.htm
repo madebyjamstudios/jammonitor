@@ -821,31 +821,18 @@ table.jm-table tr:hover { background: #e8f4fc; }
 
                     <!-- Quick Select -->
                     <div style="margin-bottom:16px;">
-                        <label style="color:#5a6c7d;font-size:13px;display:block;margin-bottom:6px;">Quick select:</label>
+                        <label style="color:#5a6c7d;font-size:13px;display:block;margin-bottom:6px;">Time range:</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <button class="jm-quick-range active" data-hours="24" onclick="JamMonitor.setHistoryRange(24, this)">24h</button>
                             <button class="jm-quick-range" data-hours="72" onclick="JamMonitor.setHistoryRange(72, this)">3 days</button>
                             <button class="jm-quick-range" data-hours="168" onclick="JamMonitor.setHistoryRange(168, this)">7 days</button>
                             <button class="jm-quick-range" data-hours="336" onclick="JamMonitor.setHistoryRange(336, this)">14 days</button>
                             <button class="jm-quick-range" data-hours="720" onclick="JamMonitor.setHistoryRange(720, this)">30 days</button>
-                            <button class="jm-quick-range" data-hours="custom" onclick="JamMonitor.setHistoryRange('custom', this)">Custom</button>
                         </div>
                     </div>
 
-                    <!-- Custom Date Range (hidden by default) -->
-                    <div id="history-custom-range" style="display:none;margin-bottom:16px;background:#fff;border-radius:8px;padding:14px;border:1px solid #e0e6ed;">
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-                            <div>
-                                <label style="color:#5a6c7d;font-size:12px;display:block;margin-bottom:4px;">From:</label>
-                                <input type="date" id="history-from" style="width:100%;padding:10px;border:1px solid #bdc3c7;border-radius:4px;font-size:14px;">
-                            </div>
-                            <div>
-                                <label style="color:#5a6c7d;font-size:12px;display:block;margin-bottom:4px;">To:</label>
-                                <input type="date" id="history-to" style="width:100%;padding:10px;border:1px solid #bdc3c7;border-radius:4px;font-size:14px;">
-                            </div>
-                        </div>
-                        <div style="margin-top:8px;font-size:11px;color:#7f8c8d;">Select specific days from stored history (up to 30 days available)</div>
-                    </div>
+                    <!-- Storage status indicator -->
+                    <div id="history-storage-info" style="margin-bottom:16px;font-size:12px;color:#7f8c8d;"></div>
 
                     <!-- Hidden field for hours value -->
                     <input type="hidden" id="history-hours" value="24">

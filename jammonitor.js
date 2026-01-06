@@ -152,6 +152,7 @@ var JamMonitor = (function() {
         else if (view === 'clients') updateClients();
         else if (view === 'wifi-aps') updateWifiAps();
         else if (view === 'omr-status') loadOmrStatus();
+        else if (view === 'diagnostics') loadStorageStatus();
         else if (view.startsWith('bw-')) updateBandwidth(view);
     }
 
@@ -2814,60 +2815,46 @@ var JamMonitor = (function() {
     }
 
     // History range selection
-    var historyMode = 'hours'; // 'hours' or 'custom'
-
     function setHistoryRange(value, btn) {
         // Update active button
         document.querySelectorAll('.jm-quick-range').forEach(function(b) {
             b.classList.remove('active');
         });
         if (btn) btn.classList.add('active');
+        document.getElementById('history-hours').value = value;
+    }
 
-        var customRange = document.getElementById('history-custom-range');
-        var hoursInput = document.getElementById('history-hours');
+    // Load storage status for diagnostics page
+    function loadStorageStatus() {
+        var infoDiv = document.getElementById('history-storage-info');
+        if (!infoDiv) return;
 
-        if (value === 'custom') {
-            historyMode = 'custom';
-            customRange.style.display = 'block';
-            // Set default dates (last 7 days)
-            var today = new Date();
-            var weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-            document.getElementById('history-to').value = today.toISOString().slice(0, 10);
-            document.getElementById('history-from').value = weekAgo.toISOString().slice(0, 10);
-        } else {
-            historyMode = 'hours';
-            customRange.style.display = 'none';
-            hoursInput.value = value;
-        }
+        api('storage_status').then(function(data) {
+            if (!data) {
+                infoDiv.innerHTML = '<span style="color:#e74c3c;">Unable to check storage status</span>';
+                return;
+            }
+            if (!data.mounted) {
+                infoDiv.innerHTML = '<span style="color:#e74c3c;">USB storage not mounted</span>';
+                return;
+            }
+            if (!data.database_exists) {
+                infoDiv.innerHTML = '<span style="color:#f39c12;">No data yet - collector starting...</span>';
+                return;
+            }
+
+            var dbSize = data.database_size ? (data.database_size / 1024 / 1024).toFixed(1) + ' MB' : 'Unknown';
+            var freeSpace = data.free_space ? (data.free_space / 1024 / 1024 / 1024).toFixed(1) + ' GB free' : '';
+            infoDiv.innerHTML = '<span style="color:#27ae60;">Database: ' + dbSize + '</span>' + (freeSpace ? ' &middot; ' + freeSpace : '');
+        });
     }
 
     function downloadHistory() {
         var status = document.getElementById('history-status');
-        var url, filename;
-
-        if (historyMode === 'custom') {
-            var fromDate = document.getElementById('history-from').value;
-            var toDate = document.getElementById('history-to').value;
-            if (!fromDate || !toDate) {
-                status.innerHTML = '<span style="color:#e74c3c;">Please select both From and To dates.</span>';
-                return;
-            }
-            // Convert dates to timestamps (start of from day, end of to day)
-            var fromTs = Math.floor(new Date(fromDate).getTime() / 1000);
-            var toTs = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
-            if (fromTs > toTs) {
-                status.innerHTML = '<span style="color:#e74c3c;">From date must be before To date.</span>';
-                return;
-            }
-            url = window.location.pathname + '/history?from=' + fromTs + '&to=' + toTs;
-            filename = 'jammonitor-history-' + fromDate + '-to-' + toDate + '.json';
-            status.innerHTML = '<span style="color:#7f8c8d;">Fetching data from ' + fromDate + ' to ' + toDate + '...</span>';
-        } else {
-            var hours = document.getElementById('history-hours').value;
-            url = window.location.pathname + '/history?hours=' + hours;
-            filename = 'jammonitor-history-' + hours + 'h-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
-            status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
-        }
+        var hours = document.getElementById('history-hours').value;
+        var url = window.location.pathname + '/history?hours=' + hours;
+        var filename = 'jammonitor-history-' + hours + 'h-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
+        status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
 
         // First check if storage is available
         api('storage_status').then(function(storageData) {

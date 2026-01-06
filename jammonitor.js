@@ -50,6 +50,10 @@ var JamMonitor = (function() {
     var clientMeta = {};      // {mac: {alias, type}}
     var reservedMacs = {};    // {mac: {ip, name, mac}}
 
+    // Pending changes (not yet saved)
+    var pendingMeta = {};           // {mac: {alias, type}} - pending name/type changes
+    var pendingReservations = {};   // {mac: {ip, name, action: 'add'|'update'|'remove'}}
+
     // Check if interface is a WAN or VPN (for bandwidth tracking)
     // OMR naming: lan1/2/3/4 are WANs, sfp-lan is SFP WAN, tun0 is VPN tunnel
     // Note: "wan" and "sfp-wan" are actually LAN ports in OMR, not WANs
@@ -102,18 +106,17 @@ var JamMonitor = (function() {
         document.getElementById('clients-tbody').addEventListener('click', function(e) {
             // Name editing
             var nameCell = e.target.closest('.client-name');
-            if (nameCell) {
-                var mac = nameCell.dataset.mac;
+            if (nameCell && nameCell.dataset.mac) {
+                var mac = nameCell.dataset.mac.toLowerCase();
                 var currentName = nameCell.textContent;
                 var newName = prompt('Enter device name:', currentName);
                 if (newName && newName !== currentName) {
-                    saveClientMeta(mac, newName, null).then(function(resp) {
-                        if (resp && resp.success) {
-                            nameCell.textContent = newName;
-                        } else {
-                            alert('Failed to save: ' + (resp.error || 'Unknown error'));
-                        }
-                    }).catch(function() { alert('Failed to save name'); });
+                    // Save to pending, not immediately
+                    if (!pendingMeta[mac]) pendingMeta[mac] = {};
+                    pendingMeta[mac].alias = newName;
+                    nameCell.textContent = newName;
+                    nameCell.classList.add('client-pending-name');
+                    updatePendingUI();
                 }
                 return;
             }
@@ -1126,9 +1129,16 @@ var JamMonitor = (function() {
         });
     }
 
-    // DHCP Reservation popup
+    // DHCP Reservation popup (saves to pending, not immediately)
     function showReservationPopup(mac, ip, name) {
-        var existing = reservedMacs[mac.toLowerCase()];
+        var macLower = mac.toLowerCase();
+        var existing = reservedMacs[macLower];
+        var pending = pendingReservations[macLower];
+        // If there's a pending change, show that instead
+        if (pending && pending.action !== 'remove') {
+            existing = { ip: pending.ip, name: pending.name };
+        }
+
         var popup = document.createElement('div');
         popup.className = 'jm-popup-overlay';
         popup.innerHTML =
@@ -1138,7 +1148,7 @@ var JamMonitor = (function() {
             '<div class="jm-popup-row"><label>IP Address</label><input type="text" id="res-ip" value="' + escapeHtml(existing ? existing.ip : ip) + '"></div>' +
             '<div class="jm-popup-row"><label>Name</label><input type="text" id="res-name" value="' + escapeHtml(existing ? existing.name : name) + '"></div>' +
             '<div class="jm-popup-buttons">' +
-            (existing ? '<button class="btn-danger" id="res-delete">Remove</button>' : '') +
+            (existing || pending ? '<button class="btn-danger" id="res-delete">Remove</button>' : '') +
             '<button class="btn-secondary" id="res-cancel">Cancel</button>' +
             '<button class="btn-primary" id="res-save">Save</button>' +
             '</div></div>';
@@ -1148,36 +1158,132 @@ var JamMonitor = (function() {
         popup.querySelector('#res-cancel').onclick = function() { popup.remove(); };
         popup.onclick = function(e) { if (e.target === popup) popup.remove(); };
 
-        // Save
+        // Save to pending (not immediately to backend)
         popup.querySelector('#res-save').onclick = function() {
             var newIp = popup.querySelector('#res-ip').value.trim();
             var newName = popup.querySelector('#res-name').value.trim();
             if (!newIp) { alert('IP address is required'); return; }
-            api('set_reservation', { mac: mac, ip: newIp, name: newName }).then(function(resp) {
-                if (resp && resp.success) {
-                    popup.remove();
-                    loadReservations().then(updateClients);
-                } else {
-                    alert('Failed: ' + (resp.error || 'Unknown error'));
-                }
-            }).catch(function() { alert('Failed to save reservation'); });
+
+            pendingReservations[macLower] = {
+                ip: newIp,
+                name: newName,
+                action: reservedMacs[macLower] ? 'update' : 'add'
+            };
+            popup.remove();
+            updatePendingUI();
+            updateClients();  // Re-render to show pending state
         };
 
-        // Delete
+        // Delete (mark as pending remove)
         var delBtn = popup.querySelector('#res-delete');
         if (delBtn) {
             delBtn.onclick = function() {
-                if (!confirm('Remove DHCP reservation for ' + mac + '?')) return;
-                api('delete_reservation', { mac: mac }).then(function(resp) {
-                    if (resp && resp.success) {
-                        popup.remove();
-                        loadReservations().then(updateClients);
-                    } else {
-                        alert('Failed: ' + (resp.error || 'Unknown error'));
-                    }
-                }).catch(function() { alert('Failed to delete reservation'); });
+                if (!confirm('Remove DHCP reservation for ' + mac + '?\n(Click "Save and Apply" to finalize)')) return;
+                if (reservedMacs[macLower]) {
+                    // Existing reservation - mark for removal
+                    pendingReservations[macLower] = { action: 'remove' };
+                } else {
+                    // Was only pending add - just remove from pending
+                    delete pendingReservations[macLower];
+                }
+                popup.remove();
+                updatePendingUI();
+                updateClients();
             };
         }
+    }
+
+    // Update pending changes UI (button states, indicator)
+    function updatePendingUI() {
+        var hasPending = Object.keys(pendingMeta).length > 0 || Object.keys(pendingReservations).length > 0;
+        var indicator = document.getElementById('client-pending-indicator');
+        var saveBtn = document.getElementById('client-save-btn');
+        var resetBtn = document.getElementById('client-reset-btn');
+
+        if (indicator) indicator.style.display = hasPending ? 'inline' : 'none';
+        if (saveBtn) saveBtn.disabled = !hasPending;
+        if (resetBtn) {
+            resetBtn.disabled = !hasPending;
+            resetBtn.style.borderColor = hasPending ? '#e74c3c' : '#95a5a6';
+            resetBtn.style.color = hasPending ? '#e74c3c' : '#95a5a6';
+        }
+    }
+
+    // Check if a MAC has pending changes
+    function hasPendingChange(mac) {
+        var macLower = mac.toLowerCase();
+        return pendingMeta[macLower] || pendingReservations[macLower];
+    }
+
+    // Get effective reservation (considering pending)
+    function getEffectiveReservation(mac) {
+        var macLower = mac.toLowerCase();
+        var pending = pendingReservations[macLower];
+        if (pending) {
+            if (pending.action === 'remove') return null;
+            return { ip: pending.ip, name: pending.name, pending: true };
+        }
+        return reservedMacs[macLower];
+    }
+
+    // Save all pending changes to backend
+    function saveClientChanges() {
+        var saveBtn = document.getElementById('client-save-btn');
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+        }
+
+        var promises = [];
+
+        // Save pending meta changes (names, types)
+        Object.keys(pendingMeta).forEach(function(mac) {
+            var meta = pendingMeta[mac];
+            promises.push(saveClientMeta(mac, meta.alias, meta.type));
+        });
+
+        // Save pending reservations
+        Object.keys(pendingReservations).forEach(function(mac) {
+            var res = pendingReservations[mac];
+            if (res.action === 'remove') {
+                promises.push(api('delete_reservation', { mac: mac }));
+            } else {
+                promises.push(api('set_reservation', { mac: mac, ip: res.ip, name: res.name }));
+            }
+        });
+
+        Promise.all(promises).then(function(results) {
+            var failed = results.filter(function(r) { return r && r.error; });
+            if (failed.length > 0) {
+                alert('Some changes failed to save:\n' + failed.map(function(f) { return f.error; }).join('\n'));
+            }
+            // Clear pending state
+            pendingMeta = {};
+            pendingReservations = {};
+            // Reload data from backend
+            return Promise.all([loadClientMeta(), loadReservations()]);
+        }).then(function() {
+            updatePendingUI();
+            updateClients();
+            if (saveBtn) {
+                saveBtn.textContent = 'Save and Apply';
+            }
+        }).catch(function(err) {
+            alert('Failed to save changes: ' + err);
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save and Apply';
+            }
+        });
+    }
+
+    // Reset all pending changes (discard without saving)
+    function resetClientChanges() {
+        if (!confirm('Discard all unsaved changes?')) return;
+        pendingMeta = {};
+        pendingReservations = {};
+        updatePendingUI();
+        updateClients();
     }
 
     function updateClients() {
@@ -1242,21 +1348,49 @@ var JamMonitor = (function() {
                 var c = leases[ip];
                 var t = traffic[ip] || { rx: 0, tx: 0 };
                 var macLower = c.mac.toLowerCase();
+
+                // Check for pending changes
+                var metaPending = pendingMeta[macLower];
                 var meta = clientMeta[macLower] || {};
-                var displayName = meta.alias || c.hostname;
-                var deviceType = meta.type || detectDeviceType(c.hostname);
+                var displayName = (metaPending && metaPending.alias) || meta.alias || c.hostname;
+                var deviceType = (metaPending && metaPending.type) || meta.type || detectDeviceType(c.hostname);
                 var icon = getDeviceIcon(deviceType);
-                var hasReservation = reservedMacs[macLower];
-                var ipTitle = hasReservation ? 'Static reservation' : formatExpiry(c.expiry);
-                var tagIcon = hasReservation
-                    ? '<span style="color:#27ae60;" title="DHCP Reserved">\uD83C\uDFF7\uFE0F</span>'
-                    : '<span style="color:#bdc3c7;" title="Add to DHCP reservation">\uD83C\uDFF7\uFE0F</span>';
-                var rowStyle = hasReservation ? 'background:#f0fff4;' : '';
+
+                // Use effective reservation (considering pending)
+                var effectiveRes = getEffectiveReservation(c.mac);
+                var hasPendingRes = pendingReservations[macLower];
+                var ipTitle = effectiveRes ? 'Static reservation' : formatExpiry(c.expiry);
+
+                // Tag icon with pending state indication
+                var tagIcon;
+                if (hasPendingRes) {
+                    if (hasPendingRes.action === 'remove') {
+                        tagIcon = '<span style="color:#e74c3c;" title="Pending removal">\uD83C\uDFF7\uFE0F</span>';
+                    } else {
+                        tagIcon = '<span style="color:#f39c12;" title="Pending save">\uD83C\uDFF7\uFE0F</span>';
+                    }
+                } else if (effectiveRes) {
+                    tagIcon = '<span style="color:#27ae60;" title="DHCP Reserved">\uD83C\uDFF7\uFE0F</span>';
+                } else {
+                    tagIcon = '<span style="color:#bdc3c7;" title="Add to DHCP reservation">\uD83C\uDFF7\uFE0F</span>';
+                }
+
+                // Row styling with pending indication
+                var rowStyle = '';
+                if (hasPendingRes && hasPendingRes.action !== 'remove') {
+                    rowStyle = 'background:#fff8e1;';  // Pending reservation - yellow tint
+                } else if (effectiveRes && !hasPendingRes) {
+                    rowStyle = 'background:#f0fff4;';  // Has reservation - green tint
+                }
+
+                // Name cell styling
+                var nameClass = 'client-name';
+                if (metaPending) nameClass += ' client-pending-name';
 
                 rows += '<tr style="' + rowStyle + '">';
                 rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';
                 rows += '<td style="text-align:center;">' + icon + '</td>';
-                rows += '<td class="client-name" data-mac="' + escapeHtml(c.mac) + '">' + escapeHtml(displayName) + '</td>';
+                rows += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + escapeHtml(displayName) + '</td>';
                 rows += '<td>' + (t.rx > 0 ? formatBytesCompact(t.rx) : '--') + '</td>';
                 rows += '<td>' + (t.tx > 0 ? formatBytesCompact(t.tx) : '--') + '</td>';
                 rows += '<td>LAN</td>';
@@ -3280,6 +3414,8 @@ var JamMonitor = (function() {
         editApList: editApList,
         cancelApEdit: cancelApEdit,
         saveApList: saveApList,
-        toggleBypass: toggleBypass
+        toggleBypass: toggleBypass,
+        saveClientChanges: saveClientChanges,
+        resetClientChanges: resetClientChanges
     };
 })();

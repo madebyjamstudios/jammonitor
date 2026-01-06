@@ -154,6 +154,11 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .client-offline td { color: #999; }
 .client-offline .client-name { text-decoration: line-through; }
 
+/* Pending changes styling */
+.client-pending { font-style: italic; }
+.client-pending-name { background: #fff8e1; }
+.client-pending-reservation { background: #e8f5e9; }
+
 /* Reservation tag - button style */
 .reservation-tag { cursor: pointer; text-align: center; }
 .reservation-tag span {
@@ -711,7 +716,14 @@ table.jm-table tr:hover { background: #e8f4fc; }
 
         <!-- CLIENTS -->
         <div id="view-clients" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Client List</h2>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+                <h2 style="margin:0;color:#2c3e50;">Client List</h2>
+                <div class="client-actions" style="display:flex;gap:10px;align-items:center;">
+                    <span id="client-pending-indicator" style="display:none;font-size:11px;color:#e67e22;">Unsaved changes</span>
+                    <button class="wan-advanced-btn wan-advanced-btn-save" id="client-save-btn" onclick="JamMonitor.saveClientChanges()" disabled>Save and Apply</button>
+                    <button class="wan-advanced-btn" style="background:#fff;border:1px solid #95a5a6;color:#95a5a6;" id="client-reset-btn" onclick="JamMonitor.resetClientChanges()" disabled>Reset</button>
+                </div>
+            </div>
             <table class="jm-table" id="clients-table">
                 <thead><tr>
                     <th>IP Address</th>

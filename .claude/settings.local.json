@@ -17,7 +17,8 @@
       "Bash(done)",
       "Bash(python3:*)",
       "Bash(cat:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

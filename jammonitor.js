@@ -3237,10 +3237,16 @@ var JamMonitor = (function() {
 
     // History range selection
     function setHistoryRange(value, btn) {
-        // Update active button
-        document.querySelectorAll('.jm-quick-range').forEach(function(b) {
-            b.classList.remove('active');
-        });
+        // Update active button (only within history card, not speed test buttons)
+        var historyCard = document.getElementById('history-hours');
+        if (historyCard) {
+            var card = historyCard.closest('div[style*="border:2px solid"]');
+            if (card) {
+                card.querySelectorAll('.jm-quick-range').forEach(function(b) {
+                    b.classList.remove('active');
+                });
+            }
+        }
         if (btn) btn.classList.add('active');
         document.getElementById('history-hours').value = value;
 

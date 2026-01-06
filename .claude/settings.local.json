@@ -3,7 +3,21 @@
     "allow": [
       "Bash(tar:*)",
       "Bash(file:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(wc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nImplement true VPS bypass by stopping OpenVPN and Shadowsocks\n\nThe previous bypass only set multipath=off, but traffic still routed\nthrough VPS because:\n- OpenVPN manages tun0 and re-adds routes\n- Shadowsocks transparent proxy redirects all TCP to port 1100\n- nftables rule: meta l4proto tcp redirect to :1100\n\nNow the bypass properly:\n- Stops OpenVPN daemon and kills processes\n- Stops Shadowsocks daemon and kills sslocal processes\n- Brings down tun0 interface\n- Waits 3 seconds for services to stop cleanly\n\nRestore now properly:\n- Starts Shadowsocks daemon\n- Starts OpenVPN daemon\n- Reloads firewall to restore nftables rules\n- Reloads network\n- Waits 5 seconds for VPN to reconnect\n\nAlso updated frontend with:\n- Better confirmation dialogs explaining what will happen\n- Longer status messages during switching \\(~10 seconds\\)\n- Warning about connection interruption times\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(luac:*)",
+      "Bash(git log:*)",
+      "Bash(for hash in e5b2cf7 baf6658 dfbc2ab)",
+      "Bash(do echo \"=== $hash ===\")",
+      "Bash(done)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(git restore:*)"
     ]
   }
 }

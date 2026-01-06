@@ -29,6 +29,9 @@ var JamMonitor = (function() {
     var lastBwBytes = {};
     var throughputHistory = [];
 
+    // Storage status cache for diagnostics
+    var storageStatusCache = null;
+
     // Interface list
     var interfaces = [];
 
@@ -1066,13 +1069,15 @@ var JamMonitor = (function() {
                             var peer = ts.Peer[key];
                             var hostname = peer.HostName || peer.DNSName || 'Unknown';
                             var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
-                            var online = peer.Online ? '<span style="color:#27ae60;">Online</span>' : '<span style="color:#999;">Offline</span>';
-                            var os = peer.OS || '';
+                            var statusDot = peer.Online
+                                ? '<span style="color:#27ae60;margin-right:6px;">●</span>'
+                                : '<span style="color:#bdc3c7;margin-right:6px;">●</span>';
+                            var os = peer.OS || '--';
                             rows += '<tr style="background:#f0f9ff;">';
-                            rows += '<td>' + escapeHtml(hostname) + '</td>';
+                            rows += '<td>' + statusDot + escapeHtml(hostname) + '</td>';
                             rows += '<td>' + escapeHtml(ip) + '</td>';
                             rows += '<td style="font-size:12px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';
-                            rows += '<td colspan="2">' + online + '</td>';
+                            rows += '<td>--</td><td>--</td>';
                             rows += '<td style="color:#3498db;">Tailscale</td></tr>';
                         });
                     }
@@ -2849,32 +2854,95 @@ var JamMonitor = (function() {
         });
         if (btn) btn.classList.add('active');
         document.getElementById('history-hours').value = value;
+
+        // Update estimates based on selected range
+        updateHistoryEstimates(value);
+    }
+
+    // Calculate and display estimates for selected time range
+    function updateHistoryEstimates(hours) {
+        var estimateDiv = document.getElementById('history-estimate');
+        if (!estimateDiv) return;
+
+        if (!storageStatusCache || !storageStatusCache.entry_count) {
+            estimateDiv.innerHTML = '<span style="color:#7f8c8d;">Calculating...</span>';
+            return;
+        }
+
+        var data = storageStatusCache;
+
+        // Calculate entries for selected range
+        // Collection is 1/minute, so max entries = hours * 60
+        var maxEntries = hours * 60;
+
+        // But we can't have more than what's in the database
+        var availableEntries = Math.min(maxEntries, data.entry_count);
+
+        // Estimate file size based on average bytes per entry
+        // Average from actual data: ~200-300 bytes per entry in JSON format
+        var avgBytesPerEntry = 250;
+        if (data.database_size && data.entry_count > 0) {
+            // Use actual ratio if available (database is more compact than JSON)
+            avgBytesPerEntry = Math.round((data.database_size / data.entry_count) * 2.5);
+        }
+        var estimatedSize = availableEntries * avgBytesPerEntry;
+
+        // Format size
+        var sizeStr;
+        if (estimatedSize < 1024) {
+            sizeStr = estimatedSize + ' B';
+        } else if (estimatedSize < 1024 * 1024) {
+            sizeStr = (estimatedSize / 1024).toFixed(1) + ' KB';
+        } else {
+            sizeStr = (estimatedSize / 1024 / 1024).toFixed(1) + ' MB';
+        }
+
+        // Check if we have enough data
+        var rangeNote = '';
+        if (maxEntries > data.entry_count) {
+            var availableHours = Math.round(data.entry_count / 60);
+            rangeNote = ' <span style="color:#f39c12;">(only ' + availableHours + 'h available)</span>';
+        }
+
+        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' entries &middot; ~' + sizeStr + rangeNote;
     }
 
     // Load storage status for diagnostics page
     function loadStorageStatus() {
         var infoDiv = document.getElementById('history-storage-info');
+        var estimateDiv = document.getElementById('history-estimate');
         if (!infoDiv) return;
+
+        // Show loading state for estimate
+        if (estimateDiv) {
+            estimateDiv.innerHTML = '<span style="color:#7f8c8d;">Loading...</span>';
+        }
 
         api('storage_status').then(function(data) {
             if (!data) {
                 infoDiv.innerHTML = '<span style="color:#e74c3c;">Unable to check storage status</span>';
+                storageStatusCache = null;
                 return;
             }
             if (!data.mounted) {
                 infoDiv.innerHTML = '<span style="color:#e74c3c;">USB storage not mounted</span>';
+                storageStatusCache = null;
                 return;
             }
             if (!data.database_exists) {
                 infoDiv.innerHTML = '<span style="color:#f39c12;">No data yet - collector starting...</span>';
+                storageStatusCache = null;
                 return;
             }
 
+            // Cache the data for estimate calculations
+            storageStatusCache = data;
+
             var parts = [];
 
-            // Entry count
+            // Entry count (total in database)
             if (data.entry_count) {
-                parts.push(data.entry_count.toLocaleString() + ' entries');
+                parts.push(data.entry_count.toLocaleString() + ' total entries');
             }
 
             // Data range (oldest to newest)
@@ -2886,7 +2954,7 @@ var JamMonitor = (function() {
 
             // Database size
             if (data.database_size) {
-                parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB');
+                parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB on disk');
             }
 
             // Collector status
@@ -2901,6 +2969,12 @@ var JamMonitor = (function() {
             }
 
             infoDiv.innerHTML = parts.join(' &middot; ');
+
+            // Update estimates for currently selected range
+            var hours = document.getElementById('history-hours');
+            if (hours) {
+                updateHistoryEstimates(parseInt(hours.value, 10) || 24);
+            }
         });
     }
 

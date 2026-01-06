@@ -2812,6 +2812,17 @@ var JamMonitor = (function() {
         frame.src = '/cgi-bin/luci/admin/system/openmptcprouter/status';
     }
 
+    // Chart loading spinner helpers
+    function showChartLoading(period) {
+        var loader = document.getElementById('loading-' + period);
+        if (loader) loader.classList.add('active');
+    }
+
+    function hideChartLoading(period) {
+        var loader = document.getElementById('loading-' + period);
+        if (loader) loader.classList.remove('active');
+    }
+
     function updateBandwidth(view) {
         if (view === 'bw-realtime') {
             var data = getFilteredThroughput();
@@ -2827,6 +2838,9 @@ var JamMonitor = (function() {
     }
 
     function loadVnstat(period) {
+        // Show loading spinner
+        showChartLoading(period);
+
         // Get selected interface from the appropriate dropdown
         var selectId = 'bw-' + period + '-iface';
         var sel = document.getElementById(selectId);
@@ -2845,6 +2859,7 @@ var JamMonitor = (function() {
                 if (tbody) {
                     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">vnstat data not available</td></tr>';
                 }
+                hideChartLoading(period);
                 return;
             }
             try {
@@ -2905,12 +2920,16 @@ var JamMonitor = (function() {
 
                 drawBarChart(chartId, traffic);
                 updateVnstatTable(tbodyId, traffic);
+                hideChartLoading(period);
             } catch (e) {
                 var tbody = document.getElementById(tbodyId);
                 if (tbody) {
                     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">vnstat data not available</td></tr>';
                 }
+                hideChartLoading(period);
             }
+        }).catch(function() {
+            hideChartLoading(period);
         });
     }
 

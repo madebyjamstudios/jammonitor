@@ -2,7 +2,16 @@ module("luci.controller.jammonitor", package.seeall)
 
 function index()
     entry({"admin", "status", "jammonitor"}, template("jammonitor"), _("Jam Monitor"), 99)
-    entry({"admin", "status", "jammonitor", "exec"}, call("action_exec"), nil)
+    -- Secure API endpoints (replacing generic /exec)
+    entry({"admin", "status", "jammonitor", "system_stats"}, call("action_system_stats"), nil)
+    entry({"admin", "status", "jammonitor", "network_info"}, call("action_network_info"), nil)
+    entry({"admin", "status", "jammonitor", "mptcp_status"}, call("action_mptcp_status"), nil)
+    entry({"admin", "status", "jammonitor", "vpn_status"}, call("action_vpn_status"), nil)
+    entry({"admin", "status", "jammonitor", "ping"}, call("action_ping"), nil)
+    entry({"admin", "status", "jammonitor", "clients"}, call("action_clients"), nil)
+    entry({"admin", "status", "jammonitor", "public_ip"}, call("action_public_ip"), nil)
+    entry({"admin", "status", "jammonitor", "vnstat"}, call("action_vnstat"), nil)
+    -- Existing endpoints
     entry({"admin", "status", "jammonitor", "diag"}, call("action_diag"), nil)
     entry({"admin", "status", "jammonitor", "wifi_status"}, call("action_wifi_status"), nil)
     entry({"admin", "status", "jammonitor", "wan_policy"}, call("action_wan_policy"), nil)
@@ -11,20 +20,382 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
     entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
     entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
+    entry({"admin", "status", "jammonitor", "storage_status"}, call("action_storage_status"), nil)
 end
 
-function action_exec()
+-- Helper: Validate interface name (alphanumeric, dash, underscore only)
+local function validate_iface(name)
+    if not name or name == "" then return nil end
+    if not name:match("^[a-zA-Z0-9_%-]+$") then return nil end
+    if #name > 32 then return nil end
+    return name
+end
+
+-- Helper: Validate IP address
+local function validate_ip(ip)
+    if not ip or ip == "" then return nil end
+    if not ip:match("^%d+%.%d+%.%d+%.%d+$") then return nil end
+    for octet in ip:gmatch("%d+") do
+        local n = tonumber(octet)
+        if not n or n < 0 or n > 255 then return nil end
+    end
+    return ip
+end
+
+-- System stats: load, cpu, temp, ram, uptime, conntrack
+function action_system_stats()
     local http = require "luci.http"
     local sys = require "luci.sys"
-    local cmd = http.formvalue("cmd")
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
 
-    http.prepare_content("text/plain")
-    if cmd then
-        local result = sys.exec(cmd .. " 2>/dev/null")
-        http.write(result or "")
-    else
-        http.write("")
+    http.prepare_content("application/json")
+
+    local result = {}
+
+    -- Load average
+    local loadavg = fs.readfile("/proc/loadavg") or ""
+    local l1, l2, l3 = loadavg:match("^([%d%.]+)%s+([%d%.]+)%s+([%d%.]+)")
+    result.load = { l1 or "0", l2 or "0", l3 or "0" }
+
+    -- CPU usage (snapshot - for proper calc, JS should compare two readings)
+    local stat = fs.readfile("/proc/stat") or ""
+    local cpu_line = stat:match("^cpu%s+(.-)[\r\n]")
+    if cpu_line then
+        local values = {}
+        for v in cpu_line:gmatch("%d+") do
+            table.insert(values, tonumber(v))
+        end
+        if #values >= 4 then
+            result.cpu_busy = values[1] + values[2] + values[3]
+            result.cpu_idle = values[4]
+        end
     end
+
+    -- Temperature
+    local temp = fs.readfile("/sys/class/thermal/thermal_zone0/temp")
+    if temp then
+        local t = tonumber(temp:match("%d+"))
+        if t then
+            if t > 1000 then t = t / 1000 end
+            result.temp = t
+        end
+    end
+
+    -- Memory
+    local meminfo = fs.readfile("/proc/meminfo") or ""
+    local mem_total = tonumber(meminfo:match("MemTotal:%s*(%d+)")) or 1
+    local mem_free = tonumber(meminfo:match("MemFree:%s*(%d+)")) or 0
+    local mem_buffers = tonumber(meminfo:match("Buffers:%s*(%d+)")) or 0
+    local mem_cached = tonumber(meminfo:match("Cached:%s*(%d+)")) or 0
+    local mem_used = mem_total - mem_free - mem_buffers - mem_cached
+    result.ram_pct = string.format("%.1f", (mem_used / mem_total) * 100)
+    result.ram_total = mem_total
+    result.ram_used = mem_used
+
+    -- Uptime
+    local uptime = fs.readfile("/proc/uptime") or ""
+    local up_secs = tonumber(uptime:match("^([%d%.]+)"))
+    result.uptime_secs = up_secs or 0
+
+    -- Date
+    result.date = os.date("%Y-%m-%d %H:%M:%S")
+
+    -- Conntrack
+    local ct_count = fs.readfile("/proc/sys/net/netfilter/nf_conntrack_count")
+    local ct_max = fs.readfile("/proc/sys/net/netfilter/nf_conntrack_max")
+    result.conntrack_count = tonumber((ct_count or ""):match("%d+")) or 0
+    result.conntrack_max = tonumber((ct_max or ""):match("%d+")) or 0
+
+    http.write(json.stringify(result))
+end
+
+-- Network info: interfaces, routes, proc/net/dev
+function action_network_info()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {}
+
+    -- ip -br link
+    result.link = sys.exec("ip -br link 2>/dev/null") or ""
+
+    -- ip -br addr
+    result.addr = sys.exec("ip -br addr 2>/dev/null") or ""
+
+    -- ip route
+    result.route = sys.exec("ip route 2>/dev/null") or ""
+
+    -- /proc/net/dev
+    result.netdev = fs.readfile("/proc/net/dev") or ""
+
+    -- Wireless info
+    local phy_list = sys.exec("ls /sys/class/ieee80211/ 2>/dev/null") or ""
+    result.phy_devices = phy_list:gsub("%s+$", "")
+
+    -- Wireless config (UCI)
+    result.wireless_config = sys.exec("uci show wireless 2>/dev/null | grep -E '=wifi-device|\\.disabled='") or ""
+
+    -- Interface list (for dropdown population)
+    local iface_list = sys.exec("ip -br link 2>/dev/null | awk '{print $1}' | grep -vE '^lo$|^docker|^veth'") or ""
+    local ifaces = {}
+    for line in iface_list:gmatch("[^\n]+") do
+        local name = line:match("^([^@]+)")
+        if name and name ~= "" then
+            table.insert(ifaces, name)
+        end
+    end
+    result.interfaces = ifaces
+
+    http.write(json.stringify(result))
+end
+
+-- MPTCP status
+function action_mptcp_status()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+
+    http.prepare_content("application/json")
+
+    local result = {}
+
+    -- MPTCP endpoints
+    result.endpoints = sys.exec("ip mptcp endpoint show 2>/dev/null") or ""
+
+    -- MPTCP limits
+    result.limits = sys.exec("ip mptcp limits 2>/dev/null") or ""
+
+    -- MPTCP connections (count)
+    local ss_out = sys.exec("ss -M 2>/dev/null | grep -c ESTAB") or "0"
+    result.connections = tonumber(ss_out:match("%d+")) or 0
+
+    -- Interfaces in use
+    local ifaces_out = sys.exec("ip mptcp endpoint show 2>/dev/null | grep -oE 'dev [a-z0-9]+' | cut -d' ' -f2 | sort -u | tr '\\n' ' '") or ""
+    result.interfaces = ifaces_out:gsub("%s+$", "")
+
+    -- Endpoint count
+    local ep_count = sys.exec("ip mptcp endpoint show 2>/dev/null | wc -l") or "0"
+    result.endpoint_count = tonumber(ep_count:match("%d+")) or 0
+
+    http.write(json.stringify(result))
+end
+
+-- VPN/Tunnel status
+function action_vpn_status()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+
+    http.prepare_content("application/json")
+
+    local result = {
+        tunnel = {},
+        wireguard = {},
+        vps = {}
+    }
+
+    -- Check tun0
+    local tun0_addr = sys.exec("ip addr show dev tun0 2>/dev/null") or ""
+    result.tunnel.exists = tun0_addr ~= ""
+    if result.tunnel.exists then
+        local ip_match = tun0_addr:match("inet%s+([%d%.]+)")
+        result.tunnel.ip = ip_match
+        local peer_match = tun0_addr:match("peer%s+([%d%.]+)")
+        result.tunnel.peer = peer_match
+    end
+
+    -- tun0 route (for tunnel gateway)
+    local tun0_route = sys.exec("ip route show dev tun0 2>/dev/null | grep -oE 'via [0-9.]+' | head -1 | cut -d' ' -f2") or ""
+    result.tunnel.gateway = tun0_route:gsub("%s+$", "")
+
+    -- omrvpn status
+    local omrvpn_status = sys.exec("ifstatus omrvpn 2>/dev/null")
+    if omrvpn_status and omrvpn_status ~= "" then
+        local status = json.parse(omrvpn_status)
+        if status then
+            result.tunnel.omrvpn_up = status.up
+            result.tunnel.omrvpn_uptime = status.uptime
+        end
+    end
+
+    -- WireGuard
+    local wg_show = sys.exec("wg show 2>/dev/null") or ""
+    result.wireguard.active = wg_show ~= ""
+    if result.wireguard.active then
+        local wg_iface = wg_show:match("interface:%s*(%S+)")
+        result.wireguard.interface = wg_iface
+        local endpoints = sys.exec("wg show all endpoints 2>/dev/null") or ""
+        local ep_match = endpoints:match("(%d+%.%d+%.%d+%.%d+):")
+        result.wireguard.endpoint = ep_match
+
+        if wg_iface then
+            local wg_addr = sys.exec("ip addr show dev " .. validate_iface(wg_iface) .. " 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2") or ""
+            result.wireguard.ip = wg_addr:gsub("%s+$", "")
+        end
+    end
+
+    -- VPS IP from UCI
+    local vps_ip = uci:get("openmptcprouter", "vps", "ip")
+    if not vps_ip then
+        vps_ip = uci:get("glorytun", "vpn", "host")
+    end
+    result.vps.ip = vps_ip
+
+    http.write(json.stringify(result))
+end
+
+-- Ping endpoint (validated host)
+function action_ping()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+
+    http.prepare_content("application/json")
+
+    local host = http.formvalue("host")
+    local validated_host = validate_ip(host)
+
+    if not validated_host then
+        http.write(json.stringify({ error = "Invalid IP address" }))
+        return
+    end
+
+    -- Run ping with strict timeout
+    local result = sys.exec("ping -c1 -W1 " .. validated_host .. " 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2")
+    local latency = tonumber(result:match("[%d%.]+"))
+
+    http.write(json.stringify({
+        host = validated_host,
+        latency = latency,
+        success = latency ~= nil
+    }))
+end
+
+-- Clients: DHCP leases, ARP, conntrack
+function action_clients()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {}
+
+    -- DHCP leases
+    result.dhcp_leases = fs.readfile("/tmp/dhcp.leases") or ""
+
+    -- ARP table
+    result.arp = fs.readfile("/proc/net/arp") or ""
+
+    -- Conntrack (limited to first 500 entries for performance)
+    result.conntrack = sys.exec("conntrack -L 2>/dev/null | head -500") or ""
+
+    http.write(json.stringify(result))
+end
+
+-- Public IP check
+function action_public_ip()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+
+    http.prepare_content("application/json")
+
+    -- Try multiple services with short timeout
+    local ip = sys.exec("curl -s --max-time 3 ifconfig.me 2>/dev/null") or ""
+    ip = ip:gsub("%s+$", "")
+
+    if not ip:match("^%d+%.%d+%.%d+%.%d+$") then
+        ip = sys.exec("curl -s --max-time 3 api.ipify.org 2>/dev/null") or ""
+        ip = ip:gsub("%s+$", "")
+    end
+
+    if not ip:match("^%d+%.%d+%.%d+%.%d+$") then
+        ip = sys.exec("curl -s --max-time 3 icanhazip.com 2>/dev/null") or ""
+        ip = ip:gsub("%s+$", "")
+    end
+
+    local valid = ip:match("^%d+%.%d+%.%d+%.%d+$") ~= nil
+
+    http.write(json.stringify({
+        ip = valid and ip or nil,
+        success = valid
+    }))
+end
+
+-- vnstat stats
+function action_vnstat()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+
+    http.prepare_content("application/json")
+
+    local iface = http.formvalue("iface")
+    local validated_iface = validate_iface(iface)
+
+    local cmd = "vnstat --json"
+    if validated_iface then
+        cmd = "vnstat -i " .. validated_iface .. " --json"
+    end
+
+    local result = sys.exec(cmd .. " 2>/dev/null") or ""
+
+    -- Try to parse as JSON, return raw if fails
+    local data = json.parse(result)
+    if data then
+        http.write(json.stringify(data))
+    else
+        http.write(json.stringify({ error = "vnstat not available", raw = result }))
+    end
+end
+
+-- Storage status (USB mount check)
+function action_storage_status()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {
+        mounted = false,
+        collector_running = false,
+        database_exists = false,
+        free_space = nil
+    }
+
+    -- Check if /mnt/data is mounted
+    local mounts = fs.readfile("/proc/mounts") or ""
+    result.mounted = mounts:match("/mnt/data") ~= nil
+
+    -- Check if collector is running
+    local pgrep = sys.exec("pgrep -f jammonitor-collect 2>/dev/null") or ""
+    result.collector_running = pgrep:match("%d+") ~= nil
+
+    -- Check if database exists
+    local db_stat = fs.stat("/mnt/data/jammonitor/history.db")
+    result.database_exists = db_stat ~= nil
+    if db_stat then
+        result.database_size = db_stat.size
+    end
+
+    -- Get free space
+    if result.mounted then
+        local df = sys.exec("df /mnt/data 2>/dev/null | tail -1") or ""
+        local available = df:match("%s+%d+%s+%d+%s+(%d+)")
+        result.free_space = tonumber(available)
+    end
+
+    http.write(json.stringify(result))
 end
 
 -- WiFi status endpoint for Wi-Fi APs tab
@@ -1317,14 +1688,20 @@ function action_wan_policy()
         if changes_made then
             uci:commit("network")
 
-            -- Bring down disabled interfaces
+            -- Bring down disabled interfaces (with validation)
             for _, iface in ipairs(disabled_ifaces) do
-                sys.exec("ifdown " .. iface .. " >/dev/null 2>&1 &")
+                local safe_iface = validate_iface(iface)
+                if safe_iface then
+                    sys.exec("ifdown " .. safe_iface .. " >/dev/null 2>&1 &")
+                end
             end
 
-            -- Bring up enabled interfaces
+            -- Bring up enabled interfaces (with validation)
             for _, iface in ipairs(enabled_ifaces) do
-                sys.exec("ifup " .. iface .. " >/dev/null 2>&1 &")
+                local safe_iface = validate_iface(iface)
+                if safe_iface then
+                    sys.exec("ifup " .. safe_iface .. " >/dev/null 2>&1 &")
+                end
             end
 
             -- Reload network to apply all changes
@@ -1403,8 +1780,9 @@ function action_wan_policy()
                 local device = s.device or s.ifname or ""
                 local disabled = s.disabled == "1"
 
-                -- Get interface status for IP and state
-                local status_json = sys.exec("ifstatus " .. iface_name .. " 2>/dev/null")
+                -- Get interface status for IP and state (validated)
+                local safe_iface = validate_iface(iface_name)
+                local status_json = safe_iface and sys.exec("ifstatus " .. safe_iface .. " 2>/dev/null") or ""
                 local ip = nil
                 local subnet = nil
                 local gateway = nil
@@ -1435,10 +1813,12 @@ function action_wan_policy()
                     end
                 end
 
-                -- Get MTU from device
+                -- Get MTU from device (using validated path)
                 local mtu = nil
-                if device and device ~= "" then
-                    local mtu_str = sys.exec("cat /sys/class/net/" .. device .. "/mtu 2>/dev/null")
+                local safe_device = validate_iface(device)
+                if safe_device then
+                    local fs = require "nixio.fs"
+                    local mtu_str = fs.readfile("/sys/class/net/" .. safe_device .. "/mtu")
                     if mtu_str and mtu_str ~= "" then
                         mtu = mtu_str:gsub("%s+", "")
                     end
@@ -1520,6 +1900,12 @@ function action_wan_edit()
             is_in_config = true
             break
         end
+    end
+
+    -- Validate interface name format (security check)
+    if not validate_iface(iface) then
+        http.write(json.stringify({ success = false, error = "Invalid interface name format" }))
+        return
     end
 
     -- Valid if in config OR matches WAN pattern
@@ -1759,10 +2145,18 @@ function action_wan_advanced()
                 changes_made = true
             end
             if m.stale_loss_cnt then
-                -- stale_loss_cnt is a sysctl, set it directly
-                sys.exec("sysctl -w net.mptcp.stale_loss_cnt=" .. tostring(m.stale_loss_cnt) .. " >/dev/null 2>&1")
-                -- Also persist to sysctl.conf if possible
-                sys.exec("sed -i '/net.mptcp.stale_loss_cnt/d' /etc/sysctl.conf 2>/dev/null; echo 'net.mptcp.stale_loss_cnt=" .. tostring(m.stale_loss_cnt) .. "' >> /etc/sysctl.conf 2>/dev/null")
+                -- Validate stale_loss_cnt is a safe integer (1-100)
+                local stale_val = tonumber(m.stale_loss_cnt)
+                if stale_val and stale_val >= 1 and stale_val <= 100 and stale_val == math.floor(stale_val) then
+                    -- stale_loss_cnt is a sysctl, set it directly
+                    sys.exec("sysctl -w net.mptcp.stale_loss_cnt=" .. tostring(stale_val) .. " >/dev/null 2>&1")
+                    -- Also persist to sysctl.conf if possible
+                    local fs = require "nixio.fs"
+                    local sysctl_content = fs.readfile("/etc/sysctl.conf") or ""
+                    sysctl_content = sysctl_content:gsub("net%.mptcp%.stale_loss_cnt%s*=%s*%d+\n?", "")
+                    sysctl_content = sysctl_content .. "net.mptcp.stale_loss_cnt=" .. tostring(stale_val) .. "\n"
+                    fs.writefile("/etc/sysctl.conf", sysctl_content)
+                end
             end
         end
 
@@ -1825,9 +2219,9 @@ function action_wan_ifaces()
             return
         end
 
-        -- Write to config file (one interface per line)
+        -- Write to config file atomically (one interface per line)
         local content = table.concat(data.enabled, "\n")
-        fs.writefile(config_file, content)
+        atomic_write(config_file, content)
 
         http.write(json.stringify({ success = true }))
     else
@@ -1855,8 +2249,9 @@ function action_wan_ifaces()
                 local device = s.device or s.ifname or ""
                 local multipath = s.multipath or "off"
 
-                -- Get interface status
-                local status_json = sys.exec("ifstatus " .. name .. " 2>/dev/null")
+                -- Get interface status (validated)
+                local safe_name = validate_iface(name)
+                local status_json = safe_name and sys.exec("ifstatus " .. safe_name .. " 2>/dev/null") or ""
                 local is_up = false
                 local ip = nil
                 if status_json and status_json ~= "" then
@@ -2001,6 +2396,18 @@ function action_history()
     http.write(json.stringify(bundle))
 end
 
+-- Helper: Atomic file write (write to temp, then rename)
+local function atomic_write(path, content)
+    local fs = require "nixio.fs"
+    local tmp = path .. ".tmp"
+    local ok = fs.writefile(tmp, content)
+    if ok then
+        os.rename(tmp, path)
+        return true
+    end
+    return false
+end
+
 -- VPS Bypass endpoint - toggle between bonded and direct WAN mode
 function action_bypass()
     local http = require "luci.http"
@@ -2045,22 +2452,57 @@ function action_bypass()
                 end
             end)
 
-            -- Save to file for restore + persistence
-            if #saved_lines > 0 then
-                fs.writefile(saved_config, table.concat(saved_lines, "\n"))
+            -- Check if any MPTCP interfaces were found
+            if #saved_lines == 0 then
+                http.write(json.stringify({
+                    success = false,
+                    error = "No MPTCP interfaces configured. Cannot enable bypass mode."
+                }))
+                return
             end
 
+            -- Save to file for restore + persistence (atomic write)
+            atomic_write(saved_config, table.concat(saved_lines, "\n"))
+
             -- Write bypass flag (stores primary WAN name for reference)
-            fs.writefile(bypass_flag, primary_wan or "unknown")
+            atomic_write(bypass_flag, primary_wan or "unknown")
 
             -- Commit and apply
             uci:commit("network")
-            sys.exec("/etc/init.d/network reload >/dev/null 2>&1 &")
+
+            -- Stop OpenVPN (manages tun0 and routes to VPS)
+            sys.exec("/etc/init.d/openvpn stop >/dev/null 2>&1")
+            sys.exec("killall openvpn >/dev/null 2>&1")
+
+            -- Stop Shadowsocks (transparent TCP proxy to VPS)
+            sys.exec("/etc/init.d/shadowsocks-rust stop >/dev/null 2>&1")
+            sys.exec("killall sslocal >/dev/null 2>&1")
+
+            -- Bring down tun0 if still up
+            sys.exec("ip link set tun0 down >/dev/null 2>&1")
+
+            -- Wait for everything to stop and routing to settle
+            sys.exec("sleep 3")
+
+            -- Verify the change took effect
+            local new_uci = require "luci.model.uci".cursor()
+            local verify_ok = true
+            for line in table.concat(saved_lines, "\n"):gmatch("[^\n]+") do
+                local iface = line:match("^([^=]+)=")
+                if iface then
+                    local current = new_uci:get("network", iface, "multipath")
+                    if current ~= "off" then
+                        verify_ok = false
+                        break
+                    end
+                end
+            end
 
             http.write(json.stringify({
                 success = true,
                 bypass_enabled = true,
                 active_wan = primary_wan,
+                verified = verify_ok,
                 message = "VPS bypass enabled - traffic now going direct"
             }))
         else
@@ -2068,9 +2510,17 @@ function action_bypass()
             local saved_content = fs.readfile(saved_config) or ""
             local restored_count = 0
 
+            if saved_content == "" then
+                http.write(json.stringify({
+                    success = false,
+                    error = "No saved configuration found to restore"
+                }))
+                return
+            end
+
             for line in saved_content:gmatch("[^\n]+") do
                 local iface, mode = line:match("^([^=]+)=(.+)$")
-                if iface and mode then
+                if iface and mode and validate_iface(iface) then
                     uci:set("network", iface, "multipath", mode)
                     restored_count = restored_count + 1
                 end
@@ -2079,9 +2529,23 @@ function action_bypass()
             -- Remove bypass flag
             fs.remove(bypass_flag)
 
-            -- Commit and apply
+            -- Commit network changes
             uci:commit("network")
-            sys.exec("/etc/init.d/network reload >/dev/null 2>&1 &")
+
+            -- Restart Shadowsocks (transparent TCP proxy)
+            sys.exec("/etc/init.d/shadowsocks-rust start >/dev/null 2>&1")
+
+            -- Restart OpenVPN (manages tun0 and routes to VPS)
+            sys.exec("/etc/init.d/openvpn start >/dev/null 2>&1")
+
+            -- Reload firewall to restore nftables redirect rules
+            sys.exec("/etc/init.d/firewall reload >/dev/null 2>&1")
+
+            -- Reload network
+            sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
+
+            -- Wait for VPN to reconnect and stabilize (needs more time)
+            sys.exec("sleep 5")
 
             http.write(json.stringify({
                 success = true,

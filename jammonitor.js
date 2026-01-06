@@ -179,67 +179,74 @@ var JamMonitor = (function() {
         collectThroughput();
     }
 
-    function exec(cmd) {
-        return fetch(window.location.pathname + '/exec?cmd=' + encodeURIComponent(cmd))
-            .then(function(r) { return r.text(); })
-            .catch(function() { return ''; });
+    // === SECURE API FUNCTIONS ===
+    // These replace the generic exec() function with specific endpoints
+
+    function api(endpoint, params) {
+        var url = window.location.pathname + '/' + endpoint;
+        if (params) {
+            var queryString = Object.keys(params).map(function(k) {
+                return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+            }).join('&');
+            url += '?' + queryString;
+        }
+        return fetch(url)
+            .then(function(r) {
+                if (!r.ok) throw new Error('API error: ' + r.status);
+                return r.json();
+            })
+            .catch(function(e) {
+                console.error('API error (' + endpoint + '):', e);
+                return null;
+            });
     }
 
+    function apiPing(host) {
+        return api('ping', { host: host });
+    }
+
+    // Cache for CPU calculation (need two samples)
+    var lastCpuSample = null;
+
     function detectEndpoints() {
-        // Get WireGuard endpoint for VPS IP
-        exec('wg show all endpoints 2>/dev/null').then(function(out) {
-            var match = out.match(/(\d+\.\d+\.\d+\.\d+):/);
-            if (match) {
-                pingTargets.vps = match[1];
+        // Use the new vpn_status endpoint
+        api('vpn_status').then(function(data) {
+            if (!data) return;
+
+            // VPS IP from WireGuard endpoint or UCI config
+            if (data.wireguard && data.wireguard.endpoint) {
+                pingTargets.vps = data.wireguard.endpoint;
                 document.getElementById('ping-vps-target').textContent = pingTargets.vps;
+            } else if (data.vps && data.vps.ip) {
+                pingTargets.vps = data.vps.ip;
+                document.getElementById('ping-vps-target').textContent = data.vps.ip;
             }
-        });
 
-        // Get tunnel peer from OMR config or glorytun
-        exec('uci get openmptcprouter.vps.ip 2>/dev/null || uci get glorytun.vpn.host 2>/dev/null').then(function(out) {
-            var ip = out.trim();
-            if (ip && !pingTargets.vps) {
-                pingTargets.vps = ip;
-                document.getElementById('ping-vps-target').textContent = ip;
-            }
-        });
-
-        // Get tunnel peer IP - try multiple methods
-        exec("ip route show dev tun0 2>/dev/null | grep -oE 'via [0-9.]+' | head -1 | cut -d' ' -f2").then(function(out) {
-            var ip = out.trim();
-            if (ip) {
-                pingTargets.tunnel = ip;
-                document.getElementById('ping-tunnel-target').textContent = ip;
-            } else {
-                // Try getting the remote end of tun0 (point-to-point)
-                exec("ip addr show dev tun0 2>/dev/null | grep -oE 'peer [0-9.]+' | cut -d' ' -f2").then(function(peerOut) {
-                    var peerIp = peerOut.trim();
-                    if (peerIp) {
-                        pingTargets.tunnel = peerIp;
-                        document.getElementById('ping-tunnel-target').textContent = peerIp;
-                    } else {
-                        // Fallback: use .1 of the tun0 subnet
-                        exec("ip addr show dev tun0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2").then(function(tunIp) {
-                            if (tunIp.trim()) {
-                                var parts = tunIp.trim().split('.');
-                                if (parts.length === 4) {
-                                    parts[3] = '1';
-                                    var gwIp = parts.join('.');
-                                    pingTargets.tunnel = gwIp;
-                                    document.getElementById('ping-tunnel-target').textContent = gwIp;
-                                }
-                            }
-                        });
+            // Tunnel peer IP
+            if (data.tunnel) {
+                var tunnelIp = data.tunnel.gateway || data.tunnel.peer;
+                if (tunnelIp) {
+                    pingTargets.tunnel = tunnelIp;
+                    document.getElementById('ping-tunnel-target').textContent = tunnelIp;
+                } else if (data.tunnel.ip) {
+                    // Fallback: use .1 of the tun0 subnet
+                    var parts = data.tunnel.ip.split('.');
+                    if (parts.length === 4) {
+                        parts[3] = '1';
+                        pingTargets.tunnel = parts.join('.');
+                        document.getElementById('ping-tunnel-target').textContent = pingTargets.tunnel;
                     }
-                });
+                }
             }
         });
     }
 
     function detectInterfaces() {
-        exec("ip -br link | awk '{print $1}' | grep -vE '^lo$|^docker|^veth'").then(function(out) {
-            interfaces = out.trim().split('\n').filter(function(i) { return i && i.trim(); }).map(function(iface) {
-                // Strip @... suffix (e.g., lan3@eth0 -> lan3) to match /proc/net/dev names
+        api('network_info').then(function(data) {
+            if (!data || !data.interfaces) return;
+
+            interfaces = data.interfaces.map(function(iface) {
+                // Strip @... suffix
                 return iface.split('@')[0];
             });
 
@@ -258,14 +265,21 @@ var JamMonitor = (function() {
                 });
             }
 
-            // Populate all interface selects
+            // Populate all interface selects using safe DOM methods
             ['bw-iface-select', 'bw-hourly-iface', 'bw-daily-iface', 'bw-monthly-iface'].forEach(function(id) {
                 var sel = document.getElementById(id);
                 if (sel) {
-                    sel.innerHTML = '<option value="all">All WANs</option>';
+                    sel.innerHTML = '';
+                    var optAll = document.createElement('option');
+                    optAll.value = 'all';
+                    optAll.textContent = 'All WANs';
+                    sel.appendChild(optAll);
                     wanIfaces.forEach(function(iface) {
                         if (iface) {
-                            sel.innerHTML += '<option value="' + iface + '">' + iface + '</option>';
+                            var opt = document.createElement('option');
+                            opt.value = iface;
+                            opt.textContent = iface;
+                            sel.appendChild(opt);
                         }
                     });
                 }
@@ -276,57 +290,64 @@ var JamMonitor = (function() {
     }
 
     function updateOverview() {
-        // System health
-        exec('cat /proc/loadavg').then(function(out) {
-            var p = out.trim().split(/\s+/);
-            if (p.length >= 3) {
-                document.getElementById('sys-load').textContent = p[0] + ' / ' + p[1] + ' / ' + p[2];
-            }
-        });
+        // Use system_stats API for all system metrics
+        api('system_stats').then(function(data) {
+            if (!data) return;
 
-        // CPU % - calculate over 1 second for stable average (not instant spike)
-        exec("cat /proc/stat | grep '^cpu ' | awk '{print $2+$3+$4, $5}'; sleep 1; cat /proc/stat | grep '^cpu ' | awk '{print $2+$3+$4, $5}'").then(function(out) {
-            var lines = out.trim().split('\n');
-            if (lines.length === 2) {
-                var first = lines[0].split(' ');
-                var second = lines[1].split(' ');
-                var busy1 = parseInt(first[0], 10);
-                var idle1 = parseInt(first[1], 10);
-                var busy2 = parseInt(second[0], 10);
-                var idle2 = parseInt(second[1], 10);
-                var busyDiff = busy2 - busy1;
-                var idleDiff = idle2 - idle1;
-                var total = busyDiff + idleDiff;
-                if (total > 0) {
-                    var cpu = (busyDiff / total) * 100;
-                    document.getElementById('sys-cpu').textContent = cpu.toFixed(1) + '%';
+            // Load average
+            if (data.load && data.load.length >= 3) {
+                document.getElementById('sys-load').textContent = data.load[0] + ' / ' + data.load[1] + ' / ' + data.load[2];
+            }
+
+            // CPU % - calculate delta from last sample
+            if (data.cpu_busy !== undefined && data.cpu_idle !== undefined) {
+                if (lastCpuSample) {
+                    var busyDiff = data.cpu_busy - lastCpuSample.busy;
+                    var idleDiff = data.cpu_idle - lastCpuSample.idle;
+                    var total = busyDiff + idleDiff;
+                    if (total > 0) {
+                        var cpu = (busyDiff / total) * 100;
+                        document.getElementById('sys-cpu').textContent = cpu.toFixed(1) + '%';
+                    }
                 }
+                lastCpuSample = { busy: data.cpu_busy, idle: data.cpu_idle };
             }
-        });
 
-        exec('cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null').then(function(out) {
-            var temp = parseInt(out.trim(), 10);
-            if (!isNaN(temp)) {
-                if (temp > 1000) temp = temp / 1000;
-                document.getElementById('sys-temp-big').textContent = temp.toFixed(1) + ' C';
+            // Temperature
+            if (data.temp !== undefined) {
+                document.getElementById('sys-temp-big').textContent = data.temp.toFixed(1) + ' C';
                 var ind = document.getElementById('sys-indicator');
-                if (temp > 80) ind.className = 'jm-indicator red';
-                else if (temp > 65) ind.className = 'jm-indicator yellow';
+                if (data.temp > 80) ind.className = 'jm-indicator red';
+                else if (data.temp > 65) ind.className = 'jm-indicator yellow';
                 else ind.className = 'jm-indicator green';
             }
+
+            // RAM
+            if (data.ram_pct) {
+                document.getElementById('sys-ram').textContent = data.ram_pct + '%';
+            }
+
+            // Conntrack
+            if (data.conntrack_count !== undefined) {
+                document.getElementById('sys-conntrack').textContent = data.conntrack_count + ' / ' + data.conntrack_max;
+            }
+
+            // Uptime
+            if (data.uptime_secs) {
+                document.getElementById('uptime-val').textContent = formatUptime(data.uptime_secs);
+                document.getElementById('uptime-tooltip').textContent = 'Since boot';
+            }
+
+            // Date
+            if (data.date) {
+                document.getElementById('local-time').textContent = data.date;
+            }
         });
 
-        exec("free | awk '/Mem:/{printf \"%.1f\", $3/$2*100}'").then(function(out) {
-            if (out.trim()) document.getElementById('sys-ram').textContent = out.trim() + '%';
-        });
+        // VPN/Tunnel status using new API
+        api('vpn_status').then(function(data) {
+            if (!data) return;
 
-        exec('cat /proc/sys/net/netfilter/nf_conntrack_count; cat /proc/sys/net/netfilter/nf_conntrack_max').then(function(out) {
-            var p = out.trim().split('\n');
-            if (p.length === 2) document.getElementById('sys-conntrack').textContent = p[0] + ' / ' + p[1];
-        });
-
-        // VPN/Tunnel - check tun0 first (primary method)
-        exec('ip addr show dev tun0 2>/dev/null').then(function(out) {
             var vpnInd = document.getElementById('vpn-indicator');
             var vpnStatus = document.getElementById('vpn-status');
             var vpnIface = document.getElementById('vpn-iface');
@@ -334,99 +355,59 @@ var JamMonitor = (function() {
             var vpnEndpoint = document.getElementById('vpn-endpoint');
             var vpnHandshake = document.getElementById('vpn-handshake');
 
-            // Check if tun0 has an IPv4 address - that means it's UP
-            var ipMatch = out.match(/inet\s+([0-9.]+)/);
-
-            if (ipMatch) {
-                // Tunnel is UP - has IPv4
+            // Check tunnel (tun0) first
+            if (data.tunnel && data.tunnel.exists && data.tunnel.ip) {
                 vpnInd.className = 'jm-indicator green';
                 vpnStatus.textContent = 'Connected';
                 vpnIface.textContent = 'tun0';
-                vpnIp.textContent = ipMatch[1];
+                vpnIp.textContent = data.tunnel.ip;
 
-                // Try to get endpoint from OMR config
-                exec('uci get openmptcprouter.vps.ip 2>/dev/null').then(function(vpsIp) {
-                    if (vpsIp.trim()) {
-                        vpnEndpoint.textContent = vpsIp.trim();
-                    }
-                });
+                if (data.vps && data.vps.ip) {
+                    vpnEndpoint.textContent = data.vps.ip;
+                }
 
-                // Get VPN uptime from omrvpn interface status (actual tunnel uptime)
-                exec('ifstatus omrvpn 2>/dev/null | jsonfilter -e "@.uptime" 2>/dev/null || echo ""').then(function(uptime) {
-                    var secs = parseInt(uptime.trim(), 10);
-                    if (!isNaN(secs) && secs > 0) {
-                        var h = Math.floor(secs / 3600);
-                        var m = Math.floor((secs % 3600) / 60);
-                        vpnHandshake.textContent = h + 'h ' + m + 'm';
-                    } else {
-                        // Try tun0 interface uptime directly
-                        exec('ifstatus tun0 2>/dev/null | jsonfilter -e "@.uptime" 2>/dev/null || echo ""').then(function(tunUp) {
-                            var secs2 = parseInt(tunUp.trim(), 10);
-                            if (!isNaN(secs2) && secs2 > 0) {
-                                var h2 = Math.floor(secs2 / 3600);
-                                var m2 = Math.floor((secs2 % 3600) / 60);
-                                vpnHandshake.textContent = h2 + 'h ' + m2 + 'm';
-                            } else {
-                                // Show "Connected" if we can't determine uptime but tunnel is up
-                                vpnHandshake.textContent = 'Connected';
-                            }
-                        });
-                    }
-                });
+                if (data.tunnel.omrvpn_uptime) {
+                    var secs = data.tunnel.omrvpn_uptime;
+                    var h = Math.floor(secs / 3600);
+                    var m = Math.floor((secs % 3600) / 60);
+                    vpnHandshake.textContent = h + 'h ' + m + 'm';
+                } else {
+                    vpnHandshake.textContent = 'Connected';
+                }
+            } else if (data.wireguard && data.wireguard.active) {
+                // WireGuard fallback
+                vpnInd.className = 'jm-indicator green';
+                vpnStatus.textContent = 'Connected (WG)';
+                vpnIface.textContent = data.wireguard.interface || 'wg0';
+                vpnIp.textContent = data.wireguard.ip || 'N/A';
+                if (data.wireguard.endpoint) {
+                    vpnEndpoint.textContent = data.wireguard.endpoint;
+                }
+                vpnHandshake.textContent = 'Connected';
             } else {
-                // tun0 doesn't have IP, check WireGuard as fallback
-                exec('wg show 2>/dev/null').then(function(wgOut) {
-                    if (wgOut.trim()) {
-                        var wgIfaceMatch = wgOut.match(/interface:\s*(\S+)/);
-                        var wgIface = wgIfaceMatch ? wgIfaceMatch[1] : 'wg0';
-
-                        exec('ip addr show dev ' + wgIface + ' 2>/dev/null | grep -oE "inet [0-9.]+"').then(function(wgIp) {
-                            if (wgIp.trim()) {
-                                vpnInd.className = 'jm-indicator green';
-                                vpnStatus.textContent = 'Connected (WG)';
-                                vpnIface.textContent = wgIface;
-                                vpnIp.textContent = wgIp.replace('inet ', '').trim();
-                                // For WireGuard, get handshake time
-                                var handshakeMatch = wgOut.match(/latest handshake:\s*(.+)/);
-                                if (handshakeMatch) {
-                                    vpnHandshake.textContent = handshakeMatch[1].trim();
-                                } else {
-                                    vpnHandshake.textContent = 'Connected';
-                                }
-                            } else {
-                                // WireGuard exists but no IP - tunnel is down
-                                vpnInd.className = 'jm-indicator red';
-                                vpnStatus.textContent = 'No IP';
-                                vpnIface.textContent = wgIface;
-                                vpnIp.textContent = '--';
-                                vpnHandshake.textContent = '--';
-                            }
-                        });
-
-                        var endpointMatch = wgOut.match(/endpoint:\s*(\S+)/);
-                        if (endpointMatch) vpnEndpoint.textContent = endpointMatch[1];
-                    } else {
-                        // No tun0 IP, no WireGuard - tunnel is down
-                        vpnInd.className = 'jm-indicator red';
-                        vpnStatus.textContent = 'Down';
-                        vpnIface.textContent = 'tun0';
-                        vpnIp.textContent = '--';
-                        vpnHandshake.textContent = '--';
-                    }
-                });
+                // No VPN connection
+                vpnInd.className = 'jm-indicator red';
+                vpnStatus.textContent = 'Disconnected';
+                vpnIface.textContent = 'N/A';
+                vpnIp.textContent = 'N/A';
+                vpnEndpoint.textContent = data.vps && data.vps.ip ? data.vps.ip : 'N/A';
+                vpnHandshake.textContent = 'N/A';
             }
         });
 
-        // WAN info - get route first, then verify with public IP check
-        // Don't reset status during check - only update when result changes
-        exec('ip route show default | head -1').then(function(out) {
-            var gwMatch = out.match(/via\s+(\S+)/);
-            var devMatch = out.match(/dev\s+(\S+)/);
-            if (gwMatch) document.getElementById('wan-gw').textContent = gwMatch[1];
-            if (devMatch) {
-                document.getElementById('wan-iface').textContent = devMatch[1];
+        // WAN info - get route and public IP using APIs
+        api('network_info').then(function(data) {
+            if (!data) return;
+
+            // Parse default route
+            var routeLines = (data.route || '').split('\n');
+            var defaultRoute = routeLines.find(function(line) { return line.indexOf('default') === 0; });
+            if (defaultRoute) {
+                var gwMatch = defaultRoute.match(/via\s+(\S+)/);
+                var devMatch = defaultRoute.match(/dev\s+(\S+)/);
+                if (gwMatch) document.getElementById('wan-gw').textContent = gwMatch[1];
+                if (devMatch) document.getElementById('wan-iface').textContent = devMatch[1];
             } else {
-                // No default route at all
                 document.getElementById('wan-indicator').className = 'jm-indicator red';
                 document.getElementById('wan-status').textContent = 'No Route';
                 document.getElementById('wan-ip').textContent = '--';
@@ -435,75 +416,42 @@ var JamMonitor = (function() {
             }
         });
 
-        // Get actual public IP from external service (what the internet sees)
-        exec('curl -s --max-time 3 ifconfig.me 2>/dev/null || curl -s --max-time 3 api.ipify.org 2>/dev/null || curl -s --max-time 3 icanhazip.com 2>/dev/null || echo ""').then(function(publicIp) {
-            var ip = publicIp.trim();
-            if (ip && ip.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) {
-                // Public IP retrieved - actually connected to internet
-                document.getElementById('wan-ip').textContent = ip;
+        // Get actual public IP from API
+        api('public_ip').then(function(data) {
+            if (data && data.success && data.ip) {
+                document.getElementById('wan-ip').textContent = data.ip;
                 document.getElementById('wan-indicator').className = 'jm-indicator green';
                 document.getElementById('wan-status').textContent = 'Connected';
             } else {
-                // Public IP check failed - no internet connectivity
                 document.getElementById('wan-indicator').className = 'jm-indicator red';
                 document.getElementById('wan-status').textContent = 'No Internet';
-                // Fallback to interface IP if external check fails
-                exec('ip route show default | head -1').then(function(out) {
-                    var devMatch = out.match(/dev\s+(\S+)/);
-                    if (devMatch) {
-                        exec('ip addr show dev ' + devMatch[1] + ' 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2').then(function(ifaceIp) {
-                            if (ifaceIp.trim()) {
-                                document.getElementById('wan-ip').textContent = ifaceIp.trim() + ' (local)';
-                            } else {
-                                document.getElementById('wan-ip').textContent = '--';
-                            }
-                        });
-                    } else {
-                        document.getElementById('wan-ip').textContent = '--';
-                    }
-                });
+                document.getElementById('wan-ip').textContent = '--';
             }
         });
 
-        // Uptime
-        exec('cat /proc/uptime').then(function(out) {
-            var secs = parseFloat(out.split(' ')[0]);
-            if (!isNaN(secs)) {
-                document.getElementById('uptime-val').textContent = formatUptime(secs);
-                // Calculate boot time
-                var bootTime = new Date(Date.now() - secs * 1000);
-                document.getElementById('boot-time').textContent = bootTime.toLocaleString();
-            }
-        });
+        // MPTCP status using API
+        api('mptcp_status').then(function(data) {
+            if (!data) return;
 
-        exec('date "+%Y-%m-%d %H:%M:%S"').then(function(out) {
-            document.getElementById('local-time').textContent = out.trim();
-        });
-
-        // MPTCP
-        exec('ip mptcp endpoint show 2>/dev/null | wc -l').then(function(out) {
-            var count = parseInt(out.trim(), 10);
             var ind = document.getElementById('mptcp-indicator');
-            if (!isNaN(count) && count > 0) {
-                document.getElementById('mptcp-subflows').textContent = count;
+            if (data.endpoint_count > 0) {
+                document.getElementById('mptcp-subflows').textContent = data.endpoint_count;
                 ind.className = 'jm-indicator green';
             } else {
                 document.getElementById('mptcp-subflows').textContent = '0';
                 ind.className = 'jm-indicator gray';
             }
+
+            if (data.connections !== undefined) {
+                document.getElementById('mptcp-conns').textContent = data.connections + ' active';
+            }
+
+            if (data.interfaces) {
+                document.getElementById('mptcp-ifaces').textContent = data.interfaces || 'none';
+            }
         });
 
-        // MPTCP connections count
-        exec('ss -M 2>/dev/null | grep -c ESTAB || echo 0').then(function(out) {
-            var count = parseInt(out.trim(), 10) || 0;
-            document.getElementById('mptcp-conns').textContent = count + ' active';
-        });
-
-        // MPTCP interfaces in use
-        exec('ip mptcp endpoint show 2>/dev/null | grep -oE "dev [a-z0-9]+" | cut -d" " -f2 | sort -u | tr "\\n" " "').then(function(out) {
-            var ifaces = out.trim();
-            document.getElementById('mptcp-ifaces').textContent = ifaces || 'none';
-        });
+        // (MPTCP connections and interfaces now handled by mptcp_status API above)
 
         // Update ping displays
         updatePingDisplay('inet');
@@ -524,12 +472,11 @@ var JamMonitor = (function() {
 
         pingStats[key].sent++;
 
-        exec('ping -c1 -W1 ' + host + ' 2>/dev/null | grep -oE "time=[0-9.]+" | cut -d= -f2').then(function(out) {
-            var ms = parseFloat(out.trim());
-
-            if (!isNaN(ms)) {
+        // Use the secure ping API endpoint
+        apiPing(host).then(function(data) {
+            if (data && data.success && data.latency) {
                 pingStats[key].received++;
-                pingHistory[key].push({ time: Date.now(), value: ms });
+                pingHistory[key].push({ time: Date.now(), value: data.latency });
             } else {
                 pingHistory[key].push({ time: Date.now(), value: null });
             }
@@ -1440,7 +1387,7 @@ var JamMonitor = (function() {
             banner.classList.add('active');
             icon.innerHTML = '&#8987;'; // Hourglass
             title.textContent = 'Switching...';
-            desc.textContent = 'Please wait, applying network changes...';
+            desc.textContent = 'Stopping/starting VPN services (~10 seconds)...';
             return;
         }
 
@@ -1479,8 +1426,8 @@ var JamMonitor = (function() {
 
         var newState = !bypassEnabled;
         var confirmMsg = newState
-            ? 'Enable VPS Bypass?\n\nThis will disable MPTCP bonding and route traffic directly through your primary WAN connection. The VPS tunnel will be turned off.'
-            : 'Disable VPS Bypass?\n\nThis will restore MPTCP bonding and route traffic through the VPS again.';
+            ? 'Enable VPS Bypass?\n\nThis will:\n• Stop OpenVPN tunnel\n• Stop Shadowsocks proxy\n• Route traffic directly through your primary WAN\n\nConnection will be interrupted for ~5 seconds.'
+            : 'Disable VPS Bypass?\n\nThis will:\n• Restart OpenVPN tunnel\n• Restart Shadowsocks proxy\n• Route traffic through VPS again\n\nConnection will be interrupted for ~10 seconds while VPN reconnects.';
 
         if (!confirm(confirmMsg)) {
             // Reset checkbox to current state
@@ -2848,10 +2795,44 @@ var JamMonitor = (function() {
         var hours = document.getElementById('history-hours').value;
         var status = document.getElementById('history-status');
         status.innerHTML = '<span style="color:#7f8c8d;">Fetching ' + hours + ' hour(s) of historical data...</span>';
-        window.location.href = window.location.pathname + '/history?hours=' + hours;
-        setTimeout(function() {
-            status.innerHTML = '<span style="color:#27ae60;">Download started. Check your downloads folder.</span>';
-        }, 2000);
+
+        // First check if storage is available
+        api('storage_status').then(function(storageData) {
+            if (storageData && !storageData.mounted) {
+                status.innerHTML = '<span style="color:#e74c3c;">Error: USB storage not mounted. Historical data unavailable.</span>';
+                return;
+            }
+            if (storageData && !storageData.database_exists) {
+                status.innerHTML = '<span style="color:#e74c3c;">Error: No historical database found. Metrics collector may not be running.</span>';
+                return;
+            }
+
+            // Use fetch to download with proper error handling
+            var url = window.location.pathname + '/history?hours=' + hours;
+            fetch(url)
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Server error: ' + response.status);
+                    }
+                    return response.blob();
+                })
+                .then(function(blob) {
+                    // Create download link
+                    var downloadUrl = window.URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = downloadUrl;
+                    a.download = 'jammonitor-history-' + hours + 'h-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(downloadUrl);
+                    status.innerHTML = '<span style="color:#27ae60;">Download complete!</span>';
+                })
+                .catch(function(err) {
+                    console.error('History download error:', err);
+                    status.innerHTML = '<span style="color:#e74c3c;">Download failed: ' + err.message + '</span>';
+                });
+        });
     }
 
     function escapeHtml(str) {

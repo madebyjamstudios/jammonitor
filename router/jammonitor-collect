@@ -1,15 +1,39 @@
 #!/bin/sh
-# JamMonitor Historical Metrics Collector v2
+# JamMonitor Historical Metrics Collector v3
 # Collects everything at smart intervals to minimize USB wear
+# Security and reliability improvements
 
 DB_PATH="/mnt/data/jammonitor/history.db"
 LOG_PATH="/mnt/data/jammonitor/syslog.txt"
 RETENTION_DAYS=30
 MAX_LOG_SIZE=52428800  # 50MB max syslog size
+WAN_CONFIG="/etc/jammonitor_wans"
 
-# Initialize database with all tables
+# Ensure data directory exists
+mkdir -p /mnt/data/jammonitor 2>/dev/null || {
+    logger -t jammonitor "FATAL: Cannot create data directory /mnt/data/jammonitor"
+    exit 1
+}
+
+# Helper: Escape single quotes for SQLite (double them)
+sql_escape() {
+    printf '%s' "$1" | sed "s/'/''/g"
+}
+
+# Get WAN interface list (dynamic or fallback)
+get_wan_list() {
+    if [ -f "$WAN_CONFIG" ]; then
+        cat "$WAN_CONFIG" | tr '\n' ' '
+    else
+        echo "wan wan1 wan2 wan3 wan4"
+    fi
+}
+
+# Initialize database with all tables and WAL mode
 init_db() {
     sqlite3 "$DB_PATH" "
+        PRAGMA journal_mode=WAL;
+        PRAGMA busy_timeout=5000;
         CREATE TABLE IF NOT EXISTS metrics (
             ts INTEGER PRIMARY KEY,
             load TEXT,
@@ -38,47 +62,52 @@ collect_fast() {
     RAM=$(free | awk '/Mem:/{printf "%.1f", $3/$2*100}')
     TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
 
-    # Pings
-    P1=$(ping -c1 -W1 1.1.1.1 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
-    P2=$(ping -c1 -W1 8.8.8.8 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+    # Pings with timeout protection
+    P1=$(timeout 2 ping -c1 -W1 1.1.1.1 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+    P2=$(timeout 2 ping -c1 -W1 8.8.8.8 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
     [ -z "$P1" ] && P1="null"
     [ -z "$P2" ] && P2="null"
     PINGS="{\"1.1.1.1\":$P1,\"8.8.8.8\":$P2}"
 
-    # Interface status
+    # Interface status (dynamic list)
     IFACES="{"
     FIRST=1
-    for iface in wan wan1 wan2 wan3 wan4; do
-        UP=$(ifstatus $iface 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)
+    for iface in $(get_wan_list); do
+        UP=$(timeout 2 ifstatus $iface 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)
         [ $FIRST -eq 0 ] && IFACES="$IFACES,"
         [ "$UP" = "true" ] && IFACES="$IFACES\"$iface\":1" || IFACES="$IFACES\"$iface\":0"
         FIRST=0
     done
     IFACES="$IFACES}"
 
-    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD', $RAM, $TEMP, '$PINGS', '$IFACES');"
+    # Escape values for SQL safety
+    LOAD_ESC=$(sql_escape "$LOAD")
+    PINGS_ESC=$(sql_escape "$PINGS")
+    IFACES_ESC=$(sql_escape "$IFACES")
+
+    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD_ESC', $RAM, $TEMP, '$PINGS_ESC', '$IFACES_ESC');" 2>/dev/null
 }
 
 # Collect slow snapshots (every minute)
 collect_slow() {
     TS=$(date +%s)
 
-    # MPTCP endpoints and limits
-    MPTCP_EP=$(ip mptcp endpoint show 2>/dev/null | head -20 | tr '\n' '|' | sed "s/'//g")
-    MPTCP_LIM=$(ip mptcp limits 2>/dev/null | tr '\n' '|' | sed "s/'//g")
+    # MPTCP endpoints and limits (with timeout)
+    MPTCP_EP=$(timeout 5 ip mptcp endpoint show 2>/dev/null | head -20 | tr '\n' '|')
+    MPTCP_LIM=$(timeout 2 ip mptcp limits 2>/dev/null | tr '\n' '|')
     MPTCP="$MPTCP_EP;;$MPTCP_LIM"
 
     # VPN status (simplified)
     VPN=""
     if command -v wg >/dev/null 2>&1; then
-        VPN=$(wg show interfaces 2>/dev/null | tr '\n' ',')
+        VPN=$(timeout 2 wg show interfaces 2>/dev/null | tr '\n' ',')
     fi
     GT=$(pgrep -c glorytun 2>/dev/null || echo 0)
     OV=$(pgrep -c openvpn 2>/dev/null || echo 0)
     VPN="wg:$VPN|gt:$GT|ovpn:$OV"
 
     # Routes summary (default routes only)
-    ROUTES=$(ip route show default 2>/dev/null | head -10 | tr '\n' '|' | sed "s/'//g")
+    ROUTES=$(ip route show default 2>/dev/null | head -10 | tr '\n' '|')
 
     # Conntrack count
     CT_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
@@ -86,7 +115,13 @@ collect_slow() {
     # DNS servers
     DNS=$(grep nameserver /tmp/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
 
-    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP', '$VPN', '$ROUTES', $CT_COUNT, '$DNS');"
+    # Escape all values for SQL safety
+    MPTCP_ESC=$(sql_escape "$MPTCP")
+    VPN_ESC=$(sql_escape "$VPN")
+    ROUTES_ESC=$(sql_escape "$ROUTES")
+    DNS_ESC=$(sql_escape "$DNS")
+
+    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP_ESC', '$VPN_ESC', '$ROUTES_ESC', $CT_COUNT, '$DNS_ESC');" 2>/dev/null
 }
 
 # Stream syslog (continuous append with rotation)

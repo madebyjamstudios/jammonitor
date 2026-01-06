@@ -1024,20 +1024,30 @@ var JamMonitor = (function() {
         return (bytes / 1073741824).toFixed(1) + ' GB';
     }
 
-    // Device type detection from hostname patterns
+    // Device type detection from hostname patterns (matches Peplink categories)
     function detectDeviceType(hostname) {
         if (!hostname || hostname === '*') return 'unknown';
         var patterns = {
-            phone:   /iphone|android|galaxy|pixel|oneplus|redmi|poco|huawei-p|huawei-mate/i,
-            laptop:  /macbook|laptop|notebook|thinkpad|dell-xps|surface/i,
-            desktop: /desktop|imac|pc|workstation|tower/i,
-            tablet:  /ipad|tablet|galaxy-tab|mediapad/i,
-            tv:      /tv|roku|firestick|chromecast|appletv|shield|smart-?tv|bravia|samsung-tv/i,
-            camera:  /camera|cam|ring|nest-?cam|wyze|arlo|blink|eufy/i,
-            iot:     /echo|alexa|homepod|google-?home|hub|sensor|thermostat|nest-?hub|smart-?plug/i,
-            printer: /printer|hp-|epson|canon|brother|laserjet|officejet/i,
-            gaming:  /xbox|playstation|ps[45]|switch|steam-?deck|nvidia-?shield/i,
-            server:  /server|nas|synology|qnap|truenas|proxmox|pve/i
+            phone:     /iphone|android|galaxy|pixel|oneplus|redmi|poco|huawei-p|huawei-mate|sm-[gsa]/i,
+            tablet:    /ipad|tablet|galaxy-tab|mediapad|sm-t|kindle-fire/i,
+            laptop:    /macbook|laptop|notebook|thinkpad|dell-xps|surface-pro|surface-laptop|chromebook/i,
+            desktop:   /desktop|imac|mac-?pro|pc|workstation|tower/i,
+            watch:     /apple-?watch|galaxy-?watch|fitbit|garmin|amazfit|wear-?os/i,
+            wearable:  /band|mi-?band|whoop|oura|smart-?ring/i,
+            ebook:     /kindle|kobo|nook|e-?reader|boox/i,
+            ipod:      /ipod/i,
+            tv:        /tv|roku|firestick|chromecast|appletv|shield|smart-?tv|bravia|samsung-tv|lg-?tv|vizio|tivo|fire-?tv/i,
+            audio:     /sonos|bose|homepod-?mini|echo-?dot|echo-?show|speaker|receiver|soundbar|denon|marantz|yamaha-rx/i,
+            gaming:    /xbox|playstation|ps[345]|switch|steam-?deck|nvidia-?shield|oculus|quest|vr/i,
+            camera:    /camera|gopro|ring|nest-?cam|wyze|arlo|blink|eufy|reolink|hikvision|dahua|ip-?cam|ipcam/i,
+            voip:      /voip|polycom|cisco-?phone|yealink|grandstream|sip-?phone|ip-?phone/i,
+            printer:   /printer|hp-|epson|canon|brother|laserjet|officejet|deskjet|pixma/i,
+            scanner:   /scanner|scan|fujitsu-?scan|epson-?scan/i,
+            projector: /projector|benq|optoma|epson-?proj|viewsonic/i,
+            pos:       /pos|terminal|verifone|ingenico|square|clover|register/i,
+            network:   /router|switch|ap|access-?point|unifi|ubiquiti|mikrotik|netgear|linksys|asus-?rt|tp-?link|eap|eero|orbi/i,
+            server:    /server|nas|synology|qnap|truenas|proxmox|pve|esxi|vmware|hyperv/i,
+            iot:       /echo|alexa|google-?home|hub|sensor|thermostat|nest-?hub|smart-?plug|smart-?switch|tuya|tasmota|shelly|hue|lifx|wemo/i
         };
         for (var type in patterns) {
             if (patterns[type].test(hostname)) return type;
@@ -1045,13 +1055,30 @@ var JamMonitor = (function() {
         return 'unknown';
     }
 
-    // Get device icon based on type
+    // Get device icon based on type (matches Peplink categories)
     function getDeviceIcon(type) {
         var icons = {
-            phone: '\uD83D\uDCF1', laptop: '\uD83D\uDCBB', desktop: '\uD83D\uDDA5\uFE0F',
-            tablet: '\uD83D\uDCDF', tv: '\uD83D\uDCFA', camera: '\uD83D\uDCF7',
-            iot: '\uD83D\uDD0C', printer: '\uD83D\uDDA8\uFE0F', gaming: '\uD83C\uDFAE',
-            server: '\uD83D\uDCBE', unknown: '\u2753'
+            phone: '\uD83D\uDCF1',         // 📱 Smartphone
+            tablet: '\uD83D\uDCF1',        // 📱 Tablet (similar to phone)
+            laptop: '\uD83D\uDCBB',        // 💻 Laptop
+            desktop: '\uD83D\uDDA5\uFE0F', // 🖥️ Desktop
+            watch: '\u231A',               // ⌚ Smart Watch
+            wearable: '\u231A',            // ⌚ Wearable
+            ebook: '\uD83D\uDCD6',         // 📖 eBook Reader
+            ipod: '\uD83C\uDFB5',          // 🎵 iPod
+            tv: '\uD83D\uDCFA',            // 📺 TV / Audio & Video
+            audio: '\uD83D\uDD0A',         // 🔊 Audio & Video
+            gaming: '\uD83C\uDFAE',        // 🎮 Game Console
+            camera: '\uD83D\uDCF7',        // 📷 Photo Camera / IP Camera
+            voip: '\u260E\uFE0F',          // ☎️ VoIP
+            printer: '\uD83D\uDDA8\uFE0F', // 🖨️ Printer
+            scanner: '\uD83D\uDCE0',       // 📠 Scanner
+            projector: '\uD83D\uDCFD\uFE0F', // 📽️ Projector
+            pos: '\uD83D\uDCB3',           // 💳 Point of Sale
+            network: '\uD83C\uDF10',       // 🌐 Network Appliance
+            server: '\uD83D\uDCBE',        // 💾 Server
+            iot: '\uD83D\uDD0C',           // 🔌 IoT
+            unknown: '\u2753'              // ❓ Unclassified
         };
         return icons[type] || icons.unknown;
     }

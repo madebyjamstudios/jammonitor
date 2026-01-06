@@ -21,6 +21,12 @@ function index()
     entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
     entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
     entry({"admin", "status", "jammonitor", "storage_status"}, call("action_storage_status"), nil)
+    -- Client metadata and DHCP reservations
+    entry({"admin", "status", "jammonitor", "get_client_meta"}, call("action_get_client_meta"), nil)
+    entry({"admin", "status", "jammonitor", "set_client_meta"}, call("action_set_client_meta"), nil)
+    entry({"admin", "status", "jammonitor", "get_reservations"}, call("action_get_reservations"), nil)
+    entry({"admin", "status", "jammonitor", "set_reservation"}, call("action_set_reservation"), nil)
+    entry({"admin", "status", "jammonitor", "delete_reservation"}, call("action_delete_reservation"), nil)
 end
 
 -- Helper: Validate interface name (alphanumeric, dash, underscore only)
@@ -304,6 +310,165 @@ function action_clients()
     end
 
     http.write(json.stringify(result))
+end
+
+-- Client metadata: custom aliases and device types
+local CLIENT_META_FILE = "/etc/jammonitor_clients.json"
+
+function action_get_client_meta()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local content = fs.readfile(CLIENT_META_FILE)
+    if content and content ~= "" then
+        http.write(content)
+    else
+        http.write("{}")
+    end
+end
+
+function action_set_client_meta()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local mac = http.formvalue("mac")
+    local alias = http.formvalue("alias")
+    local dtype = http.formvalue("type")
+
+    if not mac or mac == "" then
+        http.write(json.stringify({error = "MAC address required"}))
+        return
+    end
+
+    -- Normalize MAC to lowercase
+    mac = mac:lower()
+
+    -- Read existing metadata
+    local content = fs.readfile(CLIENT_META_FILE) or "{}"
+    local meta = json.parse(content) or {}
+
+    -- Update entry
+    if not meta[mac] then meta[mac] = {} end
+    if alias and alias ~= "" then meta[mac].alias = alias end
+    if dtype and dtype ~= "" then meta[mac].type = dtype end
+
+    -- Write back
+    local f = io.open(CLIENT_META_FILE, "w")
+    if f then
+        f:write(json.stringify(meta))
+        f:close()
+        http.write(json.stringify({success = true}))
+    else
+        http.write(json.stringify({error = "Failed to write metadata"}))
+    end
+end
+
+-- DHCP Reservations
+function action_get_reservations()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+
+    http.prepare_content("application/json")
+
+    local result = {}
+    uci:foreach("dhcp", "host", function(s)
+        if s.mac then
+            result[s.mac:lower()] = {
+                name = s.name or "",
+                ip = s.ip or "",
+                mac = s.mac
+            }
+        end
+    end)
+
+    http.write(json.stringify(result))
+end
+
+function action_set_reservation()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+    local sys = require "luci.sys"
+
+    http.prepare_content("application/json")
+
+    local mac = http.formvalue("mac")
+    local ip = http.formvalue("ip")
+    local name = http.formvalue("name")
+
+    if not mac or mac == "" or not ip or ip == "" then
+        http.write(json.stringify({error = "MAC and IP required"}))
+        return
+    end
+
+    -- Validate MAC format
+    if not mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
+        http.write(json.stringify({error = "Invalid MAC address format"}))
+        return
+    end
+
+    -- Validate IP
+    if not validate_ip(ip) then
+        http.write(json.stringify({error = "Invalid IP address"}))
+        return
+    end
+
+    -- Create section name from MAC
+    local section_name = "jm_" .. mac:gsub(":", ""):lower()
+
+    uci:set("dhcp", section_name, "host")
+    uci:set("dhcp", section_name, "mac", mac)
+    uci:set("dhcp", section_name, "ip", ip)
+    if name and name ~= "" then
+        uci:set("dhcp", section_name, "name", name)
+    end
+    uci:commit("dhcp")
+
+    -- Restart dnsmasq to apply
+    sys.exec("/etc/init.d/dnsmasq restart >/dev/null 2>&1 &")
+
+    http.write(json.stringify({success = true}))
+end
+
+function action_delete_reservation()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
+    local sys = require "luci.sys"
+
+    http.prepare_content("application/json")
+
+    local mac = http.formvalue("mac")
+    if not mac or mac == "" then
+        http.write(json.stringify({error = "MAC address required"}))
+        return
+    end
+
+    mac = mac:lower()
+    local found = false
+
+    uci:foreach("dhcp", "host", function(s)
+        if s.mac and s.mac:lower() == mac then
+            uci:delete("dhcp", s[".name"])
+            found = true
+        end
+    end)
+
+    uci:commit("dhcp")
+
+    if found then
+        sys.exec("/etc/init.d/dnsmasq restart >/dev/null 2>&1 &")
+        http.write(json.stringify({success = true}))
+    else
+        http.write(json.stringify({error = "Reservation not found"}))
+    end
 end
 
 -- Public IP check

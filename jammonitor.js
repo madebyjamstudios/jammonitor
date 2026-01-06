@@ -46,6 +46,10 @@ var JamMonitor = (function() {
     var bypassActiveWan = null;
     var bypassToggling = false;
 
+    // Client metadata and DHCP reservations
+    var clientMeta = {};      // {mac: {alias, type}}
+    var reservedMacs = {};    // {mac: {ip, name, mac}}
+
     // Check if interface is a WAN or VPN (for bandwidth tracking)
     // OMR naming: lan1/2/3/4 are WANs, sfp-lan is SFP WAN, tun0 is VPN tunnel
     // Note: "wan" and "sfp-wan" are actually LAN ports in OMR, not WANs
@@ -89,6 +93,36 @@ var JamMonitor = (function() {
         // Detect endpoints and interfaces
         detectEndpoints();
         detectInterfaces();
+
+        // Load client metadata and reservations
+        loadClientMeta();
+        loadReservations();
+
+        // Client list click handlers
+        document.getElementById('clients-tbody').addEventListener('click', function(e) {
+            // Name editing
+            var nameCell = e.target.closest('.client-name');
+            if (nameCell) {
+                var mac = nameCell.dataset.mac;
+                var currentName = nameCell.textContent;
+                var newName = prompt('Enter device name:', currentName);
+                if (newName && newName !== currentName) {
+                    saveClientMeta(mac, newName, null).then(function(resp) {
+                        if (resp && resp.success) {
+                            nameCell.textContent = newName;
+                        } else {
+                            alert('Failed to save: ' + (resp.error || 'Unknown error'));
+                        }
+                    }).catch(function() { alert('Failed to save name'); });
+                }
+                return;
+            }
+            // Reservation popup
+            var resTag = e.target.closest('.reservation-tag');
+            if (resTag) {
+                showReservationPopup(resTag.dataset.mac, resTag.dataset.ip, resTag.dataset.name);
+            }
+        });
 
         // Start polling
         startPolling();
@@ -990,15 +1024,143 @@ var JamMonitor = (function() {
         return (bytes / 1073741824).toFixed(1) + ' GB';
     }
 
+    // Device type detection from hostname patterns
+    function detectDeviceType(hostname) {
+        if (!hostname || hostname === '*') return 'unknown';
+        var patterns = {
+            phone:   /iphone|android|galaxy|pixel|oneplus|redmi|poco|huawei-p|huawei-mate/i,
+            laptop:  /macbook|laptop|notebook|thinkpad|dell-xps|surface/i,
+            desktop: /desktop|imac|pc|workstation|tower/i,
+            tablet:  /ipad|tablet|galaxy-tab|mediapad/i,
+            tv:      /tv|roku|firestick|chromecast|appletv|shield|smart-?tv|bravia|samsung-tv/i,
+            camera:  /camera|cam|ring|nest-?cam|wyze|arlo|blink|eufy/i,
+            iot:     /echo|alexa|homepod|google-?home|hub|sensor|thermostat|nest-?hub|smart-?plug/i,
+            printer: /printer|hp-|epson|canon|brother|laserjet|officejet/i,
+            gaming:  /xbox|playstation|ps[45]|switch|steam-?deck|nvidia-?shield/i,
+            server:  /server|nas|synology|qnap|truenas|proxmox|pve/i
+        };
+        for (var type in patterns) {
+            if (patterns[type].test(hostname)) return type;
+        }
+        return 'unknown';
+    }
+
+    // Get device icon based on type
+    function getDeviceIcon(type) {
+        var icons = {
+            phone: '\uD83D\uDCF1', laptop: '\uD83D\uDCBB', desktop: '\uD83D\uDDA5\uFE0F',
+            tablet: '\uD83D\uDCDF', tv: '\uD83D\uDCFA', camera: '\uD83D\uDCF7',
+            iot: '\uD83D\uDD0C', printer: '\uD83D\uDDA8\uFE0F', gaming: '\uD83C\uDFAE',
+            server: '\uD83D\uDCBE', unknown: '\u2753'
+        };
+        return icons[type] || icons.unknown;
+    }
+
+    // Format lease expiry time
+    function formatExpiry(expiryTimestamp) {
+        if (!expiryTimestamp) return 'Unknown';
+        var now = Math.floor(Date.now() / 1000);
+        var remaining = expiryTimestamp - now;
+        if (remaining <= 0) return 'Expired';
+        var days = Math.floor(remaining / 86400);
+        var hours = Math.floor((remaining % 86400) / 3600);
+        var mins = Math.floor((remaining % 3600) / 60);
+        if (days > 0) return 'Expires in ' + days + ' day' + (days > 1 ? 's' : '');
+        if (hours > 0) return 'Expires in ' + hours + ' hour' + (hours > 1 ? 's' : '');
+        return 'Expires in ' + mins + ' min' + (mins > 1 ? 's' : '');
+    }
+
+    // Load client metadata from server
+    function loadClientMeta() {
+        return api('get_client_meta').then(function(data) {
+            clientMeta = data || {};
+        }).catch(function() { clientMeta = {}; });
+    }
+
+    // Load DHCP reservations from server
+    function loadReservations() {
+        return api('get_reservations').then(function(data) {
+            reservedMacs = data || {};
+        }).catch(function() { reservedMacs = {}; });
+    }
+
+    // Save client metadata
+    function saveClientMeta(mac, alias, type) {
+        var params = { mac: mac };
+        if (alias !== undefined && alias !== null) params.alias = alias;
+        if (type !== undefined && type !== null) params.type = type;
+        return api('set_client_meta', params).then(function(resp) {
+            if (resp && resp.success) {
+                if (!clientMeta[mac.toLowerCase()]) clientMeta[mac.toLowerCase()] = {};
+                if (alias) clientMeta[mac.toLowerCase()].alias = alias;
+                if (type) clientMeta[mac.toLowerCase()].type = type;
+            }
+            return resp;
+        });
+    }
+
+    // DHCP Reservation popup
+    function showReservationPopup(mac, ip, name) {
+        var existing = reservedMacs[mac.toLowerCase()];
+        var popup = document.createElement('div');
+        popup.className = 'jm-popup-overlay';
+        popup.innerHTML =
+            '<div class="jm-popup">' +
+            '<h3>' + (existing ? 'Edit' : 'Add') + ' DHCP Reservation</h3>' +
+            '<div class="jm-popup-row"><label>MAC Address</label><input type="text" id="res-mac" value="' + escapeHtml(mac) + '" readonly></div>' +
+            '<div class="jm-popup-row"><label>IP Address</label><input type="text" id="res-ip" value="' + escapeHtml(existing ? existing.ip : ip) + '"></div>' +
+            '<div class="jm-popup-row"><label>Name</label><input type="text" id="res-name" value="' + escapeHtml(existing ? existing.name : name) + '"></div>' +
+            '<div class="jm-popup-buttons">' +
+            (existing ? '<button class="btn-danger" id="res-delete">Remove</button>' : '') +
+            '<button class="btn-secondary" id="res-cancel">Cancel</button>' +
+            '<button class="btn-primary" id="res-save">Save</button>' +
+            '</div></div>';
+        document.body.appendChild(popup);
+
+        // Cancel
+        popup.querySelector('#res-cancel').onclick = function() { popup.remove(); };
+        popup.onclick = function(e) { if (e.target === popup) popup.remove(); };
+
+        // Save
+        popup.querySelector('#res-save').onclick = function() {
+            var newIp = popup.querySelector('#res-ip').value.trim();
+            var newName = popup.querySelector('#res-name').value.trim();
+            if (!newIp) { alert('IP address is required'); return; }
+            api('set_reservation', { mac: mac, ip: newIp, name: newName }).then(function(resp) {
+                if (resp && resp.success) {
+                    popup.remove();
+                    loadReservations().then(updateClients);
+                } else {
+                    alert('Failed: ' + (resp.error || 'Unknown error'));
+                }
+            }).catch(function() { alert('Failed to save reservation'); });
+        };
+
+        // Delete
+        var delBtn = popup.querySelector('#res-delete');
+        if (delBtn) {
+            delBtn.onclick = function() {
+                if (!confirm('Remove DHCP reservation for ' + mac + '?')) return;
+                api('delete_reservation', { mac: mac }).then(function(resp) {
+                    if (resp && resp.success) {
+                        popup.remove();
+                        loadReservations().then(updateClients);
+                    } else {
+                        alert('Failed: ' + (resp.error || 'Unknown error'));
+                    }
+                }).catch(function() { alert('Failed to delete reservation'); });
+            };
+        }
+    }
+
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
         api('clients').then(function(data) {
             if (!data) {
                 console.error('updateClients: No data from clients API');
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">Failed to load clients</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">Failed to load clients</td></tr>';
                 return;
             }
-            // Map API response to expected array format for backward compatibility
             var results = [
                 data.dhcp_leases || '',
                 data.arp || '',
@@ -1015,18 +1177,18 @@ var JamMonitor = (function() {
                 if (srcMatch && bytesMatches) {
                     var ip = srcMatch[1];
                     if (!traffic[ip]) traffic[ip] = { rx: 0, tx: 0 };
-                    // First bytes= is usually src->dst (tx), second is dst->src (rx)
                     if (bytesMatches[0]) traffic[ip].tx += parseInt(bytesMatches[0].replace('bytes=', ''), 10);
                     if (bytesMatches[1]) traffic[ip].rx += parseInt(bytesMatches[1].replace('bytes=', ''), 10);
                 }
             });
 
-            // Parse DHCP leases
+            // Parse DHCP leases with expiry times
             results[0].trim().split('\n').forEach(function(line) {
                 if (!line.trim()) return;
                 var p = line.split(/\s+/);
                 if (p.length >= 4) {
-                    leases[p[2]] = { mac: p[1], hostname: p[3] || '*', ip: p[2] };
+                    var expiry = parseInt(p[0], 10);
+                    leases[p[2]] = { mac: p[1], hostname: p[3] || '*', ip: p[2], expiry: expiry };
                 }
             });
 
@@ -1035,15 +1197,14 @@ var JamMonitor = (function() {
                 if (line.indexOf('IP address') >= 0) return;
                 var p = line.split(/\s+/);
                 if (p.length >= 4 && p[0].match(/^\d+\./)) {
-                    if (!leases[p[0]]) leases[p[0]] = { mac: p[3], hostname: '*', ip: p[0] };
+                    if (!leases[p[0]]) leases[p[0]] = { mac: p[3], hostname: '*', ip: p[0], expiry: null };
                 }
             });
 
             var rows = '';
 
-            // LAN clients
+            // LAN clients - new column order: IP, Icon, Name, Download, Upload, Type, MAC, Reserve
             Object.keys(leases).sort(function(a, b) {
-                // Sort by IP numerically
                 var aParts = a.split('.').map(Number);
                 var bParts = b.split('.').map(Number);
                 for (var i = 0; i < 4; i++) {
@@ -1053,11 +1214,29 @@ var JamMonitor = (function() {
             }).forEach(function(ip) {
                 var c = leases[ip];
                 var t = traffic[ip] || { rx: 0, tx: 0 };
-                var rxStr = t.rx > 0 ? formatBytesCompact(t.rx) : '--';
-                var txStr = t.tx > 0 ? formatBytesCompact(t.tx) : '--';
-                rows += '<tr><td>' + escapeHtml(c.hostname) + '</td><td>' + escapeHtml(c.ip) + '</td>';
-                rows += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(c.mac) + '</td>';
-                rows += '<td>' + rxStr + '</td><td>' + txStr + '</td><td>LAN</td></tr>';
+                var macLower = c.mac.toLowerCase();
+                var meta = clientMeta[macLower] || {};
+                var displayName = meta.alias || c.hostname;
+                var deviceType = meta.type || detectDeviceType(c.hostname);
+                var icon = getDeviceIcon(deviceType);
+                var statusDot = '<span style="color:#27ae60;">●</span>';
+                var hasReservation = reservedMacs[macLower];
+                var ipTitle = hasReservation ? 'Static reservation' : formatExpiry(c.expiry);
+                var tagIcon = hasReservation
+                    ? '<span style="color:#27ae60;" title="DHCP Reserved">\uD83C\uDFF7\uFE0F</span>'
+                    : '<span style="color:#bdc3c7;" title="Add to DHCP reservation">\uD83C\uDFF7\uFE0F</span>';
+                var rowStyle = hasReservation ? 'background:#f0fff4;' : '';
+
+                rows += '<tr style="' + rowStyle + '">';
+                rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';
+                rows += '<td style="text-align:center;">' + statusDot + icon + '</td>';
+                rows += '<td class="client-name" data-mac="' + escapeHtml(c.mac) + '">' + escapeHtml(displayName) + '</td>';
+                rows += '<td>' + (t.rx > 0 ? formatBytesCompact(t.rx) : '--') + '</td>';
+                rows += '<td>' + (t.tx > 0 ? formatBytesCompact(t.tx) : '--') + '</td>';
+                rows += '<td>LAN</td>';
+                rows += '<td style="font-family:monospace;font-size:11px;color:#7f8c8d;">' + escapeHtml(c.mac) + '</td>';
+                rows += '<td class="reservation-tag" data-mac="' + escapeHtml(c.mac) + '" data-ip="' + escapeHtml(ip) + '" data-name="' + escapeHtml(displayName) + '">' + tagIcon + '</td>';
+                rows += '</tr>';
             });
 
             // Tailscale peers
@@ -1070,15 +1249,21 @@ var JamMonitor = (function() {
                             var hostname = peer.HostName || peer.DNSName || 'Unknown';
                             var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
                             var statusDot = peer.Online
-                                ? '<span style="color:#27ae60;margin-right:6px;">●</span>'
-                                : '<span style="color:#bdc3c7;margin-right:6px;">●</span>';
+                                ? '<span style="color:#27ae60;">●</span>'
+                                : '<span style="color:#bdc3c7;">●</span>';
+                            var deviceType = detectDeviceType(hostname);
+                            var icon = getDeviceIcon(deviceType);
                             var os = peer.OS || '--';
+
                             rows += '<tr style="background:#f0f9ff;">';
-                            rows += '<td>' + statusDot + escapeHtml(hostname) + '</td>';
                             rows += '<td>' + escapeHtml(ip) + '</td>';
-                            rows += '<td style="font-size:12px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';
+                            rows += '<td style="text-align:center;">' + statusDot + icon + '</td>';
+                            rows += '<td>' + escapeHtml(hostname) + '</td>';
                             rows += '<td>--</td><td>--</td>';
-                            rows += '<td style="color:#3498db;">Tailscale</td></tr>';
+                            rows += '<td style="color:#3498db;">Tailscale</td>';
+                            rows += '<td style="font-size:11px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';
+                            rows += '<td></td>';
+                            rows += '</tr>';
                         });
                     }
                 } catch (e) {
@@ -1086,7 +1271,7 @@ var JamMonitor = (function() {
                 }
             }
 
-            tbody.innerHTML = rows || '<tr><td colspan="6" style="text-align:center;color:#999;">No clients found</td></tr>';
+            tbody.innerHTML = rows || '<tr><td colspan="8" style="text-align:center;color:#999;">No clients found</td></tr>';
         });
     }
 

@@ -3,6 +3,25 @@
 # Collects metrics every MINUTE (not second) to minimize storage
 # 24h = ~1,440 entries (~300KB) vs previous ~86,400 entries (~18MB)
 
+PIDFILE="/var/run/jammonitor-collect.pid"
+
+# Prevent multiple instances
+if [ -f "$PIDFILE" ]; then
+    OLDPID=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -n "$OLDPID" ] && kill -0 "$OLDPID" 2>/dev/null; then
+        logger -t jammonitor "Collector already running (PID $OLDPID), exiting"
+        exit 0
+    fi
+    # Stale PID file, remove it
+    rm -f "$PIDFILE"
+fi
+
+# Write our PID
+echo $$ > "$PIDFILE"
+
+# Cleanup PID file on exit
+trap "rm -f '$PIDFILE'" EXIT INT TERM
+
 DB_PATH="/mnt/data/jammonitor/history.db"
 LOG_PATH="/mnt/data/jammonitor/syslog.txt"
 RETENTION_DAYS=30

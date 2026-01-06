@@ -2474,10 +2474,10 @@ function action_bypass()
             -- This uses OMR's built-in bypass mechanism instead of fighting services
             local bypass_uci = require "luci.model.uci".cursor()
 
-            -- Add a bypass rule for all traffic (0.0.0.0/0 = all destinations)
-            -- This tells OMR to bypass the VPN for all destinations
-            -- Goes in "IPs and Networks" section of OMR-Bypass
-            bypass_uci:set("omr-bypass", "jammonitor_bypass", "ips")
+            -- Add a bypass rule for all LAN traffic (0.0.0.0/0 = any source)
+            -- Uses lan_ip type like Guest WiFi and Dante bypasses
+            -- Goes in "Source lan IP address or network" section of OMR-Bypass
+            bypass_uci:set("omr-bypass", "jammonitor_bypass", "lan_ip")
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "enabled", "1")
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "ip", "0.0.0.0/0")
             bypass_uci:set("omr-bypass", "jammonitor_bypass", "interface", primary_wan or "lan1")

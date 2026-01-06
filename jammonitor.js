@@ -1423,7 +1423,7 @@ var JamMonitor = (function() {
                             rows += '<tr class="' + offlineClass + '" style="background:#f0f9ff;">';
                             rows += '<td>' + escapeHtml(ip) + '</td>';
                             rows += '<td style="text-align:center;">' + icon + '</td>';
-                            rows += '<td class="client-name">' + escapeHtml(hostname) + '</td>';
+                            rows += '<td>' + escapeHtml(hostname) + '</td>';
                             rows += '<td>--</td><td>--</td>';
                             rows += '<td style="color:#3498db;">Tailscale</td>';
                             rows += '<td style="font-size:11px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';

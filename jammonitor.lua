@@ -2522,6 +2522,22 @@ function action_bypass()
             -- The /usr/share/omr/schedule.d/010-services script runs every minute and
             -- restarts services UNLESS their UCI config has disabled=1
 
+            -- Save original VPN service states before disabling
+            local vpn_states = {}
+            local ss_libev = sys.exec("uci get shadowsocks-libev.sss0.disabled 2>/dev/null"):gsub("%s+$", "")
+            local ss_rust = sys.exec("uci get shadowsocks-rust.sss0.disabled 2>/dev/null"):gsub("%s+$", "")
+            local ovpn = sys.exec("uci get openvpn.omr.enabled 2>/dev/null"):gsub("%s+$", "")
+            local gt = sys.exec("uci get glorytun.vpn.enable 2>/dev/null"):gsub("%s+$", "")
+
+            -- Store original states (default to disabled if not set)
+            table.insert(vpn_states, "ss_libev=" .. (ss_libev ~= "" and ss_libev or "1"))
+            table.insert(vpn_states, "ss_rust=" .. (ss_rust ~= "" and ss_rust or "1"))
+            table.insert(vpn_states, "openvpn=" .. (ovpn ~= "" and ovpn or "0"))
+            table.insert(vpn_states, "glorytun=" .. (gt ~= "" and gt or "0"))
+
+            -- Save VPN states to separate file
+            atomic_write("/etc/jammonitor_bypass_vpn", table.concat(vpn_states, "\n"))
+
             -- 1. Set UCI disabled flags (prevents omr-schedule from restarting services)
             sys.exec("uci set shadowsocks-libev.sss0.disabled=1 2>/dev/null")
             sys.exec("uci set shadowsocks-rust.sss0.disabled=1 2>/dev/null")
@@ -2602,15 +2618,35 @@ function action_bypass()
             -- Commit network changes
             uci:commit("network")
 
-            -- Re-enable UCI flags (allows omr-schedule to restart services)
-            sys.exec("uci set shadowsocks-libev.sss0.disabled=0 2>/dev/null")
-            sys.exec("uci set shadowsocks-rust.sss0.disabled=0 2>/dev/null")
-            sys.exec("uci set openvpn.omr.enabled=1 2>/dev/null")
-            sys.exec("uci set glorytun.vpn.enable=1 2>/dev/null")
+            -- Restore original VPN service states from saved file
+            local vpn_saved = fs.readfile("/etc/jammonitor_bypass_vpn") or ""
+            local vpn_restore = {
+                ss_libev = "0",   -- default: enabled (disabled=0)
+                ss_rust = "1",   -- default: disabled (disabled=1)
+                openvpn = "1",   -- default: enabled (enabled=1)
+                glorytun = "0"   -- default: disabled (enable=0)
+            }
+
+            -- Parse saved VPN states
+            for line in vpn_saved:gmatch("[^\n]+") do
+                local key, val = line:match("^([^=]+)=(.+)$")
+                if key and val then
+                    vpn_restore[key] = val
+                end
+            end
+
+            -- Restore to original states
+            sys.exec("uci set shadowsocks-libev.sss0.disabled=" .. vpn_restore.ss_libev .. " 2>/dev/null")
+            sys.exec("uci set shadowsocks-rust.sss0.disabled=" .. vpn_restore.ss_rust .. " 2>/dev/null")
+            sys.exec("uci set openvpn.omr.enabled=" .. vpn_restore.openvpn .. " 2>/dev/null")
+            sys.exec("uci set glorytun.vpn.enable=" .. vpn_restore.glorytun .. " 2>/dev/null")
             sys.exec("uci commit shadowsocks-libev 2>/dev/null")
             sys.exec("uci commit shadowsocks-rust 2>/dev/null")
             sys.exec("uci commit openvpn 2>/dev/null")
             sys.exec("uci commit glorytun 2>/dev/null")
+
+            -- Clean up saved VPN state file
+            fs.remove("/etc/jammonitor_bypass_vpn")
 
             -- Restore hotplug script
             sys.exec("mv /etc/hotplug.d/iface/40-omr-tracker.disabled /etc/hotplug.d/iface/40-omr-tracker 2>/dev/null")

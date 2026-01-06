@@ -551,7 +551,9 @@ var JamMonitor = (function() {
     var ifaceThroughputHistory = {};
 
     function collectThroughput() {
-        exec('cat /proc/net/dev').then(function(out) {
+        api('network_info').then(function(data) {
+            if (!data || !data.netdev) return;
+            var out = data.netdev;
             var totalRx = 0, totalTx = 0;
             var now = Date.now();
 
@@ -730,14 +732,21 @@ var JamMonitor = (function() {
         // Hide internal/virtual/kernel tunnel interfaces (prefix match)
         var hiddenPrefixes = ['lo', 'ifb', 'teql', 'gre', 'sit', 'ip6tnl', 'ip6gre', 'erspan', 'dummy', 'ip_vti', 'ip6_vti', 'gretap'];
 
-        Promise.all([
-            exec('ip -br link'),
-            exec('ip -br addr'),
-            exec('ip route'),
-            exec('cat /proc/net/dev'),
-            exec('ls /sys/class/ieee80211/ 2>/dev/null || echo ""'),  // Get phy devices
-            exec("uci show wireless 2>/dev/null | grep -E '=wifi-device|\.disabled='")  // Get radio names and disabled status
-        ]).then(function(results) {
+        api('network_info').then(function(data) {
+            if (!data) {
+                console.error('updateLinks: No data from network_info API');
+                grid.innerHTML = '<p style="color:#999;">Failed to load interface data</p>';
+                return;
+            }
+            // Map API response to expected array format for backward compatibility
+            var results = [
+                data.link || '',
+                data.addr || '',
+                data.route || '',
+                data.netdev || '',
+                data.phy_devices || '',
+                data.wireless_config || ''
+            ];
             var linkLines = results[0].trim().split('\n');
             var addrLines = results[1].trim().split('\n');
             var devStats = {};
@@ -979,11 +988,18 @@ var JamMonitor = (function() {
 
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
-        Promise.all([
-            exec('cat /tmp/dhcp.leases'),
-            exec('cat /proc/net/arp'),
-            exec('conntrack -L 2>/dev/null | grep -E "src=[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" || echo ""')
-        ]).then(function(results) {
+        api('clients').then(function(data) {
+            if (!data) {
+                console.error('updateClients: No data from clients API');
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">Failed to load clients</td></tr>';
+                return;
+            }
+            // Map API response to expected array format for backward compatibility
+            var results = [
+                data.dhcp_leases || '',
+                data.arp || '',
+                data.conntrack || ''
+            ];
             var leases = {};
             var traffic = {};
 
@@ -2394,15 +2410,23 @@ var JamMonitor = (function() {
         var sel = document.getElementById(selectId);
         var ifaceFilter = sel ? sel.value : 'all';
 
-        // Build vnstat command - if specific interface, query it directly
-        var cmd = 'vnstat --json';
+        // Build API params - if specific interface, include it
+        var params = {};
         if (ifaceFilter !== 'all') {
-            cmd = 'vnstat -i ' + ifaceFilter + ' --json';
+            params.iface = ifaceFilter;
         }
 
-        exec(cmd + ' 2>/dev/null').then(function(out) {
+        api('vnstat', params).then(function(data) {
+            var tbodyId = 'bw-' + period + '-tbody';
+            if (!data || data.error) {
+                var tbody = document.getElementById(tbodyId);
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">vnstat data not available</td></tr>';
+                }
+                return;
+            }
             try {
-                var data = JSON.parse(out);
+                // data is already parsed JSON from api()
                 var traffic = [];
 
                 // Handle both single interface and all interfaces
@@ -2456,12 +2480,10 @@ var JamMonitor = (function() {
                 else if (period === 'daily') traffic = traffic.slice(-30);
 
                 var chartId = 'chart-' + period;
-                var tbodyId = 'bw-' + period + '-tbody';
 
                 drawBarChart(chartId, traffic);
                 updateVnstatTable(tbodyId, traffic);
             } catch (e) {
-                var tbodyId = 'bw-' + period + '-tbody';
                 var tbody = document.getElementById(tbodyId);
                 if (tbody) {
                     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">vnstat data not available</td></tr>';

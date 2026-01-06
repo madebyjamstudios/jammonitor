@@ -106,7 +106,7 @@ var JamMonitor = (function() {
         var clientsTbody = document.getElementById('clients-tbody');
         if (clientsTbody) {
             clientsTbody.addEventListener('click', function(e) {
-                // Inline edit - Save button
+                // Inline edit - Save button (saves to pending, not config)
                 if (e.target.classList.contains('btn-save')) {
                     var cell = e.target.closest('.client-name');
                     var mac = cell && cell.dataset.mac;
@@ -123,6 +123,11 @@ var JamMonitor = (function() {
                         updatePendingUI();
                     }
                     cell.classList.remove('editing');
+                    cell.classList.add('cancelled');
+                    cell.addEventListener('mouseleave', function handler() {
+                        cell.classList.remove('cancelled');
+                        cell.removeEventListener('mouseleave', handler);
+                    });
                     return;
                 }
                 // Inline edit - Cancel button
@@ -132,6 +137,11 @@ var JamMonitor = (function() {
                         var input = cell.querySelector('.name-edit input');
                         input.value = input.dataset.original;
                         cell.classList.remove('editing');
+                        cell.classList.add('cancelled');
+                        cell.addEventListener('mouseleave', function handler() {
+                            cell.classList.remove('cancelled');
+                            cell.removeEventListener('mouseleave', handler);
+                        });
                     }
                     return;
                 }

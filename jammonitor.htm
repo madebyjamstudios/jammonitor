@@ -145,7 +145,8 @@ table.jm-table tr:nth-child(even) { background: #f8f9fa; }
 table.jm-table tr:hover { background: #e8f4fc; }
 
 /* Client name inline editing - no layout shift on hover, buttons push down on click */
-#clients-table td.client-name { cursor: pointer; position: relative; min-width: 140px; vertical-align: top; }
+#clients-table td { vertical-align: top; }
+#clients-table td.client-name { cursor: pointer; position: relative; min-width: 140px; }
 #clients-table td.client-name .name-display { line-height: 28px; }
 #clients-table td.client-name .name-edit { position: absolute; top: 50%; left: 8px; right: 8px; transform: translateY(-50%); display: none; z-index: 10; }
 #clients-table td.client-name:hover .name-edit, #clients-table td.client-name.editing .name-edit { display: block; }

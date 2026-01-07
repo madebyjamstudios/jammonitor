@@ -1432,10 +1432,11 @@ var JamMonitor = (function() {
                 var nameCell = '<span class="name-display">' + escapeHtml(displayName) + '</span>' +
                     '<div class="name-edit">' +
                     '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '">' +
+                    '</div>' +
                     '<div class="name-edit-buttons">' +
                     '<button class="btn-save">Save</button>' +
                     '<button class="btn-cancel">Cancel</button>' +
-                    '</div></div>';
+                    '</div>';
 
                 rows += '<tr style="' + rowStyle + '">';
                 rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';

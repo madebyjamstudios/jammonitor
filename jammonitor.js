@@ -3860,8 +3860,8 @@ var JamMonitor = (function() {
                 };
             });
 
-            // Sort state
-            var sortColumn = 'total';
+            // Sort state - null means no sorting initially
+            var sortColumn = null;
             var sortDirection = 'desc';
 
             // IP to number for proper sorting
@@ -3875,8 +3875,9 @@ var JamMonitor = (function() {
                         parseInt(parts[3], 10)) >>> 0;
             }
 
-            // Sort function
+            // Sort function - returns unsorted if col is null
             function sortDevices(col, dir) {
+                if (!col) return devices.slice();
                 return devices.slice().sort(function(a, b) {
                     var valA, valB;
                     if (col === 'ip') {
@@ -3913,9 +3914,8 @@ var JamMonitor = (function() {
 
                 columns.forEach(function(col) {
                     var isActive = sortColumn === col.key;
-                    var arrow = isActive ? (sortDirection === 'asc' ? '▴' : '▾') : '▾';
-                    var arrowClass = isActive ? 'sort-icon active' : 'sort-icon';
-                    html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + '<span class="' + arrowClass + '">' + arrow + '</span></th>';
+                    var arrowHtml = isActive ? '<span class="sort-icon">' + (sortDirection === 'asc' ? '▲' : '▼') + '</span>' : '';
+                    html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + arrowHtml + '</th>';
                 });
 
                 html += '</tr></thead><tbody>';

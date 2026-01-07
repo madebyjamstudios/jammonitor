@@ -658,6 +658,21 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 </div>
             </div>
 
+            <!-- VPS Bypass Banner -->
+            <div class="bypass-banner" id="bypass-banner">
+                <div class="bypass-left">
+                    <span class="bypass-icon" id="bypass-icon">&#128274;</span>
+                    <div class="bypass-text">
+                        <div class="bypass-title" id="bypass-title">VPS Bypass: OFF</div>
+                        <div class="bypass-desc" id="bypass-desc">Traffic routed through VPS via MPTCP bonding</div>
+                    </div>
+                </div>
+                <label class="bypass-toggle">
+                    <input type="checkbox" id="bypass-checkbox" onchange="JamMonitor.toggleBypass()">
+                    <span class="bypass-slider"></span>
+                </label>
+            </div>
+
             <div style="margin-top:20px;padding:15px;background:#f8f9fa;border-radius:6px;font-size:12px;color:#7f8c8d;line-height:1.6;">
                 <strong style="color:#2c3e50;">How WAN Priority Works:</strong><br>
                 <strong>Primary</strong> — The main connection (only one allowed). All MPTCP traffic originates from this interface.<br>
@@ -768,21 +783,6 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <button class="wan-advanced-btn" style="background:#fff;border:1px solid #e74c3c;color:#e74c3c;margin-left:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
                     </div>
                 </div>
-            </div>
-
-            <!-- VPS Bypass Banner -->
-            <div class="bypass-banner" id="bypass-banner">
-                <div class="bypass-left">
-                    <span class="bypass-icon" id="bypass-icon">&#128274;</span>
-                    <div class="bypass-text">
-                        <div class="bypass-title" id="bypass-title">VPS Bypass: OFF</div>
-                        <div class="bypass-desc" id="bypass-desc">Traffic routed through VPS via MPTCP bonding</div>
-                    </div>
-                </div>
-                <label class="bypass-toggle">
-                    <input type="checkbox" id="bypass-checkbox" onchange="JamMonitor.toggleBypass()">
-                    <span class="bypass-slider"></span>
-                </label>
             </div>
 
         </div>

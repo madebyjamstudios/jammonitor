@@ -128,6 +128,8 @@ var JamMonitor = (function() {
                         updatePendingUI();
                     }
                     cell.classList.remove('editing');
+                    var row = cell.closest('tr');
+                    if (row) row.classList.remove('row-editing');
                     cell.classList.add('cancelled');
                     cell.addEventListener('mouseleave', function handler() {
                         cell.classList.remove('cancelled');
@@ -142,6 +144,8 @@ var JamMonitor = (function() {
                         var input = cell.querySelector('.name-edit input');
                         input.value = input.dataset.original;
                         cell.classList.remove('editing');
+                        var row = cell.closest('tr');
+                        if (row) row.classList.remove('row-editing');
                         cell.classList.add('cancelled');
                         cell.addEventListener('mouseleave', function handler() {
                             cell.classList.remove('cancelled');
@@ -153,7 +157,11 @@ var JamMonitor = (function() {
                 // Click on input - add editing class to keep form visible
                 if (e.target.matches('.name-edit input')) {
                     var cell = e.target.closest('.client-name');
-                    if (cell) cell.classList.add('editing');
+                    if (cell) {
+                        cell.classList.add('editing');
+                        var row = cell.closest('tr');
+                        if (row) row.classList.add('row-editing');
+                    }
                     return;
                 }
                 // Reservation popup

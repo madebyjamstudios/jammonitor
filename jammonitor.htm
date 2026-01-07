@@ -164,6 +164,8 @@ table.jm-table tr:hover { background: #e8f4fc; }
 #clients-table td.client-name.cancelled .name-display { visibility: visible !important; }
 #clients-table td.client-name.cancelled .name-edit { display: none !important; }
 #clients-table td.client-name.cancelled .name-edit-buttons { display: none !important; }
+/* Keep all cells aligned to top when row is being edited */
+#clients-table tr.row-editing td { vertical-align: top; }
 
 /* Offline client styling (Tailscale) */
 .client-offline { color: #999; }

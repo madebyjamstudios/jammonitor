@@ -142,7 +142,7 @@ table.jm-table { width: 100%; border-collapse: collapse; background: #fff; borde
 table.jm-table th, table.jm-table td { padding: 10px 12px; text-align: left; }
 table.jm-table th { background: #2c3e50; color: #fff; font-weight: 600; font-size: 12px; text-transform: uppercase; }
 table.jm-table tr:nth-child(even) { background: #f8f9fa; }
-table.jm-table tr:hover { background: #e8f4fc; }
+table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 
 /* Client name inline editing - no layout shift on hover, buttons at bottom on click */
 #clients-table td.client-name { cursor: pointer; position: relative; min-width: 140px; }

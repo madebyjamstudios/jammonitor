@@ -2970,7 +2970,51 @@ var JamMonitor = (function() {
     var CHART_LABEL_FONT = '9px sans-serif';
     var CHART_LABEL_COLOR = '#7f8c8d';
 
-    function drawBandwidthChart(canvasId, data) {
+    // Color palettes for A/B testing
+    var PALETTE_A = { download: '#3498db', upload: '#e67e22', total: '#9b59b6' }; // Blue/Orange/Purple
+    var PALETTE_B = { download: '#1abc9c', upload: '#e74c3c', total: '#34495e' }; // Teal/Coral/Slate
+
+    // Tooltip helpers
+    var chartTooltip = null;
+    function getChartTooltip() {
+        if (!chartTooltip) {
+            chartTooltip = document.createElement('div');
+            chartTooltip.className = 'chart-tooltip';
+            chartTooltip.style.display = 'none';
+            document.body.appendChild(chartTooltip);
+        }
+        return chartTooltip;
+    }
+
+    function showChartTooltip(x, y, html) {
+        var tip = getChartTooltip();
+        tip.innerHTML = html;
+        tip.style.display = 'block';
+        // Position with viewport clamping
+        var tipRect = tip.getBoundingClientRect();
+        var left = x + 15;
+        var top = y - 10;
+        if (left + tipRect.width > window.innerWidth - 10) left = x - tipRect.width - 15;
+        if (top + tipRect.height > window.innerHeight - 10) top = window.innerHeight - tipRect.height - 10;
+        if (top < 10) top = 10;
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    }
+
+    function hideChartTooltip() {
+        var tip = getChartTooltip();
+        tip.style.display = 'none';
+    }
+
+    // Unified line chart function
+    // options: { palette, period, formatValue, isRealtime, onClick }
+    function drawLineChart(canvasId, data, options) {
+        options = options || {};
+        var palette = options.palette || PALETTE_A;
+        var period = options.period || null;
+        var formatValue = options.formatValue || formatBytesScale;
+        var isRealtime = options.isRealtime || false;
+
         var canvas = document.getElementById(canvasId);
         if (!canvas) return;
 
@@ -2985,23 +3029,34 @@ var JamMonitor = (function() {
         var cw = w - pad.left - pad.right;
         var ch = h - pad.top - pad.bottom;
 
+        // Store point positions for hover detection
+        var pointPositions = [];
+
+        // Clear and check data
         ctx.clearRect(0, 0, w, h);
 
         if (data.length < 2) {
             ctx.fillStyle = '#999';
             ctx.font = '14px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('Collecting data...', w/2, h/2);
+            ctx.fillText(isRealtime ? 'Collecting data...' : 'No data available', w/2, h/2);
+            canvas.onmousemove = null;
+            canvas.onmouseleave = null;
+            canvas.onclick = null;
+            canvas.style.cursor = 'default';
             return;
         }
 
+        // Calculate max
         var max = 0;
         data.forEach(function(d) {
-            var total = d.rx + d.tx;
+            var total = (d.rx || 0) + (d.tx || 0);
             if (total > max) max = total;
         });
         if (max === 0) max = 1000;
         max = max * 1.1;
+
+        var step = cw / (data.length - 1);
 
         // Grid + Y labels
         ctx.strokeStyle = '#ecf0f1';
@@ -3016,23 +3071,27 @@ var JamMonitor = (function() {
             ctx.lineTo(w - pad.right, y);
             ctx.stroke();
             var val = max - (max / 4) * i;
-            ctx.fillText(formatRateShort(val), pad.left - 5, y + 3);
+            ctx.fillText(formatValue(val), pad.left - 5, y + 3);
         }
 
-        // X labels - consistent 45 degree rotation, HH:MM:SS format for realtime
+        // X labels
         ctx.textAlign = 'right';
         ctx.fillStyle = CHART_LABEL_COLOR;
         ctx.font = CHART_LABEL_FONT;
-        var step = cw / (data.length - 1);
-        var labelStep = Math.ceil(data.length / 8); // Show ~8 labels max
+        var labelStep = Math.ceil(data.length / 8);
         for (var j = 0; j < data.length; j += labelStep) {
             var x = pad.left + j * step;
             var d = data[j];
-            if (d.time) {
+            var label = '';
+            if (isRealtime && d.time) {
                 var dt = new Date(d.time);
-                var label = String(dt.getHours()).padStart(2, '0') + ':' +
-                            String(dt.getMinutes()).padStart(2, '0') + ':' +
-                            String(dt.getSeconds()).padStart(2, '0');
+                label = String(dt.getHours()).padStart(2, '0') + ':' +
+                        String(dt.getMinutes()).padStart(2, '0') + ':' +
+                        String(dt.getSeconds()).padStart(2, '0');
+            } else if (d.label) {
+                label = d.label;
+            }
+            if (label) {
                 ctx.save();
                 ctx.translate(x, h - pad.bottom + 15);
                 ctx.rotate(-Math.PI / 4);
@@ -3041,103 +3100,160 @@ var JamMonitor = (function() {
             }
         }
 
-        // Total line (behind others)
-        ctx.strokeStyle = '#9b59b6';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 2]);
-        ctx.beginPath();
+        // Calculate all point positions first
         data.forEach(function(d, idx) {
             var x = pad.left + idx * step;
-            var total = d.rx + d.tx;
-            var y = pad.top + ch - (total / max) * ch;
-            if (idx === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+            var rx = d.rx || 0;
+            var tx = d.tx || 0;
+            var total = rx + tx;
+            pointPositions.push({
+                x: x,
+                yRx: pad.top + ch - (rx / max) * ch,
+                yTx: pad.top + ch - (tx / max) * ch,
+                yTotal: pad.top + ch - (total / max) * ch,
+                rx: rx,
+                tx: tx,
+                total: total,
+                label: isRealtime ? (d.time ? new Date(d.time).toLocaleTimeString() : '') : (d.label || ''),
+                start_ts: d.start_ts,
+                idx: idx
+            });
+        });
+
+        // Draw lines - Download first, then Upload, then Total on top
+        // Download line
+        ctx.strokeStyle = palette.download;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yRx);
+            else ctx.lineTo(p.x, p.yRx);
+        });
+        ctx.stroke();
+
+        // Upload line
+        ctx.strokeStyle = palette.upload;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yTx);
+            else ctx.lineTo(p.x, p.yTx);
+        });
+        ctx.stroke();
+
+        // Total line (on top, dashed)
+        ctx.strokeStyle = palette.total;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yTotal);
+            else ctx.lineTo(p.x, p.yTotal);
         });
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // RX line
-        ctx.strokeStyle = '#27ae60';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        data.forEach(function(d, idx) {
-            var x = pad.left + idx * step;
-            var y = pad.top + ch - (d.rx / max) * ch;
-            if (idx === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
-        // TX line
-        ctx.strokeStyle = '#e74c3c';
-        ctx.beginPath();
-        data.forEach(function(d, idx) {
-            var x = pad.left + idx * step;
-            var y = pad.top + ch - (d.tx / max) * ch;
-            if (idx === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
         // Legend
-        ctx.fillStyle = '#27ae60';
+        ctx.fillStyle = palette.download;
         ctx.fillRect(w - 130, 8, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText('Download', w - 115, 18);
-        ctx.fillStyle = '#e74c3c';
+        ctx.fillStyle = palette.upload;
         ctx.fillRect(w - 130, 24, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.fillText('Upload', w - 115, 34);
-        ctx.fillStyle = '#9b59b6';
+        ctx.fillStyle = palette.total;
         ctx.fillRect(w - 130, 40, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.fillText('Total', w - 115, 50);
+
+        // Store state for hover redraw
+        var chartState = {
+            canvas: canvas, ctx: ctx, w: w, h: h, pad: pad, cw: cw, ch: ch,
+            max: max, step: step, data: data, pointPositions: pointPositions,
+            palette: palette, formatValue: formatValue, isRealtime: isRealtime
+        };
+
+        // Hover handlers
+        canvas.style.cursor = period ? 'pointer' : 'crosshair';
+
+        canvas.onmousemove = function(e) {
+            var canvasRect = canvas.getBoundingClientRect();
+            var mouseX = e.clientX - canvasRect.left;
+            var mouseY = e.clientY - canvasRect.top;
+
+            // Find nearest point
+            var nearest = null;
+            var nearestDist = Infinity;
+            pointPositions.forEach(function(p) {
+                var dist = Math.abs(mouseX - p.x);
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                    nearest = p;
+                }
+            });
+
+            if (nearest && nearestDist < step + 10) {
+                // Redraw chart
+                redrawLineChart(chartState, nearest);
+
+                // Show tooltip
+                var html = '<div class="chart-tooltip-title">' + nearest.label + '</div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.download + '">▼ Download</span><span class="chart-tooltip-value">' + formatValue(nearest.rx) + '</span></div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.upload + '">▲ Upload</span><span class="chart-tooltip-value">' + formatValue(nearest.tx) + '</span></div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.total + '">● Total</span><span class="chart-tooltip-value">' + formatValue(nearest.total) + '</span></div>';
+                showChartTooltip(e.clientX, e.clientY, html);
+            } else {
+                redrawLineChart(chartState, null);
+                hideChartTooltip();
+            }
+        };
+
+        canvas.onmouseleave = function() {
+            redrawLineChart(chartState, null);
+            hideChartTooltip();
+        };
+
+        // Click handler for historical charts
+        if (period) {
+            canvas.onclick = function(e) {
+                var canvasRect = canvas.getBoundingClientRect();
+                var mouseX = e.clientX - canvasRect.left;
+
+                var nearest = null;
+                var nearestDist = Infinity;
+                pointPositions.forEach(function(p) {
+                    var dist = Math.abs(mouseX - p.x);
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearest = p;
+                    }
+                });
+
+                if (nearest && nearest.start_ts && nearestDist < step + 10) {
+                    showBandwidthBucketPopup(period, nearest.start_ts, nearest.label);
+                }
+            };
+        } else {
+            canvas.onclick = null;
+        }
     }
 
-    function drawBarChart(canvasId, data, period) {
-        var canvas = document.getElementById(canvasId);
-        if (!canvas) return;
-
-        var rect = canvas.getBoundingClientRect();
-        var ctx = canvas.getContext('2d');
-        canvas.width = rect.width * 2;
-        canvas.height = rect.height * 2;
-        ctx.scale(2, 2);
-        var w = rect.width, h = rect.height;
-
-        var pad = CHART_PAD;
-        var cw = w - pad.left - pad.right;
-        var ch = h - pad.top - pad.bottom;
+    // Redraw chart with optional hover highlight
+    function redrawLineChart(state, hoveredPoint) {
+        var ctx = state.ctx;
+        var w = state.w, h = state.h;
+        var pad = state.pad, cw = state.cw, ch = state.ch;
+        var max = state.max;
+        var pointPositions = state.pointPositions;
+        var palette = state.palette;
+        var formatValue = state.formatValue;
 
         ctx.clearRect(0, 0, w, h);
 
-        // Store bar positions for click detection
-        var barPositions = [];
-
-        if (data.length === 0) {
-            ctx.fillStyle = '#999';
-            ctx.font = '14px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('No data available', w/2, h/2);
-            canvas.onclick = null;
-            canvas.style.cursor = 'default';
-            return;
-        }
-
-        var max = 0;
-        data.forEach(function(d) {
-            var total = d.rx + d.tx;
-            if (total > max) max = total;
-        });
-        if (max === 0) max = 1000000;
-        max = max * 1.1;
-
-        var barW = Math.min(30, cw / data.length * 0.7);
-        var gap = (cw - barW * data.length) / (data.length + 1);
-
-        // Grid
+        // Grid + Y labels
         ctx.strokeStyle = '#ecf0f1';
         ctx.lineWidth = 1;
         ctx.fillStyle = '#7f8c8d';
@@ -3150,72 +3266,131 @@ var JamMonitor = (function() {
             ctx.lineTo(w - pad.right, y);
             ctx.stroke();
             var val = max - (max / 4) * i;
-            ctx.fillText(formatBytesScale(val), pad.left - 5, y + 3);
+            ctx.fillText(formatValue(val), pad.left - 5, y + 3);
         }
 
-        // Bars - stacked (download on bottom, upload on top)
-        data.forEach(function(d, idx) {
-            var x = pad.left + gap + idx * (barW + gap);
-            var rxH = (d.rx / max) * ch;
-            var txH = (d.tx / max) * ch;
+        // X labels
+        ctx.textAlign = 'right';
+        ctx.fillStyle = CHART_LABEL_COLOR;
+        ctx.font = CHART_LABEL_FONT;
+        var labelStep = Math.ceil(pointPositions.length / 8);
+        for (var j = 0; j < pointPositions.length; j += labelStep) {
+            var p = pointPositions[j];
+            if (p.label) {
+                ctx.save();
+                ctx.translate(p.x, h - pad.bottom + 15);
+                ctx.rotate(-Math.PI / 4);
+                ctx.fillText(p.label, 0, 0);
+                ctx.restore();
+            }
+        }
 
-            // Store bar position for click detection
-            barPositions.push({
-                x: x,
-                width: barW,
-                start_ts: d.start_ts,
-                label: d.label
-            });
+        // Hover crosshair
+        if (hoveredPoint) {
+            ctx.strokeStyle = 'rgba(52, 73, 94, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(hoveredPoint.x, pad.top);
+            ctx.lineTo(hoveredPoint.x, pad.top + ch);
+            ctx.stroke();
+        }
 
-            // Download bar (bottom)
-            ctx.fillStyle = '#27ae60';
-            ctx.fillRect(x, pad.top + ch - rxH, barW, rxH);
-
-            // Upload bar (stacked on top)
-            ctx.fillStyle = '#e74c3c';
-            ctx.fillRect(x, pad.top + ch - rxH - txH, barW, txH);
-
-            // Label
-            ctx.fillStyle = CHART_LABEL_COLOR;
-            ctx.font = CHART_LABEL_FONT;
-            ctx.textAlign = 'right';
-            ctx.save();
-            ctx.translate(x + barW / 2, h - pad.bottom + 15);
-            ctx.rotate(-Math.PI / 4);
-            ctx.fillText(d.label, 0, 0);
-            ctx.restore();
+        // Download line
+        ctx.strokeStyle = palette.download;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yRx);
+            else ctx.lineTo(p.x, p.yRx);
         });
+        ctx.stroke();
+
+        // Upload line
+        ctx.strokeStyle = palette.upload;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yTx);
+            else ctx.lineTo(p.x, p.yTx);
+        });
+        ctx.stroke();
+
+        // Total line (on top, dashed)
+        ctx.strokeStyle = palette.total;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        pointPositions.forEach(function(p, idx) {
+            if (idx === 0) ctx.moveTo(p.x, p.yTotal);
+            else ctx.lineTo(p.x, p.yTotal);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Hover dots
+        if (hoveredPoint) {
+            // Download dot
+            ctx.fillStyle = palette.download;
+            ctx.beginPath();
+            ctx.arc(hoveredPoint.x, hoveredPoint.yRx, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Upload dot
+            ctx.fillStyle = palette.upload;
+            ctx.beginPath();
+            ctx.arc(hoveredPoint.x, hoveredPoint.yTx, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.stroke();
+
+            // Total dot
+            ctx.fillStyle = palette.total;
+            ctx.beginPath();
+            ctx.arc(hoveredPoint.x, hoveredPoint.yTotal, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.stroke();
+        }
 
         // Legend
-        ctx.fillStyle = '#27ae60';
+        ctx.fillStyle = palette.download;
         ctx.fillRect(w - 130, 8, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText('Download', w - 115, 18);
-        ctx.fillStyle = '#e74c3c';
+        ctx.fillStyle = palette.upload;
         ctx.fillRect(w - 130, 24, 12, 12);
         ctx.fillStyle = '#2c3e50';
         ctx.fillText('Upload', w - 115, 34);
-        ctx.fillStyle = '#9b59b6';
+        ctx.fillStyle = palette.total;
         ctx.fillRect(w - 130, 40, 12, 12);
         ctx.fillStyle = '#2c3e50';
-        ctx.fillText('Total (stacked)', w - 115, 50);
+        ctx.fillText('Total', w - 115, 50);
+    }
 
-        // Add click handler for bar click detection
-        canvas.style.cursor = 'pointer';
-        canvas.onclick = function(e) {
-            var canvasRect = canvas.getBoundingClientRect();
-            var clickX = e.clientX - canvasRect.left;
+    // Realtime chart - uses Palette A with rate formatting
+    function drawBandwidthChart(canvasId, data) {
+        drawLineChart(canvasId, data, {
+            palette: PALETTE_A,
+            formatValue: formatRateShort,
+            isRealtime: true
+        });
+    }
 
-            for (var i = 0; i < barPositions.length; i++) {
-                var bar = barPositions[i];
-                if (clickX >= bar.x && clickX <= bar.x + bar.width && bar.start_ts) {
-                    showBandwidthBucketPopup(period, bar.start_ts, bar.label);
-                    break;
-                }
-            }
-        };
+    // Historical charts (hourly/daily/monthly) - now line charts
+    // Palette A for hourly, Palette B for daily/monthly (A/B test)
+    function drawBarChart(canvasId, data, period) {
+        var palette = (period === 'hourly') ? PALETTE_A : PALETTE_B;
+        drawLineChart(canvasId, data, {
+            palette: palette,
+            period: period,
+            formatValue: formatBytesScale,
+            isRealtime: false
+        });
     }
 
     function updateBwTable(tbodyId, data) {

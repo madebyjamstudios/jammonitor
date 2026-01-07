@@ -2919,9 +2919,8 @@ var JamMonitor = (function() {
                             var key, start_ts;
                             if (period === 'hourly') {
                                 key = String(entry.time.hour).padStart(2, '0') + ':00';
-                                // Calculate start timestamp using date AND hour from vnstat
-                                var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, entry.time.hour, 0, 0);
-                                start_ts = Math.floor(d.getTime() / 1000);
+                                // Use vnstat's timestamp directly (avoids timezone issues)
+                                start_ts = entry.timestamp;
                             } else if (period === 'daily') {
                                 key = entry.date.month + '/' + entry.date.day;
                                 var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, 0, 0, 0);

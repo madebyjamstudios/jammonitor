@@ -2924,7 +2924,7 @@ var JamMonitor = (function() {
                                 start_ts = entry.timestamp;
                             } else if (period === 'daily') {
                                 key = entry.date.year + '-' + entry.date.month + '-' + entry.date.day;
-                                label = entry.date.month + '/' + entry.date.day;
+                                label = entry.date.month + '-' + entry.date.day;
                                 var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, 0, 0, 0);
                                 start_ts = Math.floor(d.getTime() / 1000);
                             } else {

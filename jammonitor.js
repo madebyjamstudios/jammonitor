@@ -3426,18 +3426,8 @@ var JamMonitor = (function() {
             return dt.getTime();
         }
 
-        function formatSeparatorLabel(dayStartMs) {
-            var dayDate = new Date(dayStartMs);
-            var today = new Date();
-            today.setHours(0, 0, 0, 0);
-            var yesterday = new Date(today);
-            yesterday.setDate(yesterday.getDate() - 1);
-
-            if (dayDate.getTime() === yesterday.getTime()) {
-                return 'Yesterday';
-            } else {
-                return dayDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-            }
+        function formatSeparatorLabel() {
+            return 'Yesterday';
         }
 
         var html = '';
@@ -3449,11 +3439,8 @@ var JamMonitor = (function() {
                 var thisDayKey = dayKeyFromStartTs(d.start_ts);
 
                 if (prevDayKey && thisDayKey !== prevDayKey) {
-                    // Label the day we're about to show (going newest to oldest)
-                    var thisDayStartMs = dayStartMsFromStartTs(d.start_ts);
-                    var sepText = formatSeparatorLabel(thisDayStartMs);
                     html += '<tr class="bw-day-separator">' +
-                            '<td colspan="4"><span class="bw-day-separator-text">' + sepText + '</span></td>' +
+                            '<td colspan="4"><span class="bw-day-separator-text">' + formatSeparatorLabel() + '</span></td>' +
                             '</tr>';
                 }
 

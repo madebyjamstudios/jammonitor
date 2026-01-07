@@ -144,22 +144,22 @@ table.jm-table th { background: #2c3e50; color: #fff; font-weight: 600; font-siz
 table.jm-table tr:nth-child(even) { background: #f8f9fa; }
 table.jm-table tr:hover { background: #e8f4fc; }
 
-/* Client name inline editing */
-#clients-table td.client-name { cursor: pointer; position: relative; }
-#clients-table td.client-name .name-display { display: block; }
-#clients-table td.client-name .name-edit { display: none; }
-#clients-table td.client-name:hover .name-display, #clients-table td.client-name.editing .name-display { display: none; }
+/* Client name inline editing - no layout shift */
+#clients-table td.client-name { cursor: pointer; position: relative; min-width: 140px; }
+#clients-table td.client-name .name-display { line-height: 28px; }
+#clients-table td.client-name .name-edit { position: absolute; top: 50%; left: 8px; right: 8px; transform: translateY(-50%); display: none; z-index: 10; }
 #clients-table td.client-name:hover .name-edit, #clients-table td.client-name.editing .name-edit { display: block; }
-.name-edit input { width: 100%; padding: 6px 10px; border: 1px solid #e0e0e0; border-radius: 6px; font-size: 13px; box-sizing: border-box; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.08); transition: border-color 0.2s, box-shadow 0.2s; }
-.name-edit input:focus { outline: none; border-color: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,0.15); }
-.name-edit-buttons { display: none !important; margin-top: 6px; gap: 6px; }
+#clients-table td.client-name:hover .name-display, #clients-table td.client-name.editing .name-display { visibility: hidden; }
+.name-edit input { width: 100%; padding: 4px 8px; border: 1px solid #3498db; border-radius: 4px; font-size: 13px; box-sizing: border-box; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.name-edit input:focus { outline: none; border-color: #2980b9; box-shadow: 0 2px 8px rgba(52,152,219,0.3); }
+.name-edit-buttons { display: none !important; margin-top: 4px; gap: 4px; }
 #clients-table td.client-name.editing .name-edit-buttons { display: flex !important; }
-.name-edit-buttons button { padding: 5px 12px; font-size: 11px; font-weight: 600; border: none; border-radius: 5px; cursor: pointer; transition: all 0.2s; }
-.name-edit-buttons .btn-save { background: linear-gradient(135deg, #27ae60, #2ecc71); color: #fff; box-shadow: 0 2px 4px rgba(39,174,96,0.3); }
-.name-edit-buttons .btn-save:hover { background: linear-gradient(135deg, #219a52, #27ae60); transform: translateY(-1px); }
-.name-edit-buttons .btn-cancel { background: #f5f5f5; color: #666; border: 1px solid #ddd; }
-.name-edit-buttons .btn-cancel:hover { background: #eee; }
-#clients-table td.client-name.cancelled .name-display { display: block !important; }
+.name-edit-buttons button { padding: 4px 10px; font-size: 11px; font-weight: 600; border: none; border-radius: 4px; cursor: pointer; }
+.name-edit-buttons .btn-save { background: #27ae60; color: #fff; }
+.name-edit-buttons .btn-save:hover { background: #219a52; }
+.name-edit-buttons .btn-cancel { background: #e0e0e0; color: #666; }
+.name-edit-buttons .btn-cancel:hover { background: #d0d0d0; }
+#clients-table td.client-name.cancelled .name-display { visibility: visible !important; }
 #clients-table td.client-name.cancelled .name-edit { display: none !important; }
 
 /* Offline client styling (Tailscale) */

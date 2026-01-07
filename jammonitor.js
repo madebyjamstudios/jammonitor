@@ -1327,6 +1327,10 @@ var JamMonitor = (function() {
 
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
+        // Skip refresh if user is actively editing a name
+        if (tbody && tbody.querySelector('.client-name.editing')) {
+            return;
+        }
         api('clients').then(function(data) {
             if (!data) {
                 console.error('updateClients: No data from clients API');

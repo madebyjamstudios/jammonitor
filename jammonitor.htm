@@ -224,21 +224,20 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .jm-popup-close:hover { color: #2c3e50; }
 .jm-popup-body { max-height: 400px; overflow-y: auto; }
 .jm-popup-footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee; text-align: right; }
-.bw-bucket-popup { min-width: 600px; max-width: 90vw; }
-.bw-bucket-table { width: 100%; font-size: 13px; border-collapse: collapse; table-layout: fixed; }
-.bw-bucket-table th { text-align: left; padding: 10px 12px; background: #f8f9fa; font-weight: 600; color: #2c3e50; border-bottom: 2px solid #e0e0e0; white-space: nowrap; }
-.bw-bucket-table td { padding: 10px 12px; border-bottom: 1px solid #eee; overflow: hidden; text-overflow: ellipsis; }
+.bw-bucket-popup { min-width: 700px; max-width: 90vw; }
+.bw-bucket-table { width: 700px; font-size: 15px; border-collapse: collapse; table-layout: fixed; }
+.bw-bucket-table th { text-align: left; padding: 12px 14px; background: #f8f9fa; font-weight: 600; color: #2c3e50; border-bottom: 2px solid #e0e0e0; white-space: nowrap; overflow: hidden; }
+.bw-bucket-table td { padding: 12px 14px; border-bottom: 1px solid #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bw-bucket-table tr:hover { background: #f8f9fa; }
-.bw-bucket-table th:nth-child(1) { width: 110px; } /* IP */
-.bw-bucket-table th:nth-child(2) { width: 130px; } /* MAC */
-.bw-bucket-table th:nth-child(3) { width: 90px; } /* Type */
-.bw-bucket-table th:nth-child(4) { width: 80px; } /* Download */
-.bw-bucket-table th:nth-child(5) { width: 80px; } /* Upload */
-.bw-bucket-table th:nth-child(6) { width: 80px; } /* Total */
+.bw-bucket-table th:nth-child(1) { width: 115px; } /* IP */
+.bw-bucket-table th:nth-child(2) { width: 140px; } /* MAC */
+.bw-bucket-table th:nth-child(3) { width: 100px; } /* Type */
+.bw-bucket-table th:nth-child(4) { width: 100px; } /* Download */
+.bw-bucket-table th:nth-child(5) { width: 100px; } /* Upload */
+.bw-bucket-table th:nth-child(6) { width: 100px; } /* Total */
 .bw-bucket-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s; }
 .bw-bucket-table th.sortable:hover { background: #e8f4fc; }
-.sort-icon { opacity: 0.3; margin-left: 4px; font-size: 11px; }
-.sort-icon.active { opacity: 1; color: #3498db; }
+.sort-icon { display: inline-block; width: 14px; text-align: center; margin-left: 4px; color: #3498db; }
 .bw-bucket-loading { text-align: center; padding: 40px; color: #7f8c8d; }
 .bw-bucket-loading .chart-spinner { margin: 0 auto 12px auto; }
 /* Clickable bandwidth time links */

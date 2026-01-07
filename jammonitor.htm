@@ -667,21 +667,6 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <span style="color:#95a5a6;font-style:italic;">Tip: Click on a WAN name to edit its settings.</span>
             </div>
 
-            <!-- VPS Bypass Banner -->
-            <div class="bypass-banner" id="bypass-banner">
-                <div class="bypass-left">
-                    <span class="bypass-icon" id="bypass-icon">&#128274;</span>
-                    <div class="bypass-text">
-                        <div class="bypass-title" id="bypass-title">VPS Bypass: OFF</div>
-                        <div class="bypass-desc" id="bypass-desc">Traffic routed through VPS via MPTCP bonding</div>
-                    </div>
-                </div>
-                <label class="bypass-toggle">
-                    <input type="checkbox" id="bypass-checkbox" onchange="JamMonitor.toggleBypass()">
-                    <span class="bypass-slider"></span>
-                </label>
-            </div>
-
             <!-- Advanced Settings Collapsible Section -->
             <div class="wan-advanced-section">
                 <div class="wan-advanced-toggle" onclick="JamMonitor.toggleAdvancedSettings()">
@@ -783,6 +768,21 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <button class="wan-advanced-btn" style="background:#fff;border:1px solid #e74c3c;color:#e74c3c;margin-left:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- VPS Bypass Banner -->
+            <div class="bypass-banner" id="bypass-banner">
+                <div class="bypass-left">
+                    <span class="bypass-icon" id="bypass-icon">&#128274;</span>
+                    <div class="bypass-text">
+                        <div class="bypass-title" id="bypass-title">VPS Bypass: OFF</div>
+                        <div class="bypass-desc" id="bypass-desc">Traffic routed through VPS via MPTCP bonding</div>
+                    </div>
+                </div>
+                <label class="bypass-toggle">
+                    <input type="checkbox" id="bypass-checkbox" onchange="JamMonitor.toggleBypass()">
+                    <span class="bypass-slider"></span>
+                </label>
             </div>
 
         </div>

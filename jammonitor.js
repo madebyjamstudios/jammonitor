@@ -3236,22 +3236,74 @@ var JamMonitor = (function() {
     function updateVnstatTable(tbodyId, data, period) {
         var tbody = document.getElementById(tbodyId);
         if (!tbody) return;
+
+        // Hourly: show oldest -> newest to match the bar chart and to make the day split land "before 00:00"
+        // Daily/Monthly: keep existing behavior (newest -> oldest)
+        var rows = (period === 'hourly') ? (data || []).slice() : (data || []).slice().reverse();
+
+        function pad2(n) { return String(n).padStart(2, '0'); }
+
+        function dayKeyFromStartTs(startTs) {
+            var dt = new Date(startTs * 1000);
+            dt.setHours(0, 0, 0, 0);
+            return dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate());
+        }
+
+        function dayStartMsFromStartTs(startTs) {
+            var dt = new Date(startTs * 1000);
+            dt.setHours(0, 0, 0, 0);
+            return dt.getTime();
+        }
+
+        function formatSeparatorLabel(dayStartMs) {
+            var today = new Date();
+            today.setHours(0, 0, 0, 0);
+            var diffDays = Math.round((today.getTime() - dayStartMs) / 86400000);
+
+            if (diffDays === 0) return 'Today';
+            if (diffDays === 1) return 'Yesterday';
+
+            var d = new Date(dayStartMs);
+            var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            return months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+        }
+
         var html = '';
-        data.slice().reverse().forEach(function(d) {
+        var prevDayKey = null;
+        var prevDayStartMs = null;
+
+        rows.forEach(function(d) {
+            // Insert a separator when the day changes (Hourly only)
+            if (period === 'hourly' && d && d.start_ts) {
+                var thisDayKey = dayKeyFromStartTs(d.start_ts);
+
+                if (prevDayKey && thisDayKey !== prevDayKey && prevDayStartMs != null) {
+                    // Label the day we just finished (so at the midnight boundary, it shows "Yesterday")
+                    var sepText = formatSeparatorLabel(prevDayStartMs);
+                    html += '<tr class="bw-day-separator">' +
+                            '<td colspan="4"><span class="bw-day-separator-text">' + sepText + '</span></td>' +
+                            '</tr>';
+                }
+
+                prevDayKey = thisDayKey;
+                prevDayStartMs = dayStartMsFromStartTs(d.start_ts);
+            }
+
             html += '<tr><td>';
-            if (d.start_ts) {
+            if (d && d.start_ts) {
                 html += '<span class="bw-time-link" data-range="' + period + '" data-start="' + d.start_ts + '">' + d.label + '</span>';
             } else {
-                html += d.label;
+                html += (d && d.label) ? d.label : '—';
             }
             html += '</td>';
-            html += '<td>' + formatBytesScale(d.rx) + '</td>';
-            html += '<td>' + formatBytesScale(d.tx) + '</td>';
-            html += '<td>' + formatBytesScale(d.rx + d.tx) + '</td></tr>';
+            html += '<td>' + formatBytesScale((d && d.rx) ? d.rx : 0) + '</td>';
+            html += '<td>' + formatBytesScale((d && d.tx) ? d.tx : 0) + '</td>';
+            html += '<td>' + formatBytesScale(((d && d.rx) ? d.rx : 0) + ((d && d.tx) ? d.tx : 0)) + '</td></tr>';
         });
+
         tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;">No data</td></tr>';
 
-        // Add click handler for clickable time links
+        // Click handler for clickable time links (ignore separator rows automatically)
         tbody.onclick = function(e) {
             var link = e.target.closest('.bw-time-link');
             if (link && link.dataset.start) {

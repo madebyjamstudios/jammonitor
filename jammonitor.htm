@@ -239,6 +239,11 @@ table.jm-table tr:hover { background: #e8f4fc; }
 /* Clickable bandwidth time links */
 .bw-time-link { color: #3498db; text-decoration: underline; cursor: pointer; transition: color 0.15s; }
 .bw-time-link:hover { color: #2980b9; }
+/* Hourly table day boundary separator (e.g., "Yesterday" before 00:00) */
+table.jm-table tr.bw-day-separator { background: #95a5a6 !important; }
+table.jm-table tr.bw-day-separator:hover { background: #95a5a6 !important; }
+table.jm-table tr.bw-day-separator td { padding: 7px 12px; color: #fff; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; cursor: default; user-select: none; }
+table.jm-table tr.bw-day-separator td .bw-day-separator-text { opacity: 0.95; }
 
 /* Buttons */
 .jm-btn { padding: 12px 24px; background: #3498db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }

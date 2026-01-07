@@ -3411,9 +3411,8 @@ var JamMonitor = (function() {
         var tbody = document.getElementById(tbodyId);
         if (!tbody) return;
 
-        // Hourly: show oldest -> newest to match the bar chart and to make the day split land "before 00:00"
-        // Daily/Monthly: keep existing behavior (newest -> oldest)
-        var rows = (period === 'hourly') ? (data || []).slice() : (data || []).slice().reverse();
+        // All periods: show newest -> oldest (most recent at top)
+        var rows = (data || []).slice().reverse();
 
         function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -3429,29 +3428,38 @@ var JamMonitor = (function() {
             return dt.getTime();
         }
 
-        function formatSeparatorLabel() {
-            return 'Yesterday';
+        function formatSeparatorLabel(dayStartMs) {
+            var dayDate = new Date(dayStartMs);
+            var today = new Date();
+            today.setHours(0, 0, 0, 0);
+            var yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            if (dayDate.getTime() === yesterday.getTime()) {
+                return 'Yesterday';
+            } else {
+                return dayDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+            }
         }
 
         var html = '';
         var prevDayKey = null;
-        var prevDayStartMs = null;
 
         rows.forEach(function(d) {
             // Insert a separator when the day changes (Hourly only)
             if (period === 'hourly' && d && d.start_ts) {
                 var thisDayKey = dayKeyFromStartTs(d.start_ts);
 
-                if (prevDayKey && thisDayKey !== prevDayKey && prevDayStartMs != null) {
-                    // Label the day we just finished (so at the midnight boundary, it shows "Yesterday")
-                    var sepText = formatSeparatorLabel(prevDayStartMs);
+                if (prevDayKey && thisDayKey !== prevDayKey) {
+                    // Label the day we're about to show (going newest to oldest)
+                    var thisDayStartMs = dayStartMsFromStartTs(d.start_ts);
+                    var sepText = formatSeparatorLabel(thisDayStartMs);
                     html += '<tr class="bw-day-separator">' +
                             '<td colspan="4"><span class="bw-day-separator-text">' + sepText + '</span></td>' +
                             '</tr>';
                 }
 
                 prevDayKey = thisDayKey;
-                prevDayStartMs = dayStartMsFromStartTs(d.start_ts);
             }
 
             html += '<tr><td>';

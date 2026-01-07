@@ -1329,6 +1329,13 @@ var JamMonitor = (function() {
         if (!confirm('Discard all unsaved changes?')) return;
         pendingMeta = {};
         pendingReservations = {};
+        // Remove any editing state so updateClients doesn't skip refresh
+        var editingCell = document.querySelector('.client-name.editing');
+        if (editingCell) {
+            editingCell.classList.remove('editing');
+            var row = editingCell.closest('tr');
+            if (row) row.classList.remove('row-editing');
+        }
         updatePendingUI();
         updateClients();
     }

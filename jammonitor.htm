@@ -237,7 +237,9 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .bw-bucket-table th:nth-child(6) { width: 100px; } /* Total */
 .bw-bucket-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s; }
 .bw-bucket-table th.sortable:hover { background: #e8f4fc; }
-.sort-icon { display: inline-block; width: 14px; text-align: center; margin-left: 4px; color: #3498db; }
+.sort-icon { display: inline-block; width: 0; height: 0; margin-left: 6px; vertical-align: middle; border-left: 5px solid transparent; border-right: 5px solid transparent; }
+.sort-icon.sort-asc { border-bottom: 6px solid #3498db; border-top: none; }
+.sort-icon.sort-desc { border-top: 6px solid #3498db; border-bottom: none; }
 .bw-bucket-loading { text-align: center; padding: 40px; color: #7f8c8d; }
 .bw-bucket-loading .chart-spinner { margin: 0 auto 12px auto; }
 /* Clickable bandwidth time links */

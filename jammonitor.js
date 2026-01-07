@@ -3382,11 +3382,9 @@ var JamMonitor = (function() {
     }
 
     // Historical charts (hourly/daily/monthly) - now line charts
-    // Palette A for hourly, Palette B for daily/monthly (A/B test)
     function drawBarChart(canvasId, data, period) {
-        var palette = (period === 'hourly') ? PALETTE_A : PALETTE_B;
         drawLineChart(canvasId, data, {
-            palette: palette,
+            palette: PALETTE_A,
             period: period,
             formatValue: formatBytesScale,
             isRealtime: false

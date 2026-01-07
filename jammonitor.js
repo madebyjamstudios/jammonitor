@@ -2942,10 +2942,11 @@ var JamMonitor = (function() {
                     }
                 });
 
-                // Convert to array and sort
+                // Convert to array and sort by timestamp
                 traffic = Object.values(aggregated);
+                traffic.sort(function(a, b) { return a.start_ts - b.start_ts; });
 
-                // Limit entries
+                // Limit entries (take most recent)
                 if (period === 'hourly') traffic = traffic.slice(-24);
                 else if (period === 'daily') traffic = traffic.slice(-30);
 

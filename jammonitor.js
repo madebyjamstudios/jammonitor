@@ -3255,17 +3255,8 @@ var JamMonitor = (function() {
             return dt.getTime();
         }
 
-        function formatSeparatorLabel(dayStartMs) {
-            var today = new Date();
-            today.setHours(0, 0, 0, 0);
-            var diffDays = Math.round((today.getTime() - dayStartMs) / 86400000);
-
-            if (diffDays === 0) return 'Today';
-            if (diffDays === 1) return 'Yesterday';
-
-            var d = new Date(dayStartMs);
-            var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-            return months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+        function formatSeparatorLabel() {
+            return 'Yesterday';
         }
 
         var html = '';

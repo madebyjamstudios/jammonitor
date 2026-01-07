@@ -1410,7 +1410,9 @@ var JamMonitor = (function() {
                 // Check for pending changes
                 var metaPending = pendingMeta[macLower];
                 var meta = clientMeta[macLower] || {};
-                var displayName = (metaPending && metaPending.alias) || meta.alias || c.hostname;
+                var savedName = (metaPending && metaPending.alias) || meta.alias || c.hostname;
+                var isUnnamed = !savedName || savedName === '*';
+                var displayName = isUnnamed ? '' : savedName;
                 var deviceType = (metaPending && metaPending.type) || meta.type || detectDeviceType(c.hostname);
                 var icon = getDeviceIcon(deviceType);
 
@@ -1444,9 +1446,12 @@ var JamMonitor = (function() {
                 // Name cell with inline edit form
                 var nameClass = 'client-name';
                 if (metaPending) nameClass += ' client-pending-name';
-                var nameCell = '<span class="name-display">' + escapeHtml(displayName) + '</span>' +
+                var nameDisplay = isUnnamed
+                    ? '<span class="name-placeholder">Tap to name</span>'
+                    : escapeHtml(displayName);
+                var nameCell = '<span class="name-display">' + nameDisplay + '</span>' +
                     '<div class="name-edit">' +
-                    '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '">' +
+                    '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '" placeholder="Enter name...">' +
                     '</div>' +
                     '<div class="name-edit-buttons">' +
                     '<button class="btn-save">Save</button>' +

@@ -240,9 +240,16 @@ table.jm-table tr:hover { background: #e8f4fc; }
 .bw-time-link { color: #3498db; text-decoration: underline; cursor: pointer; transition: color 0.15s; }
 .bw-time-link:hover { color: #2980b9; }
 /* Hourly table day boundary separator - boring, ignorable divider */
-table.jm-table tr.bw-day-separator,
-table.jm-table tr.bw-day-separator:hover { background: #bdc3c7 !important; box-shadow: none !important; }
-table.jm-table tr.bw-day-separator td { padding: 5px 12px; color: #fff; text-align: center; font-size: 10px; font-weight: 600; letter-spacing: 0.3px; cursor: default; user-select: none; pointer-events: none; }
+tr.bw-day-separator, tr.bw-day-separator:hover,
+table tr.bw-day-separator, table tr.bw-day-separator:hover,
+table.jm-table tr.bw-day-separator, table.jm-table tr.bw-day-separator:hover,
+table.jm-table tbody tr.bw-day-separator, table.jm-table tbody tr.bw-day-separator:hover {
+    background: #bdc3c7 !important; box-shadow: none !important; outline: none !important;
+}
+tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
+    padding: 5px 12px; color: #fff; text-align: center; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.3px; cursor: default; user-select: none; pointer-events: none;
+}
 
 /* Buttons */
 .jm-btn { padding: 12px 24px; background: #3498db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }

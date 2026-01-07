@@ -3038,7 +3038,7 @@ var JamMonitor = (function() {
         // Clear and check data
         ctx.clearRect(0, 0, w, h);
 
-        if (data.length < 2) {
+        if (data.length === 0) {
             ctx.fillStyle = '#999';
             ctx.font = '14px sans-serif';
             ctx.textAlign = 'center';
@@ -3059,7 +3059,7 @@ var JamMonitor = (function() {
         if (max === 0) max = 1000;
         max = max * 1.1;
 
-        var step = cw / (data.length - 1);
+        var step = data.length > 1 ? cw / (data.length - 1) : cw;
 
         // Grid + Y labels
         ctx.strokeStyle = '#ecf0f1';
@@ -3208,7 +3208,7 @@ var JamMonitor = (function() {
                 html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.download + '">▼ Download</span><span class="chart-tooltip-value">' + formatValue(nearest.rx) + '</span></div>';
                 html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.upload + '">▲ Upload</span><span class="chart-tooltip-value">' + formatValue(nearest.tx) + '</span></div>';
                 html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.total + '">● Total</span><span class="chart-tooltip-value">' + formatValue(nearest.total) + '</span></div>';
-                showChartTooltip(e.clientX, e.clientY, html);
+                showChartTooltip(canvasRect.left + nearest.x, e.clientY, html);
             } else {
                 redrawLineChart(chartState, null);
                 hideChartTooltip();

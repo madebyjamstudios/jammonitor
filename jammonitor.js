@@ -3775,18 +3775,21 @@ var JamMonitor = (function() {
 
             // Build table
             var html = '<table class="bw-bucket-table">';
-            html += '<thead><tr><th>IP Address</th><th>Name</th><th>Source</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead>';
+            html += '<thead><tr><th>IP Address</th><th>MAC Address</th><th>Type</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead>';
             html += '<tbody>';
 
             data.devices.forEach(function(dev) {
-                var name = dev.hostname && dev.hostname !== '*' ? dev.hostname : '(unknown)';
-                var source = dev.mac && dev.mac !== 'unknown' ? 'LAN' : 'Unknown';
+                var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
+                var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
+                var deviceType = detectDeviceType(hostname);
+                var icon = getDeviceIcon(deviceType);
+                var typeLabel = deviceType.charAt(0).toUpperCase() + deviceType.slice(1);
                 var total = (dev.rx || 0) + (dev.tx || 0);
 
                 html += '<tr>';
                 html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
-                html += '<td>' + escapeHtml(name) + '</td>';
-                html += '<td>' + source + '</td>';
+                html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(mac) + '</td>';
+                html += '<td>' + icon + ' ' + typeLabel + '</td>';
                 html += '<td>' + formatBytesCompact(dev.rx || 0) + '</td>';
                 html += '<td>' + formatBytesCompact(dev.tx || 0) + '</td>';
                 html += '<td style="font-weight:600;">' + formatBytesCompact(total) + '</td>';

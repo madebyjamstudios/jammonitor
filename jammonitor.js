@@ -2916,23 +2916,26 @@ var JamMonitor = (function() {
 
                     if (trafficData) {
                         trafficData.forEach(function(entry) {
-                            var key, start_ts;
+                            var key, label, start_ts;
                             if (period === 'hourly') {
-                                key = String(entry.time.hour).padStart(2, '0') + ':00';
-                                // Use vnstat's timestamp directly (avoids timezone issues)
+                                // Use timestamp as key to prevent merging same hour from different days
+                                key = entry.timestamp;
+                                label = String(entry.time.hour).padStart(2, '0') + ':00';
                                 start_ts = entry.timestamp;
                             } else if (period === 'daily') {
-                                key = entry.date.month + '/' + entry.date.day;
+                                key = entry.date.year + '-' + entry.date.month + '-' + entry.date.day;
+                                label = entry.date.month + '/' + entry.date.day;
                                 var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, 0, 0, 0);
                                 start_ts = Math.floor(d.getTime() / 1000);
                             } else {
                                 key = entry.date.year + '-' + String(entry.date.month).padStart(2, '0');
+                                label = key;
                                 var d = new Date(entry.date.year, entry.date.month - 1, 1, 0, 0, 0);
                                 start_ts = Math.floor(d.getTime() / 1000);
                             }
 
                             if (!aggregated[key]) {
-                                aggregated[key] = { label: key, rx: 0, tx: 0, start_ts: start_ts };
+                                aggregated[key] = { label: label, rx: 0, tx: 0, start_ts: start_ts };
                             }
                             aggregated[key].rx += entry.rx || 0;
                             aggregated[key].tx += entry.tx || 0;

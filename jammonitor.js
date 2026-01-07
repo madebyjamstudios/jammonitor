@@ -3913,7 +3913,7 @@ var JamMonitor = (function() {
 
                 columns.forEach(function(col) {
                     var isActive = sortColumn === col.key;
-                    var arrow = isActive ? (sortDirection === 'asc' ? '↑' : '↓') : '↓';
+                    var arrow = isActive ? (sortDirection === 'asc' ? '▴' : '▾') : '▾';
                     var arrowClass = isActive ? 'sort-icon active' : 'sort-icon';
                     html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + '<span class="' + arrowClass + '">' + arrow + '</span></th>';
                 });

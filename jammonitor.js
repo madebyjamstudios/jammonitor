@@ -2919,9 +2919,8 @@ var JamMonitor = (function() {
                             var key, start_ts;
                             if (period === 'hourly') {
                                 key = String(entry.time.hour).padStart(2, '0') + ':00';
-                                // Calculate start timestamp for this hour (today)
-                                var d = new Date();
-                                d.setHours(entry.time.hour, 0, 0, 0);
+                                // Calculate start timestamp using date AND hour from vnstat
+                                var d = new Date(entry.date.year, entry.date.month - 1, entry.date.day, entry.time.hour, 0, 0);
                                 start_ts = Math.floor(d.getTime() / 1000);
                             } else if (period === 'daily') {
                                 key = entry.date.month + '/' + entry.date.day;
@@ -3799,32 +3798,113 @@ var JamMonitor = (function() {
                 return;
             }
 
-            // Build table
-            var html = '<table class="bw-bucket-table">';
-            html += '<thead><tr><th>IP Address</th><th>MAC Address</th><th>Type</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead>';
-            html += '<tbody>';
-
-            data.devices.forEach(function(dev) {
+            // Prepare devices with computed fields
+            var devices = data.devices.map(function(dev) {
                 var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
                 var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
                 var deviceType = detectDeviceType(hostname);
                 var typeDisplay = deviceType !== 'unknown'
                     ? getDeviceIcon(deviceType) + ' ' + deviceType.charAt(0).toUpperCase() + deviceType.slice(1)
                     : '—';
-                var total = (dev.rx || 0) + (dev.tx || 0);
-
-                html += '<tr>';
-                html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
-                html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(mac) + '</td>';
-                html += '<td>' + typeDisplay + '</td>';
-                html += '<td>' + formatBytesCompact(dev.rx || 0) + '</td>';
-                html += '<td>' + formatBytesCompact(dev.tx || 0) + '</td>';
-                html += '<td style="font-weight:600;">' + formatBytesCompact(total) + '</td>';
-                html += '</tr>';
+                return {
+                    ip: dev.ip,
+                    mac: mac,
+                    type: deviceType,
+                    typeDisplay: typeDisplay,
+                    rx: dev.rx || 0,
+                    tx: dev.tx || 0,
+                    total: (dev.rx || 0) + (dev.tx || 0)
+                };
             });
 
-            html += '</tbody></table>';
-            body.innerHTML = html;
+            // Sort state
+            var sortColumn = 'total';
+            var sortDirection = 'desc';
+
+            // IP to number for proper sorting
+            function ipToNumber(ip) {
+                if (!ip || ip === '—') return 0;
+                var parts = ip.split('.');
+                if (parts.length !== 4) return 0;
+                return ((parseInt(parts[0], 10) << 24) +
+                        (parseInt(parts[1], 10) << 16) +
+                        (parseInt(parts[2], 10) << 8) +
+                        parseInt(parts[3], 10)) >>> 0;
+            }
+
+            // Sort function
+            function sortDevices(col, dir) {
+                return devices.slice().sort(function(a, b) {
+                    var valA, valB;
+                    if (col === 'ip') {
+                        valA = ipToNumber(a.ip);
+                        valB = ipToNumber(b.ip);
+                    } else if (col === 'mac' || col === 'type') {
+                        valA = (a[col] || '').toLowerCase();
+                        valB = (b[col] || '').toLowerCase();
+                    } else {
+                        valA = a[col] || 0;
+                        valB = b[col] || 0;
+                    }
+                    if (valA === valB) return 0;
+                    if (dir === 'asc') return valA > valB ? 1 : -1;
+                    return valA < valB ? 1 : -1;
+                });
+            }
+
+            // Render table
+            function renderTable() {
+                var sorted = sortDevices(sortColumn, sortDirection);
+                var html = '<table class="bw-bucket-table">';
+                html += '<thead><tr>';
+
+                // Column definitions
+                var columns = [
+                    { key: 'ip', label: 'IP Address' },
+                    { key: 'mac', label: 'MAC Address' },
+                    { key: 'type', label: 'Type' },
+                    { key: 'rx', label: 'Download' },
+                    { key: 'tx', label: 'Upload' },
+                    { key: 'total', label: 'Total' }
+                ];
+
+                columns.forEach(function(col) {
+                    var sortClass = sortColumn === col.key ? (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') : '';
+                    html += '<th class="sortable ' + sortClass + '" data-sort="' + col.key + '">' + col.label + ' <span class="sort-icon"></span></th>';
+                });
+
+                html += '</tr></thead><tbody>';
+
+                sorted.forEach(function(dev) {
+                    html += '<tr>';
+                    html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
+                    html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(dev.mac) + '</td>';
+                    html += '<td>' + dev.typeDisplay + '</td>';
+                    html += '<td>' + formatBytesCompact(dev.rx) + '</td>';
+                    html += '<td>' + formatBytesCompact(dev.tx) + '</td>';
+                    html += '<td style="font-weight:600;">' + formatBytesCompact(dev.total) + '</td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                body.innerHTML = html;
+
+                // Add click handlers for sorting
+                body.querySelectorAll('th.sortable').forEach(function(th) {
+                    th.onclick = function() {
+                        var col = th.dataset.sort;
+                        if (sortColumn === col) {
+                            sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                        } else {
+                            sortColumn = col;
+                            sortDirection = (col === 'mac' || col === 'type' || col === 'ip') ? 'asc' : 'desc';
+                        }
+                        renderTable();
+                    };
+                });
+            }
+
+            renderTable();
         }).catch(function(err) {
             var body = popup.querySelector('.jm-popup-body');
             body.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:40px;">Error loading device data</div>';

@@ -3179,8 +3179,9 @@ var JamMonitor = (function() {
             palette: palette, formatValue: formatValue, isRealtime: isRealtime
         };
 
-        // Hover handlers
-        canvas.style.cursor = period ? 'pointer' : 'crosshair';
+        // Hover handlers - no click, just hover tooltip
+        canvas.style.cursor = 'crosshair';
+        canvas.onclick = null;
 
         canvas.onmousemove = function(e) {
             var canvasRect = canvas.getBoundingClientRect();
@@ -3218,30 +3219,6 @@ var JamMonitor = (function() {
             redrawLineChart(chartState, null);
             hideChartTooltip();
         };
-
-        // Click handler for historical charts
-        if (period) {
-            canvas.onclick = function(e) {
-                var canvasRect = canvas.getBoundingClientRect();
-                var mouseX = e.clientX - canvasRect.left;
-
-                var nearest = null;
-                var nearestDist = Infinity;
-                pointPositions.forEach(function(p) {
-                    var dist = Math.abs(mouseX - p.x);
-                    if (dist < nearestDist) {
-                        nearestDist = dist;
-                        nearest = p;
-                    }
-                });
-
-                if (nearest && nearest.start_ts && nearestDist < step + 10) {
-                    showBandwidthBucketPopup(period, nearest.start_ts, nearest.label);
-                }
-            };
-        } else {
-            canvas.onclick = null;
-        }
     }
 
     // Redraw chart with optional hover highlight

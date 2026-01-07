@@ -3213,21 +3213,26 @@ var JamMonitor = (function() {
         if (!tbody) return;
         var html = '';
         data.slice().reverse().forEach(function(d) {
-            var rowAttrs = d.start_ts ? ' class="bw-bucket-row" data-range="' + period + '" data-start="' + d.start_ts + '"' : '';
-            html += '<tr' + rowAttrs + '><td>' + d.label + '</td>';
+            html += '<tr><td>';
+            if (d.start_ts) {
+                html += '<span class="bw-time-link" data-range="' + period + '" data-start="' + d.start_ts + '">' + d.label + '</span>';
+            } else {
+                html += d.label;
+            }
+            html += '</td>';
             html += '<td>' + formatBytesScale(d.rx) + '</td>';
             html += '<td>' + formatBytesScale(d.tx) + '</td>';
             html += '<td>' + formatBytesScale(d.rx + d.tx) + '</td></tr>';
         });
         tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;">No data</td></tr>';
 
-        // Add click handler for clickable rows
+        // Add click handler for clickable time links
         tbody.onclick = function(e) {
-            var row = e.target.closest('.bw-bucket-row');
-            if (row && row.dataset.start) {
-                var range = row.dataset.range;
-                var start = parseInt(row.dataset.start, 10);
-                var label = row.querySelector('td').textContent;
+            var link = e.target.closest('.bw-time-link');
+            if (link && link.dataset.start) {
+                var range = link.dataset.range;
+                var start = parseInt(link.dataset.start, 10);
+                var label = link.textContent;
                 showBandwidthBucketPopup(range, start, label);
             }
         };

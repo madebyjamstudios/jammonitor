@@ -54,6 +54,12 @@ var JamMonitor = (function() {
     var pendingMeta = {};           // {mac: {alias, type}} - pending name/type changes
     var pendingReservations = {};   // {mac: {ip, name, action: 'add'|'update'|'remove'}}
 
+    // Client list sorting and grouping state
+    var clientSortColumn = 'ip';
+    var clientSortDirection = 'asc';
+    var collapsedGroups = {};       // { '10.10.10': true } - collapsed subnet groups
+    var clientsDataCache = null;    // Cache parsed client data for re-sorting
+
     // Speed test state
     var speedTestSize = 10;          // Default 10MB
     var speedTestResults = {};       // {wan1: {download: {...}, upload: {...}}, ...}
@@ -1340,6 +1346,270 @@ var JamMonitor = (function() {
         updateClients();
     }
 
+    // ============================================================
+    // Client List Sorting & Grouping Helpers
+    // ============================================================
+
+    function getSubnetGroup(ip) {
+        if (!ip || ip === '--') return 'unknown';
+        // Tailscale IPs start with 100.
+        if (ip.startsWith('100.')) return 'tailscale';
+        var parts = ip.split('.');
+        if (parts.length >= 3) return parts[0] + '.' + parts[1] + '.' + parts[2];
+        return 'unknown';
+    }
+
+    function getSubnetLabel(group) {
+        if (group === 'tailscale') return 'Tailscale (100.x.x.x)';
+        if (group === 'unknown') return 'Unknown';
+        return group + '.x';
+    }
+
+    function isGroupCollapsedByDefault(group) {
+        // Local LAN subnets (192.168.x, 10.201.x matching router) expanded
+        if (group.startsWith('192.168.')) return false;
+        if (group.startsWith('10.201.')) return false;
+        // Tailscale expanded
+        if (group === 'tailscale') return false;
+        // Upstream/other subnets collapsed by default
+        return true;
+    }
+
+    function getGroupSortOrder(group) {
+        // Sort order: local LAN first, then Tailscale, then others alphabetically
+        if (group.startsWith('192.168.')) return '0_' + group;
+        if (group.startsWith('10.201.')) return '1_' + group;
+        if (group === 'tailscale') return '2_tailscale';
+        return '3_' + group;
+    }
+
+    function ipToNumberClient(ip) {
+        if (!ip || ip === '--') return 0;
+        var parts = ip.split('.');
+        if (parts.length !== 4) return 0;
+        return ((parseInt(parts[0], 10) << 24) +
+                (parseInt(parts[1], 10) << 16) +
+                (parseInt(parts[2], 10) << 8) +
+                parseInt(parts[3], 10)) >>> 0;
+    }
+
+    function sortClientsList(clients, col, dir) {
+        return clients.slice().sort(function(a, b) {
+            var valA, valB;
+            if (col === 'ip') {
+                valA = ipToNumberClient(a.ip);
+                valB = ipToNumberClient(b.ip);
+            } else if (col === 'download' || col === 'upload') {
+                valA = a[col] || 0;
+                valB = b[col] || 0;
+            } else {
+                valA = (a[col] || '').toString().toLowerCase();
+                valB = (b[col] || '').toString().toLowerCase();
+            }
+            if (valA === valB) return 0;
+            return dir === 'asc' ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+        });
+    }
+
+    function renderClientHeaders() {
+        var columns = [
+            { key: 'ip', label: 'IP Address', width: '115px' },
+            { key: 'type', label: 'Type', width: '40px' },
+            { key: 'name', label: 'Name', width: '' },
+            { key: 'download', label: 'Download', width: '' },
+            { key: 'upload', label: 'Upload', width: '' },
+            { key: 'source', label: 'Source', width: '70px' },
+            { key: 'mac', label: 'MAC Address', width: '130px' },
+            { key: null, label: '', width: '40px' }
+        ];
+        var html = '<tr>';
+        columns.forEach(function(col) {
+            var style = col.width ? ' style="width:' + col.width + ';"' : '';
+            if (col.key) {
+                var isActive = clientSortColumn === col.key;
+                var arrow = isActive ? '<span class="sort-icon ' + (clientSortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
+                html += '<th class="sortable" data-sort="' + col.key + '"' + style + '>' + col.label + arrow + '</th>';
+            } else {
+                html += '<th' + style + '></th>';
+            }
+        });
+        return html + '</tr>';
+    }
+
+    function renderGroupHeader(group, count, isCollapsed) {
+        var arrowClass = isCollapsed ? 'client-group-arrow collapsed' : 'client-group-arrow';
+        return '<tr class="client-group-header" data-group="' + group + '">' +
+            '<td colspan="8">' +
+            '<span class="' + arrowClass + '">▼</span>' +
+            getSubnetLabel(group) +
+            '<span class="client-group-count">(' + count + ' device' + (count !== 1 ? 's' : '') + ')</span>' +
+            '</td></tr>';
+    }
+
+    function renderClientsTable() {
+        if (!clientsDataCache) return;
+
+        var tbody = document.getElementById('clients-tbody');
+        var thead = document.querySelector('#clients-table thead');
+        if (!tbody || !thead) return;
+
+        // Render sortable headers
+        thead.innerHTML = renderClientHeaders();
+
+        // Group clients by subnet
+        var groups = {};
+        clientsDataCache.forEach(function(client) {
+            var group = getSubnetGroup(client.ip);
+            if (!groups[group]) groups[group] = [];
+            groups[group].push(client);
+        });
+
+        // Sort group keys
+        var sortedGroupKeys = Object.keys(groups).sort(function(a, b) {
+            return getGroupSortOrder(a).localeCompare(getGroupSortOrder(b));
+        });
+
+        // Initialize collapsed state for new groups
+        sortedGroupKeys.forEach(function(group) {
+            if (collapsedGroups[group] === undefined) {
+                collapsedGroups[group] = isGroupCollapsedByDefault(group);
+            }
+        });
+
+        var rows = '';
+        sortedGroupKeys.forEach(function(group) {
+            var groupClients = groups[group];
+            var isCollapsed = collapsedGroups[group];
+
+            // Render group header
+            rows += renderGroupHeader(group, groupClients.length, isCollapsed);
+
+            // Sort clients within group
+            var sorted = sortClientsList(groupClients, clientSortColumn, clientSortDirection);
+
+            // Render client rows
+            sorted.forEach(function(c) {
+                var hiddenClass = isCollapsed ? ' hidden' : '';
+                rows += renderClientRow(c, group, hiddenClass);
+            });
+        });
+
+        tbody.innerHTML = rows || '<tr><td colspan="8" style="text-align:center;color:#999;">No clients found</td></tr>';
+
+        // Attach click handlers
+        attachClientTableHandlers();
+    }
+
+    function renderClientRow(c, group, hiddenClass) {
+        var macLower = c.mac ? c.mac.toLowerCase() : '';
+        var metaPending = pendingMeta[macLower];
+        var meta = clientMeta[macLower] || {};
+        var savedName = (metaPending && metaPending.alias) || meta.alias || c.hostname;
+        var isUnnamed = !savedName || savedName === '*';
+        var displayName = isUnnamed ? '' : savedName;
+        var deviceType = (metaPending && metaPending.type) || meta.type || detectDeviceType(c.hostname);
+        var icon = getDeviceIcon(deviceType);
+
+        var effectiveRes = c.mac ? getEffectiveReservation(c.mac) : null;
+        var hasPendingRes = pendingReservations[macLower];
+        var ipTitle = effectiveRes ? 'Static reservation' : formatExpiry(c.expiry);
+
+        var tagIcon = '';
+        if (c.source === 'LAN') {
+            if (hasPendingRes) {
+                if (hasPendingRes.action === 'remove') {
+                    tagIcon = '<span style="color:#e74c3c;" title="Pending removal">\uD83C\uDFF7\uFE0F</span>';
+                } else {
+                    tagIcon = '<span style="color:#f39c12;" title="Pending save">\uD83C\uDFF7\uFE0F</span>';
+                }
+            } else if (effectiveRes) {
+                tagIcon = '<span style="color:#27ae60;" title="DHCP Reserved">\uD83C\uDFF7\uFE0F</span>';
+            } else {
+                tagIcon = '<span style="color:#bdc3c7;" title="Add to DHCP reservation">\uD83C\uDFF7\uFE0F</span>';
+            }
+        }
+
+        var rowStyle = '';
+        if (hasPendingRes && hasPendingRes.action !== 'remove') {
+            rowStyle = 'background:#fff8e1;';
+        } else if (effectiveRes && !hasPendingRes) {
+            rowStyle = 'background:#f0fff4;';
+        } else if (c.source === 'Tailscale') {
+            rowStyle = 'background:#f0f9ff;';
+        }
+
+        var nameClass = 'client-name';
+        if (metaPending) nameClass += ' client-pending-name';
+        var nameDisplay = isUnnamed ? '<span class="name-placeholder">Tap to name</span>' : escapeHtml(displayName);
+
+        var nameCell = '';
+        if (c.source === 'LAN') {
+            nameCell = '<span class="name-display">' + nameDisplay + '</span>' +
+                '<div class="name-edit">' +
+                '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '" placeholder="Enter name...">' +
+                '</div>' +
+                '<div class="name-edit-buttons">' +
+                '<button class="btn-save">Save</button>' +
+                '<button class="btn-cancel">Cancel</button>' +
+                '</div>';
+        } else {
+            nameCell = escapeHtml(c.name || c.hostname || '--');
+        }
+
+        var offlineClass = c.offline ? ' client-offline' : '';
+        var sourceDisplay = c.source === 'Tailscale' ? '<span style="color:#3498db;">Tailscale</span>' : c.source;
+        var macDisplay = c.source === 'Tailscale' ? (c.os || '--') : (c.mac || '--');
+
+        var row = '<tr class="client-row' + hiddenClass + offlineClass + '" data-group="' + group + '" style="' + rowStyle + '">';
+        row += '<td title="' + escapeHtml(ipTitle || '') + '">' + escapeHtml(c.ip) + '</td>';
+        row += '<td style="text-align:center;">' + icon + '</td>';
+        if (c.source === 'LAN') {
+            row += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + nameCell + '</td>';
+        } else {
+            row += '<td>' + nameCell + '</td>';
+        }
+        row += '<td>' + (c.download > 0 ? formatBytesCompact(c.download) : '--') + '</td>';
+        row += '<td>' + (c.upload > 0 ? formatBytesCompact(c.upload) : '--') + '</td>';
+        row += '<td>' + sourceDisplay + '</td>';
+        row += '<td style="font-family:monospace;font-size:11px;color:#7f8c8d;">' + escapeHtml(macDisplay) + '</td>';
+        if (c.source === 'LAN') {
+            row += '<td class="reservation-tag" data-mac="' + escapeHtml(c.mac) + '" data-ip="' + escapeHtml(c.ip) + '" data-name="' + escapeHtml(displayName) + '">' + tagIcon + '</td>';
+        } else {
+            row += '<td></td>';
+        }
+        row += '</tr>';
+        return row;
+    }
+
+    function attachClientTableHandlers() {
+        var table = document.getElementById('clients-table');
+        if (!table) return;
+
+        // Sort column click handlers
+        table.querySelectorAll('th.sortable').forEach(function(th) {
+            th.onclick = function() {
+                var col = th.dataset.sort;
+                if (clientSortColumn === col) {
+                    clientSortDirection = clientSortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    clientSortColumn = col;
+                    // Default direction: asc for text/IP, desc for numeric
+                    clientSortDirection = (col === 'download' || col === 'upload') ? 'desc' : 'asc';
+                }
+                renderClientsTable();
+            };
+        });
+
+        // Group header collapse/expand handlers
+        table.querySelectorAll('.client-group-header').forEach(function(header) {
+            header.onclick = function() {
+                var group = header.dataset.group;
+                collapsedGroups[group] = !collapsedGroups[group];
+                renderClientsTable();
+            };
+        });
+    }
+
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
         // Skip refresh if user is actively editing a name
@@ -1392,82 +1662,32 @@ var JamMonitor = (function() {
                 }
             });
 
-            var rows = '';
+            // Build unified clients array for caching
+            var clients = [];
 
-            // LAN clients - new column order: IP, Icon, Name, Download, Upload, Type, MAC, Reserve
-            Object.keys(leases).sort(function(a, b) {
-                var aParts = a.split('.').map(Number);
-                var bParts = b.split('.').map(Number);
-                for (var i = 0; i < 4; i++) {
-                    if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
-                }
-                return 0;
-            }).forEach(function(ip) {
+            // LAN clients
+            Object.keys(leases).forEach(function(ip) {
                 var c = leases[ip];
                 var t = traffic[ip] || { rx: 0, tx: 0 };
-                var macLower = c.mac.toLowerCase();
-
-                // Check for pending changes
+                var macLower = c.mac ? c.mac.toLowerCase() : '';
                 var metaPending = pendingMeta[macLower];
                 var meta = clientMeta[macLower] || {};
                 var savedName = (metaPending && metaPending.alias) || meta.alias || c.hostname;
-                var isUnnamed = !savedName || savedName === '*';
-                var displayName = isUnnamed ? '' : savedName;
                 var deviceType = (metaPending && metaPending.type) || meta.type || detectDeviceType(c.hostname);
-                var icon = getDeviceIcon(deviceType);
 
-                // Use effective reservation (considering pending)
-                var effectiveRes = getEffectiveReservation(c.mac);
-                var hasPendingRes = pendingReservations[macLower];
-                var ipTitle = effectiveRes ? 'Static reservation' : formatExpiry(c.expiry);
-
-                // Tag icon with pending state indication
-                var tagIcon;
-                if (hasPendingRes) {
-                    if (hasPendingRes.action === 'remove') {
-                        tagIcon = '<span style="color:#e74c3c;" title="Pending removal">\uD83C\uDFF7\uFE0F</span>';
-                    } else {
-                        tagIcon = '<span style="color:#f39c12;" title="Pending save">\uD83C\uDFF7\uFE0F</span>';
-                    }
-                } else if (effectiveRes) {
-                    tagIcon = '<span style="color:#27ae60;" title="DHCP Reserved">\uD83C\uDFF7\uFE0F</span>';
-                } else {
-                    tagIcon = '<span style="color:#bdc3c7;" title="Add to DHCP reservation">\uD83C\uDFF7\uFE0F</span>';
-                }
-
-                // Row styling with pending indication
-                var rowStyle = '';
-                if (hasPendingRes && hasPendingRes.action !== 'remove') {
-                    rowStyle = 'background:#fff8e1;';  // Pending reservation - yellow tint
-                } else if (effectiveRes && !hasPendingRes) {
-                    rowStyle = 'background:#f0fff4;';  // Has reservation - green tint
-                }
-
-                // Name cell with inline edit form
-                var nameClass = 'client-name';
-                if (metaPending) nameClass += ' client-pending-name';
-                var nameDisplay = isUnnamed
-                    ? '<span class="name-placeholder">Tap to name</span>'
-                    : escapeHtml(displayName);
-                var nameCell = '<span class="name-display">' + nameDisplay + '</span>' +
-                    '<div class="name-edit">' +
-                    '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '" placeholder="Enter name...">' +
-                    '</div>' +
-                    '<div class="name-edit-buttons">' +
-                    '<button class="btn-save">Save</button>' +
-                    '<button class="btn-cancel">Cancel</button>' +
-                    '</div>';
-
-                rows += '<tr style="' + rowStyle + '">';
-                rows += '<td title="' + escapeHtml(ipTitle) + '">' + escapeHtml(ip) + '</td>';
-                rows += '<td style="text-align:center;">' + icon + '</td>';
-                rows += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + nameCell + '</td>';
-                rows += '<td>' + (t.rx > 0 ? formatBytesCompact(t.rx) : '--') + '</td>';
-                rows += '<td>' + (t.tx > 0 ? formatBytesCompact(t.tx) : '--') + '</td>';
-                rows += '<td>LAN</td>';
-                rows += '<td style="font-family:monospace;font-size:11px;color:#7f8c8d;">' + escapeHtml(c.mac) + '</td>';
-                rows += '<td class="reservation-tag" data-mac="' + escapeHtml(c.mac) + '" data-ip="' + escapeHtml(ip) + '" data-name="' + escapeHtml(displayName) + '">' + tagIcon + '</td>';
-                rows += '</tr>';
+                clients.push({
+                    ip: ip,
+                    mac: c.mac,
+                    hostname: c.hostname,
+                    name: savedName,
+                    type: deviceType,
+                    download: t.rx,
+                    upload: t.tx,
+                    source: 'LAN',
+                    expiry: c.expiry,
+                    offline: false,
+                    os: null
+                });
             });
 
             // Tailscale peers
@@ -1479,20 +1699,21 @@ var JamMonitor = (function() {
                             var peer = ts.Peer[key];
                             var hostname = peer.HostName || peer.DNSName || 'Unknown';
                             var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
-                            var offlineClass = peer.Online ? '' : 'client-offline';
                             var deviceType = detectDeviceType(hostname);
-                            var icon = getDeviceIcon(deviceType);
-                            var os = peer.OS || '--';
 
-                            rows += '<tr class="' + offlineClass + '" style="background:#f0f9ff;">';
-                            rows += '<td>' + escapeHtml(ip) + '</td>';
-                            rows += '<td style="text-align:center;">' + icon + '</td>';
-                            rows += '<td>' + escapeHtml(hostname) + '</td>';
-                            rows += '<td>--</td><td>--</td>';
-                            rows += '<td style="color:#3498db;">Tailscale</td>';
-                            rows += '<td style="font-size:11px;color:#7f8c8d;">' + escapeHtml(os) + '</td>';
-                            rows += '<td></td>';
-                            rows += '</tr>';
+                            clients.push({
+                                ip: ip,
+                                mac: null,
+                                hostname: hostname,
+                                name: hostname,
+                                type: deviceType,
+                                download: 0,
+                                upload: 0,
+                                source: 'Tailscale',
+                                expiry: null,
+                                offline: !peer.Online,
+                                os: peer.OS || '--'
+                            });
                         });
                     }
                 } catch (e) {
@@ -1500,7 +1721,9 @@ var JamMonitor = (function() {
                 }
             }
 
-            tbody.innerHTML = rows || '<tr><td colspan="8" style="text-align:center;color:#999;">No clients found</td></tr>';
+            // Cache the data and render
+            clientsDataCache = clients;
+            renderClientsTable();
         });
     }
 

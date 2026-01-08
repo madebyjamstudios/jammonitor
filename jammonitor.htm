@@ -241,6 +241,17 @@ table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 .sort-icon.sort-asc { border-bottom: 6px solid #3498db; border-top: none; }
 .sort-icon.sort-desc { border-top: 6px solid #3498db; border-bottom: none; }
 .bw-bucket-loading { text-align: center; padding: 40px; color: #7f8c8d; }
+
+/* Client table sorting and grouping */
+#clients-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s; }
+#clients-table th.sortable:hover { background: #e8f4fc; }
+.client-group-header { background: #f8f9fa; cursor: pointer; font-weight: 600; }
+.client-group-header:hover { background: #e8f4fc; }
+.client-group-header td { padding: 10px 12px !important; }
+.client-group-arrow { display: inline-block; transition: transform 0.2s; margin-right: 8px; font-size: 10px; }
+.client-group-arrow.collapsed { transform: rotate(-90deg); }
+.client-group-count { color: #7f8c8d; font-weight: normal; margin-left: 8px; font-size: 12px; }
+.client-row.hidden { display: none; }
 .bw-bucket-loading .chart-spinner { margin: 0 auto 12px auto; }
 /* Clickable bandwidth time links */
 .bw-time-link { color: #3498db; text-decoration: underline; cursor: pointer; transition: color 0.15s; }

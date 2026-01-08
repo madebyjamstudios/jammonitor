@@ -1564,7 +1564,7 @@ var JamMonitor = (function() {
         var macDisplay = c.source === 'Tailscale' ? (c.os || '--') : (c.mac || '--');
 
         var row = '<tr class="client-row' + hiddenClass + offlineClass + '" data-group="' + group + '" style="' + rowStyle + '">';
-        row += '<td title="' + escapeHtml(ipTitle || '') + '">' + escapeHtml(c.ip) + '</td>';
+        row += '<td class="client-ip-cell" data-expiry="' + (c.expiry || '') + '">' + escapeHtml(c.ip) + '</td>';
         row += '<td style="text-align:center;">' + icon + '</td>';
         if (c.source === 'LAN') {
             row += '<td class="' + nameClass + '" data-mac="' + escapeHtml(c.mac) + '">' + nameCell + '</td>';
@@ -1610,6 +1610,21 @@ var JamMonitor = (function() {
                 collapsedGroups[group] = !collapsedGroups[group];
                 renderClientsTable();
             };
+        });
+
+        // IP cell hover for lease expiry tooltip
+        table.addEventListener('mousemove', function(e) {
+            var cell = e.target.closest('.client-ip-cell');
+            if (cell && cell.dataset.expiry) {
+                var expiryText = formatExpiry(parseInt(cell.dataset.expiry, 10));
+                showChartTooltip(e.clientX, e.clientY, expiryText);
+            }
+        });
+
+        table.addEventListener('mouseout', function(e) {
+            if (e.target.classList.contains('client-ip-cell')) {
+                hideChartTooltip();
+            }
         });
     }
 

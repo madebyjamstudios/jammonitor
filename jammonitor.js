@@ -1418,19 +1418,19 @@ var JamMonitor = (function() {
             { key: 'name', label: 'Name', width: '', sortable: true },
             { key: 'download', label: 'Download', width: '', sortable: true },
             { key: 'upload', label: 'Upload', width: '', sortable: true },
-            { key: 'source', label: 'Source', width: '70px', sortable: true },
-            { key: 'mac', label: 'MAC Address', width: '130px', sortable: true },
-            { key: null, label: '', width: '40px', sortable: false }
+            { key: 'source', label: 'Source', width: '70px', sortable: false },
+            { key: 'mac', label: 'MAC Address', width: '', sortable: true, colspan: 2 }
         ];
         var html = '<tr>';
         columns.forEach(function(col) {
-            var style = col.width ? ' style="width:' + col.width + ';"' : '';
+            var style = col.width ? 'width:' + col.width + ';' : '';
+            var colspanAttr = col.colspan ? ' colspan="' + col.colspan + '"' : '';
             if (col.key && col.sortable) {
                 var isActive = clientSortColumn === col.key;
                 var arrow = isActive ? '<span class="sort-icon ' + (clientSortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
-                html += '<th class="sortable" data-sort="' + col.key + '"' + style + '>' + col.label + arrow + '</th>';
+                html += '<th class="sortable" data-sort="' + col.key + '"' + colspanAttr + ' style="' + style + 'white-space:nowrap;">' + col.label + arrow + '</th>';
             } else {
-                html += '<th' + style + '>' + (col.label || '') + '</th>';
+                html += '<th' + colspanAttr + ' style="' + style + '">' + (col.label || '') + '</th>';
             }
         });
         return html + '</tr>';
@@ -4286,7 +4286,7 @@ var JamMonitor = (function() {
                     if (col.sortable) {
                         var isActive = sortColumn === col.key;
                         var arrowHtml = isActive ? '<span class="sort-icon ' + (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
-                        html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + arrowHtml + '</th>';
+                        html += '<th class="sortable" data-sort="' + col.key + '" style="white-space:nowrap;">' + col.label + arrowHtml + '</th>';
                     } else {
                         html += '<th>' + col.label + '</th>';
                     }

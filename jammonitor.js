@@ -45,8 +45,14 @@ function loadTranslations() {
 // Initialize i18n on script load
 loadTranslations();
 
+// Debug: log translation status
+console.log('[i18n] Language detected:', detectLanguage());
+console.log('[i18n] JM_I18N available:', !!window.JM_I18N);
+console.log('[i18n] Translations loaded:', Object.keys(JM_TRANSLATIONS).length, 'strings');
+
 // Translate static HTML elements on page load
 function translatePage() {
+    console.log('[i18n] translatePage() running, JM_TRANSLATIONS has', Object.keys(JM_TRANSLATIONS).length, 'keys');
     // Translate elements with data-i18n attribute
     document.querySelectorAll('[data-i18n]').forEach(function(el) {
         var key = el.getAttribute('data-i18n');

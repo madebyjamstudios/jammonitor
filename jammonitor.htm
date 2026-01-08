@@ -598,11 +598,11 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <span class="jm-block-title">System</span>
                     </div>
                     <div class="jm-big-value" id="sys-temp-big">--</div>
-                    <div class="jm-big-label">CPU Temperature</div>
-                    <div class="jm-row"><span class="jm-label">Load (1/5/15)</span><span class="jm-value" id="sys-load">--</span></div>
-                    <div class="jm-row"><span class="jm-label">CPU Usage</span><span class="jm-value" id="sys-cpu">--</span></div>
-                    <div class="jm-row"><span class="jm-label">RAM Usage</span><span class="jm-value" id="sys-ram">--</span></div>
-                    <div class="jm-row"><span class="jm-label">Conntrack</span><span class="jm-value" id="sys-conntrack">--</span></div>
+                    <div class="jm-big-label" data-i18n="CPU Temperature">CPU Temperature</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Load (1/5/15)">Load (1/5/15)</span><span class="jm-value" id="sys-load">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="CPU Usage">CPU Usage</span><span class="jm-value" id="sys-cpu">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="RAM Usage">RAM Usage</span><span class="jm-value" id="sys-ram">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Conntrack">Conntrack</span><span class="jm-value" id="sys-conntrack">--</span></div>
                 </div>
 
                 <!-- 3. WAN IPv4 -->
@@ -612,22 +612,22 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <span class="jm-block-title">WAN IPv4</span>
                     </div>
                     <div class="jm-big-value" id="wan-ip">--</div>
-                    <div class="jm-big-label">Public IP</div>
-                    <div class="jm-row"><span class="jm-label">Interface</span><span class="jm-value" id="wan-iface">--</span></div>
-                    <div class="jm-row"><span class="jm-label">Gateway</span><span class="jm-value" id="wan-gw">--</span></div>
-                    <div class="jm-row"><span class="jm-label">Status</span><span class="jm-value" id="wan-status">--</span></div>
+                    <div class="jm-big-label" data-i18n="Public IP">Public IP</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Interface">Interface</span><span class="jm-value" id="wan-iface">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Gateway">Gateway</span><span class="jm-value" id="wan-gw">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Status">Status</span><span class="jm-value" id="wan-status">--</span></div>
                 </div>
 
                 <!-- 4. Ping: Internet -->
                 <div class="jm-block" id="block-ping-inet">
                     <div class="jm-block-header">
                         <span class="jm-indicator gray" id="ping-inet-indicator"></span>
-                        <span class="jm-block-title">Ping: Internet</span>
+                        <span class="jm-block-title" data-i18n="Ping: Internet">Ping: Internet</span>
                         <span class="jm-block-status" id="ping-inet-target">1.1.1.1</span>
                     </div>
                     <div class="jm-big-value" id="ping-inet-val">--</div>
-                    <div class="jm-big-label">Latency (ms)</div>
-                    <div class="jm-row"><span class="jm-label">Packet Loss</span><span class="jm-value" id="ping-inet-loss">--%</span></div>
+                    <div class="jm-big-label" data-i18n="Latency (ms)">Latency (ms)</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Packet Loss">Packet Loss</span><span class="jm-value" id="ping-inet-loss">--%</span></div>
                     <canvas class="jm-mini-graph" id="graph-ping-inet"></canvas>
                 </div>
 
@@ -639,8 +639,8 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <span class="jm-block-status" id="ping-vps-target">--</span>
                     </div>
                     <div class="jm-big-value" id="ping-vps-val">--</div>
-                    <div class="jm-big-label">Latency (ms)</div>
-                    <div class="jm-row"><span class="jm-label">Packet Loss</span><span class="jm-value" id="ping-vps-loss">--%</span></div>
+                    <div class="jm-big-label" data-i18n="Latency (ms)">Latency (ms)</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Packet Loss">Packet Loss</span><span class="jm-value" id="ping-vps-loss">--%</span></div>
                     <canvas class="jm-mini-graph" id="graph-ping-vps"></canvas>
                 </div>
 
@@ -648,12 +648,12 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="jm-block" id="block-ping-tunnel">
                     <div class="jm-block-header">
                         <span class="jm-indicator gray" id="ping-tunnel-indicator"></span>
-                        <span class="jm-block-title">Ping: Tunnel Peer</span>
+                        <span class="jm-block-title" data-i18n="Ping: Tunnel Peer">Ping: Tunnel Peer</span>
                         <span class="jm-block-status" id="ping-tunnel-target">--</span>
                     </div>
                     <div class="jm-big-value" id="ping-tunnel-val">--</div>
-                    <div class="jm-big-label">Latency (ms)</div>
-                    <div class="jm-row"><span class="jm-label">Packet Loss</span><span class="jm-value" id="ping-tunnel-loss">--%</span></div>
+                    <div class="jm-big-label" data-i18n="Latency (ms)">Latency (ms)</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Packet Loss">Packet Loss</span><span class="jm-value" id="ping-tunnel-loss">--%</span></div>
                     <canvas class="jm-mini-graph" id="graph-ping-tunnel"></canvas>
                 </div>
 
@@ -661,12 +661,12 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="jm-block" id="block-uptime">
                     <div class="jm-block-header">
                         <span class="jm-indicator green"></span>
-                        <span class="jm-block-title">Uptime</span>
+                        <span class="jm-block-title" data-i18n="Uptime">Uptime</span>
                     </div>
                     <div class="jm-big-value" id="uptime-val">--</div>
-                    <div class="jm-big-label">System Uptime</div>
-                    <div class="jm-row"><span class="jm-label">Boot Time</span><span class="jm-value" id="boot-time">--</span></div>
-                    <div class="jm-row"><span class="jm-label">Local Time</span><span class="jm-value" id="local-time">--</span></div>
+                    <div class="jm-big-label" data-i18n="System Uptime">System Uptime</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Boot Time">Boot Time</span><span class="jm-value" id="boot-time">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Local Time">Local Time</span><span class="jm-value" id="local-time">--</span></div>
                 </div>
 
                 <!-- 8. MPTCP -->
@@ -676,9 +676,9 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <span class="jm-block-title">MPTCP</span>
                     </div>
                     <div class="jm-big-value" id="mptcp-subflows">--</div>
-                    <div class="jm-big-label">Active Subflows</div>
-                    <div class="jm-row"><span class="jm-label">Connections</span><span class="jm-value" id="mptcp-conns">--</span></div>
-                    <div class="jm-row"><span class="jm-label">Interfaces</span><span class="jm-value" id="mptcp-ifaces">--</span></div>
+                    <div class="jm-big-label" data-i18n="Active Subflows">Active Subflows</div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Connections">Connections</span><span class="jm-value" id="mptcp-conns">--</span></div>
+                    <div class="jm-row"><span class="jm-label" data-i18n="Interfaces">Interfaces</span><span class="jm-value" id="mptcp-ifaces">--</span></div>
                 </div>
 
                 <!-- 9. Throughput -->
@@ -690,11 +690,11 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <div style="display:flex;gap:30px;">
                         <div style="min-width:100px;">
                             <div class="jm-big-value" id="tp-down" style="color:#27ae60;font-size:20px;white-space:nowrap;">--</div>
-                            <div class="jm-big-label">Download</div>
+                            <div class="jm-big-label" data-i18n="Download">Download</div>
                         </div>
                         <div style="min-width:100px;">
                             <div class="jm-big-value" id="tp-up" style="color:#e74c3c;font-size:20px;white-space:nowrap;">--</div>
-                            <div class="jm-big-label">Upload</div>
+                            <div class="jm-big-label" data-i18n="Upload">Upload</div>
                         </div>
                     </div>
                     <canvas class="jm-mini-graph" id="graph-throughput" style="margin-top:10px;"></canvas>
@@ -880,13 +880,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
             </div>
             <table class="jm-table" id="clients-table">
                 <thead><tr>
-                    <th style="width:115px;">IP Address</th>
-                    <th style="width:40px;">Type</th>
-                    <th>Name</th>
-                    <th>Download</th>
-                    <th>Upload</th>
-                    <th style="width:70px;">Source</th>
-                    <th style="width:130px;">MAC Address</th>
+                    <th style="width:115px;" data-i18n="IP Address">IP Address</th>
+                    <th style="width:40px;" data-i18n="Type">Type</th>
+                    <th data-i18n="Name">Name</th>
+                    <th data-i18n="Download">Download</th>
+                    <th data-i18n="Upload">Upload</th>
+                    <th style="width:70px;" data-i18n="Source">Source</th>
+                    <th style="width:130px;" data-i18n="MAC Address">MAC Address</th>
                     <th style="width:40px;"></th>
                 </tr></thead>
                 <tbody id="clients-tbody"></tbody>
@@ -931,7 +931,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <span class="jm-block-title">Connected Clients</span>
                 </div>
                 <table class="jm-table" style="margin-top:10px;">
-                    <thead><tr><th>Device</th><th>MAC Address</th><th>Signal</th><th>Download</th><th>Upload</th><th>Band</th></tr></thead>
+                    <thead><tr><th data-i18n="Device">Device</th><th data-i18n="MAC Address">MAC Address</th><th data-i18n="Signal">Signal</th><th data-i18n="Download">Download</th><th data-i18n="Upload">Upload</th><th data-i18n="Band">Band</th></tr></thead>
                     <tbody id="wifi-clients-tbody">
                         <tr class="loading-row"><td colspan="6"><span class="content-spinner"></span>Loading clients...</td></tr>
                     </tbody>
@@ -1118,7 +1118,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="chart-loading" id="loading-realtime"><div class="chart-spinner"></div></div>
                 <canvas class="jm-chart" id="chart-realtime"></canvas>
             </div>
-            <table class="jm-table"><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-rt-tbody"></tbody></table>
+            <table class="jm-table"><thead><tr><th data-i18n="Time">Time</th><th data-i18n="Download">Download</th><th data-i18n="Upload">Upload</th><th data-i18n="Total">Total</th></tr></thead><tbody id="bw-rt-tbody"></tbody></table>
         </div>
 
         <!-- BANDWIDTH: Hourly -->
@@ -1139,7 +1139,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="chart-loading" id="loading-hourly"><div class="chart-spinner"></div></div>
                 <canvas class="jm-chart" id="chart-hourly"></canvas>
             </div>
-            <table class="jm-table"><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-hourly-tbody"></tbody></table>
+            <table class="jm-table"><thead><tr><th data-i18n="Time">Time</th><th data-i18n="Download">Download</th><th data-i18n="Upload">Upload</th><th data-i18n="Total">Total</th></tr></thead><tbody id="bw-hourly-tbody"></tbody></table>
         </div>
 
         <!-- BANDWIDTH: Daily -->
@@ -1160,7 +1160,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="chart-loading" id="loading-daily"><div class="chart-spinner"></div></div>
                 <canvas class="jm-chart" id="chart-daily"></canvas>
             </div>
-            <table class="jm-table"><thead><tr><th>Date</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-daily-tbody"></tbody></table>
+            <table class="jm-table"><thead><tr><th data-i18n="Date">Date</th><th data-i18n="Download">Download</th><th data-i18n="Upload">Upload</th><th data-i18n="Total">Total</th></tr></thead><tbody id="bw-daily-tbody"></tbody></table>
         </div>
 
         <!-- BANDWIDTH: Monthly -->
@@ -1181,7 +1181,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <div class="chart-loading" id="loading-monthly"><div class="chart-spinner"></div></div>
                 <canvas class="jm-chart" id="chart-monthly"></canvas>
             </div>
-            <table class="jm-table"><thead><tr><th>Month</th><th>Download</th><th>Upload</th><th>Total</th></tr></thead><tbody id="bw-monthly-tbody"></tbody></table>
+            <table class="jm-table"><thead><tr><th data-i18n="Month">Month</th><th data-i18n="Download">Download</th><th data-i18n="Upload">Upload</th><th data-i18n="Total">Total</th></tr></thead><tbody id="bw-monthly-tbody"></tbody></table>
         </div>
     </div>
 </div>

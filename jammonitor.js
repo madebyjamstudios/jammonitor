@@ -1187,7 +1187,7 @@ var JamMonitor = (function() {
             // Routing table
             var routes = results[2].trim().split('\n');
             var routeHtml = '<table style="width:100%;font-size:11px;">';
-            routeHtml += '<tr style="background:#f5f5f5;"><th style="padding:5px;text-align:left;">Destination</th><th style="padding:5px;">Gateway</th><th style="padding:5px;">Interface</th></tr>';
+            routeHtml += '<tr style="background:#f5f5f5;"><th style="padding:5px;text-align:left;">' + _('Destination') + '</th><th style="padding:5px;">' + _('Gateway') + '</th><th style="padding:5px;">' + _('Interface') + '</th></tr>';
             routes.forEach(function(route, i) {
                 var bg = i % 2 === 0 ? '#fff' : '#f9f9f9';
                 var parts = route.split(/\s+/);
@@ -1679,17 +1679,17 @@ var JamMonitor = (function() {
 
         var nameClass = 'client-name';
         if (metaPending) nameClass += ' client-pending-name';
-        var nameDisplay = isUnnamed ? '<span class="name-placeholder">Tap to name</span>' : escapeHtml(displayName);
+        var nameDisplay = isUnnamed ? '<span class="name-placeholder">' + _('Tap to name') + '</span>' : escapeHtml(displayName);
 
         var nameCell = '';
         if (c.source === 'LAN') {
             nameCell = '<span class="name-display">' + nameDisplay + '</span>' +
                 '<div class="name-edit">' +
-                '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '" placeholder="Enter name...">' +
+                '<input type="text" value="' + escapeHtml(displayName) + '" data-original="' + escapeHtml(displayName) + '" placeholder="' + _('Enter name...') + '">' +
                 '</div>' +
                 '<div class="name-edit-buttons">' +
-                '<button class="btn-save">Save</button>' +
-                '<button class="btn-cancel">Cancel</button>' +
+                '<button class="btn-save">' + _('Save') + '</button>' +
+                '<button class="btn-cancel">' + _('Cancel') + '</button>' +
                 '</div>';
         } else {
             nameCell = escapeHtml(c.name || c.hostname || '--');

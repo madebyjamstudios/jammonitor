@@ -638,7 +638,7 @@ window.JM_I18N = {
     "No clients connected": "无客户端连接",
     "Remote APs": "远程接入点",
     "No remote APs configured": "未配置远程接入点",
-    "Click \"+ Add APs\" below to monitor external access points": "点击下方的"+ 添加接入点"以监控外部接入点"
+    "Click \"+ Add APs\" below to monitor external access points": "点击下方 \"+ 添加接入点\" 以监控外部接入点"
 },
 "es": {
     // Navigation

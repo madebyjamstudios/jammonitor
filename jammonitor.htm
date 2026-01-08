@@ -977,7 +977,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- DIAGNOSTICS -->
         <div id="view-diagnostics" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Diagnostics & Data Export</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Diagnostics & Data Export">Diagnostics & Data Export</h2>
 
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:24px;margin-top:10px;">
 
@@ -986,30 +986,30 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
                         <span style="font-size:36px;">&#128680;</span>
                         <div>
-                            <h3 style="margin:0;color:#c0392b;font-size:20px;">Emergency Snapshot</h3>
-                            <span style="color:#e74c3c;font-size:13px;font-weight:500;">Something just broke? Grab this now.</span>
+                            <h3 style="margin:0;color:#c0392b;font-size:20px;" data-i18n="Emergency Snapshot">Emergency Snapshot</h3>
+                            <span style="color:#e74c3c;font-size:13px;font-weight:500;" data-i18n="Something just broke? Grab this now.">Something just broke? Grab this now.</span>
                         </div>
                     </div>
 
                     <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:20px;flex:1;">
-                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;">What's inside:</div>
+                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;" data-i18n="What's inside:">What's inside:</div>
                         <ul style="margin:0;padding-left:20px;color:#5a6c7d;font-size:13px;line-height:1.8;">
-                            <li>Live system logs (last ~15-30 min)</li>
-                            <li>Current routing & interface state</li>
-                            <li>VPN tunnel status & MPTCP info</li>
-                            <li>Active connections & errors</li>
-                            <li>Full system configuration</li>
+                            <li data-i18n="Live system logs (last ~15-30 min)">Live system logs (last ~15-30 min)</li>
+                            <li data-i18n="Current routing & interface state">Current routing & interface state</li>
+                            <li data-i18n="VPN tunnel status & MPTCP info">VPN tunnel status & MPTCP info</li>
+                            <li data-i18n="Active connections & errors">Active connections & errors</li>
+                            <li data-i18n="Full system configuration">Full system configuration</li>
                         </ul>
                     </div>
 
                     <div style="background:#fdf2f2;border-radius:8px;padding:12px;margin-bottom:20px;">
                         <div style="display:flex;align-items:center;gap:8px;color:#c0392b;font-size:12px;">
                             <span style="font-size:14px;">&#8987;</span>
-                            <span><strong>Time-sensitive:</strong> Ring buffer overwrites every 15-30 min. Download immediately after issues occur.</span>
+                            <span><strong data-i18n="Time-sensitive:">Time-sensitive:</strong> <span data-i18n="Ring buffer overwrites every 15-30 min. Download immediately after issues occur.">Ring buffer overwrites every 15-30 min. Download immediately after issues occur.</span></span>
                         </div>
                     </div>
 
-                    <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()" style="background:#e74c3c;border-color:#c0392b;font-size:15px;padding:14px 24px;width:100%;">
+                    <button class="jm-btn" id="diag-btn" onclick="JamMonitor.exportDiag()" style="background:#e74c3c;border-color:#c0392b;font-size:15px;padding:14px 24px;width:100%;" data-i18n="Download Emergency Snapshot">
                         Download Emergency Snapshot
                     </button>
                     <div id="diag-status" style="margin-top:12px;text-align:center;"></div>
@@ -1020,38 +1020,38 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
                         <span style="font-size:36px;">&#128202;</span>
                         <div>
-                            <h3 style="margin:0;color:#2980b9;font-size:20px;">Historical Analysis</h3>
-                            <span style="color:#3498db;font-size:13px;font-weight:500;">Investigate trends over days or weeks.</span>
+                            <h3 style="margin:0;color:#2980b9;font-size:20px;" data-i18n="Historical Analysis">Historical Analysis</h3>
+                            <span style="color:#3498db;font-size:13px;font-weight:500;" data-i18n="Investigate trends over days or weeks.">Investigate trends over days or weeks.</span>
                         </div>
                     </div>
 
                     <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:20px;flex:1;">
-                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;">What's inside:</div>
+                        <div style="color:#2c3e50;font-size:14px;margin-bottom:12px;font-weight:500;" data-i18n="What's inside:">What's inside:</div>
                         <ul style="margin:0;padding-left:20px;color:#5a6c7d;font-size:13px;line-height:1.8;">
-                            <li>Ping latency history (1.1.1.1, 8.8.8.8)</li>
-                            <li>Interface up/down events</li>
-                            <li>CPU load, RAM, temperature</li>
-                            <li>Network state snapshots</li>
-                            <li>Stored on USB - persists across reboots</li>
+                            <li data-i18n="Ping latency history (1.1.1.1, 8.8.8.8)">Ping latency history (1.1.1.1, 8.8.8.8)</li>
+                            <li data-i18n="Interface up/down events">Interface up/down events</li>
+                            <li data-i18n="CPU load, RAM, temperature">CPU load, RAM, temperature</li>
+                            <li data-i18n="Network state snapshots">Network state snapshots</li>
+                            <li data-i18n="Stored on USB - persists across reboots">Stored on USB - persists across reboots</li>
                         </ul>
                     </div>
 
                     <div style="background:#f0f7fd;border-radius:8px;padding:12px;margin-bottom:20px;">
                         <div style="display:flex;align-items:center;gap:8px;color:#2980b9;font-size:12px;">
                             <span style="font-size:14px;">&#128190;</span>
-                            <span><strong>Long-term storage:</strong> Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.</span>
+                            <span><strong data-i18n="Long-term storage:">Long-term storage:</strong> <span data-i18n="Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.">Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.</span></span>
                         </div>
                     </div>
 
                     <!-- Quick Select -->
                     <div style="margin-bottom:16px;">
-                        <label style="color:#5a6c7d;font-size:13px;display:block;margin-bottom:6px;">Time range:</label>
+                        <label style="color:#5a6c7d;font-size:13px;display:block;margin-bottom:6px;" data-i18n="Time range:">Time range:</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            <button class="jm-quick-range active" data-hours="24" onclick="JamMonitor.setHistoryRange(24, this)">24h</button>
-                            <button class="jm-quick-range" data-hours="72" onclick="JamMonitor.setHistoryRange(72, this)">3 days</button>
-                            <button class="jm-quick-range" data-hours="168" onclick="JamMonitor.setHistoryRange(168, this)">7 days</button>
-                            <button class="jm-quick-range" data-hours="336" onclick="JamMonitor.setHistoryRange(336, this)">14 days</button>
-                            <button class="jm-quick-range" data-hours="720" onclick="JamMonitor.setHistoryRange(720, this)">30 days</button>
+                            <button class="jm-quick-range active" data-hours="24" onclick="JamMonitor.setHistoryRange(24, this)" data-i18n="24h">24h</button>
+                            <button class="jm-quick-range" data-hours="72" onclick="JamMonitor.setHistoryRange(72, this)" data-i18n="3 days">3 days</button>
+                            <button class="jm-quick-range" data-hours="168" onclick="JamMonitor.setHistoryRange(168, this)" data-i18n="7 days">7 days</button>
+                            <button class="jm-quick-range" data-hours="336" onclick="JamMonitor.setHistoryRange(336, this)" data-i18n="14 days">14 days</button>
+                            <button class="jm-quick-range" data-hours="720" onclick="JamMonitor.setHistoryRange(720, this)" data-i18n="30 days">30 days</button>
                         </div>
                     </div>
 
@@ -1064,7 +1064,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <!-- Hidden field for hours value -->
                     <input type="hidden" id="history-hours" value="24">
 
-                    <button class="jm-btn" onclick="JamMonitor.downloadHistory()" style="background:#3498db;border-color:#2980b9;font-size:15px;padding:14px 24px;width:100%;">
+                    <button class="jm-btn" onclick="JamMonitor.downloadHistory()" style="background:#3498db;border-color:#2980b9;font-size:15px;padding:14px 24px;width:100%;" data-i18n="Download Historical Data">
                         Download Historical Data
                     </button>
                     <div id="history-status" style="margin-top:12px;text-align:center;"></div>
@@ -1076,21 +1076,21 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                         <div style="display:flex;align-items:center;gap:12px;">
                             <span style="font-size:36px;">&#9889;</span>
                             <div>
-                                <h3 style="margin:0;color:#27ae60;font-size:20px;">WAN Speed Test</h3>
-                                <span style="color:#2ecc71;font-size:13px;font-weight:500;">Test individual WAN throughput (not bonded)</span>
+                                <h3 style="margin:0;color:#27ae60;font-size:20px;" data-i18n="WAN Speed Test">WAN Speed Test</h3>
+                                <span style="color:#2ecc71;font-size:13px;font-weight:500;" data-i18n="Test individual WAN throughput (not bonded)">Test individual WAN throughput (not bonded)</span>
                             </div>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                            <span style="color:#7f8c8d;font-size:13px;">Test size:</span>
-                            <button class="jm-quick-range active" data-size="10" onclick="JamMonitor.setSpeedTestSize(10, this)">Quick 10MB</button>
-                            <button class="jm-quick-range" data-size="25" onclick="JamMonitor.setSpeedTestSize(25, this)">Normal 25MB</button>
-                            <button class="jm-quick-range" data-size="100" onclick="JamMonitor.setSpeedTestSize(100, this)">Heavy 100MB</button>
+                            <span style="color:#7f8c8d;font-size:13px;" data-i18n="Test size:">Test size:</span>
+                            <button class="jm-quick-range active" data-size="10" onclick="JamMonitor.setSpeedTestSize(10, this)" data-i18n="Quick 10MB">Quick 10MB</button>
+                            <button class="jm-quick-range" data-size="25" onclick="JamMonitor.setSpeedTestSize(25, this)" data-i18n="Normal 25MB">Normal 25MB</button>
+                            <button class="jm-quick-range" data-size="100" onclick="JamMonitor.setSpeedTestSize(100, this)" data-i18n="Heavy 100MB">Heavy 100MB</button>
                         </div>
                     </div>
 
                     <!-- WAN rows container -->
                     <div id="speedtest-wans" style="display:flex;flex-direction:column;gap:10px;">
-                        <div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;">Loading WAN interfaces...</div>
+                        <div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;" data-i18n="Loading WAN interfaces...">Loading WAN interfaces...</div>
                     </div>
 
                     <!-- Error message area -->
@@ -1102,13 +1102,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- BANDWIDTH: Realtime -->
         <div id="view-bw-realtime" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Bandwidth - Realtime</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Bandwidth - Realtime">Bandwidth - Realtime</h2>
             <div class="jm-bw-controls">
-                <label>Connection:</label>
+                <label data-i18n="Connection:">Connection:</label>
                 <select id="bw-iface-select" onchange="JamMonitor.setInterface(this.value)">
                     <option value="all">All WANs</option>
                 </select>
-                <label>Scale:</label>
+                <label data-i18n="Scale:">Scale:</label>
                 <div class="jm-scale-btns">
                     <button class="jm-scale-btn active" data-scale="mb" onclick="JamMonitor.setScale('mb')">MB/s</button>
                     <button class="jm-scale-btn" data-scale="gb" onclick="JamMonitor.setScale('gb')">GB/s</button>
@@ -1123,13 +1123,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- BANDWIDTH: Hourly -->
         <div id="view-bw-hourly" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Bandwidth - Hourly</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Bandwidth - Hourly">Bandwidth - Hourly</h2>
             <div class="jm-bw-controls">
-                <label>Connection:</label>
+                <label data-i18n="Connection:">Connection:</label>
                 <select id="bw-hourly-iface" onchange="JamMonitor.loadVnstat('hourly')">
                     <option value="all">All WANs</option>
                 </select>
-                <label>Scale:</label>
+                <label data-i18n="Scale:">Scale:</label>
                 <div class="jm-scale-btns">
                     <button class="jm-scale-btn active" data-scale="mb" onclick="JamMonitor.setScale('mb')">MB</button>
                     <button class="jm-scale-btn" data-scale="gb" onclick="JamMonitor.setScale('gb')">GB</button>
@@ -1144,13 +1144,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- BANDWIDTH: Daily -->
         <div id="view-bw-daily" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Bandwidth - Daily</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Bandwidth - Daily">Bandwidth - Daily</h2>
             <div class="jm-bw-controls">
-                <label>Connection:</label>
+                <label data-i18n="Connection:">Connection:</label>
                 <select id="bw-daily-iface" onchange="JamMonitor.loadVnstat('daily')">
                     <option value="all">All WANs</option>
                 </select>
-                <label>Scale:</label>
+                <label data-i18n="Scale:">Scale:</label>
                 <div class="jm-scale-btns">
                     <button class="jm-scale-btn" data-scale="mb" onclick="JamMonitor.setScale('mb')">MB</button>
                     <button class="jm-scale-btn active" data-scale="gb" onclick="JamMonitor.setScale('gb')">GB</button>
@@ -1165,13 +1165,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- BANDWIDTH: Monthly -->
         <div id="view-bw-monthly" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">Bandwidth - Monthly</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Bandwidth - Monthly">Bandwidth - Monthly</h2>
             <div class="jm-bw-controls">
-                <label>Connection:</label>
+                <label data-i18n="Connection:">Connection:</label>
                 <select id="bw-monthly-iface" onchange="JamMonitor.loadVnstat('monthly')">
                     <option value="all">All WANs</option>
                 </select>
-                <label>Scale:</label>
+                <label data-i18n="Scale:">Scale:</label>
                 <div class="jm-scale-btns">
                     <button class="jm-scale-btn" data-scale="mb" onclick="JamMonitor.setScale('mb')">MB</button>
                     <button class="jm-scale-btn active" data-scale="gb" onclick="JamMonitor.setScale('gb')">GB</button>

@@ -704,25 +704,25 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
         <!-- WAN POLICY -->
         <div id="view-wan-policy" class="jm-view">
-            <h2 style="margin-top:0;color:#2c3e50;">WAN Policy</h2>
+            <h2 style="margin-top:0;color:#2c3e50;" data-i18n="WAN Policy">WAN Policy</h2>
 
-            <p style="color:#7f8c8d;margin-bottom:15px;" id="wan-policy-hint">Drag interfaces to change their bonding status. Primary accepts only one WAN.</p>
+            <p style="color:#7f8c8d;margin-bottom:15px;" id="wan-policy-hint" data-i18n="Drag interfaces to change their bonding status. Primary accepts only one WAN.">Drag interfaces to change their bonding status. Primary accepts only one WAN.</p>
 
             <div class="wan-policy-container" id="wan-policy-container">
                 <div class="wan-policy-category" data-priority="master">
-                    <div class="wan-category-header priority-1">Primary <span class="wan-category-label">(1 max - others bond to this)</span></div>
+                    <div class="wan-category-header priority-1"><span data-i18n="Primary">Primary</span> <span class="wan-category-label" data-i18n="(1 max - others bond to this)">(1 max - others bond to this)</span></div>
                     <div class="wan-category-dropzone" data-priority="master"></div>
                 </div>
                 <div class="wan-policy-category" data-priority="on">
-                    <div class="wan-category-header priority-2">Bonded <span class="wan-category-label">(aggregated with Primary)</span></div>
+                    <div class="wan-category-header priority-2"><span data-i18n="Bonded">Bonded</span> <span class="wan-category-label" data-i18n="(aggregated with Primary)">(aggregated with Primary)</span></div>
                     <div class="wan-category-dropzone" data-priority="on"></div>
                 </div>
                 <div class="wan-policy-category" data-priority="backup">
-                    <div class="wan-category-header priority-3">Standby <span class="wan-category-label">(failover only)</span></div>
+                    <div class="wan-category-header priority-3"><span data-i18n="Standby">Standby</span> <span class="wan-category-label" data-i18n="(failover only)">(failover only)</span></div>
                     <div class="wan-category-dropzone" data-priority="backup"></div>
                 </div>
                 <div class="wan-policy-category" data-priority="off">
-                    <div class="wan-category-header priority-disabled">Disabled</div>
+                    <div class="wan-category-header priority-disabled"><span data-i18n="Disabled">Disabled</span></div>
                     <div class="wan-category-dropzone" data-priority="off"></div>
                 </div>
             </div>
@@ -742,29 +742,29 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 </label>
             </div>
 
-            <div style="margin-top:20px;padding:15px;background:#f8f9fa;border-radius:6px;font-size:12px;color:#7f8c8d;line-height:1.6;">
-                <strong style="color:#2c3e50;">How WAN Priority Works:</strong><br>
-                <strong>Primary</strong> — The main connection (only one allowed). All MPTCP traffic originates from this interface.<br>
-                <strong>Bonded</strong> — These interfaces work <em>together</em> with Primary simultaneously. Traffic is split across all of them for bandwidth aggregation. More bonded connections = more combined bandwidth.<br>
-                <strong>Standby</strong> — Failover connections that remain dormant until Primary and Bonded interfaces fail. When failover occurs, all Standby interfaces activate together.<br>
-                <strong>Disabled</strong> — Interface is completely turned off and not used.<br>
-                <span style="color:#95a5a6;font-style:italic;">Tip: Click on a WAN name to edit its settings.</span>
+            <div style="margin-top:20px;padding:15px;background:#f8f9fa;border-radius:6px;font-size:12px;color:#7f8c8d;line-height:1.6;" id="wan-priority-explanation">
+                <strong style="color:#2c3e50;" data-i18n="How WAN Priority Works:">How WAN Priority Works:</strong><br>
+                <span data-i18n="Primary — The main connection (only one allowed). All MPTCP traffic originates from this interface."><strong>Primary</strong> — The main connection (only one allowed). All MPTCP traffic originates from this interface.</span><br>
+                <span data-i18n="Bonded — These interfaces work together with Primary simultaneously. Traffic is split across all of them for bandwidth aggregation. More bonded connections = more combined bandwidth."><strong>Bonded</strong> — These interfaces work <em>together</em> with Primary simultaneously. Traffic is split across all of them for bandwidth aggregation. More bonded connections = more combined bandwidth.</span><br>
+                <span data-i18n="Standby — Failover connections that remain dormant until Primary and Bonded interfaces fail. When failover occurs, all Standby interfaces activate together."><strong>Standby</strong> — Failover connections that remain dormant until Primary and Bonded interfaces fail. When failover occurs, all Standby interfaces activate together.</span><br>
+                <span data-i18n="Disabled — Interface is completely turned off and not used."><strong>Disabled</strong> — Interface is completely turned off and not used.</span><br>
+                <span style="color:#95a5a6;font-style:italic;" data-i18n="Tip: Click on a WAN name to edit its settings.">Tip: Click on a WAN name to edit its settings.</span>
             </div>
 
             <!-- Advanced Settings Collapsible Section -->
             <div class="wan-advanced-section">
                 <div class="wan-advanced-toggle" onclick="JamMonitor.toggleAdvancedSettings()">
                     <span class="wan-advanced-arrow" id="wan-advanced-arrow">▶</span>
-                    Advanced Settings
+                    <span data-i18n="Advanced Settings">Advanced Settings</span>
                 </div>
                 <div id="wan-advanced-content" class="wan-advanced-content">
                     <!-- WAN Interface Selector (at top) -->
                     <div class="wan-iface-selector" style="margin-top:0;padding-top:0;border-top:none;">
-                        <div class="wan-iface-selector-title">Manage WAN Interfaces</div>
-                        <div class="wan-iface-selector-desc">Select which network interfaces should appear in the WAN Policy manager. Check interfaces you want to manage for bonding/failover.</div>
+                        <div class="wan-iface-selector-title" data-i18n="Manage WAN Interfaces">Manage WAN Interfaces</div>
+                        <div class="wan-iface-selector-desc" data-i18n="Select which network interfaces should appear in the WAN Policy manager. Check interfaces you want to manage for bonding/failover.">Select which network interfaces should appear in the WAN Policy manager. Check interfaces you want to manage for bonding/failover.</div>
                         <div class="wan-iface-grid" id="wan-iface-grid">
                             <!-- Populated by JS -->
-                            <div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>
+                            <div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;" data-i18n="Loading interfaces...">Loading interfaces...</div>
                         </div>
                         <span class="wan-iface-status" id="wan-iface-status" style="font-size:11px;margin-top:8px;display:block;"></span>
                     </div>
@@ -772,74 +772,74 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <div class="wan-advanced-grid">
                         <!-- Failover Detection Column -->
                         <div class="wan-advanced-col">
-                            <div class="wan-advanced-title">Failover Detection</div>
+                            <div class="wan-advanced-title" data-i18n="Failover Detection">Failover Detection</div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Ping Timeout</span>
+                                <span class="wan-advanced-label" data-i18n="Ping Timeout">Ping Timeout</span>
                                 <input type="number" class="wan-advanced-input" id="adv-timeout" min="1" max="10" value="1">
-                                <span class="wan-advanced-unit">sec</span>
+                                <span class="wan-advanced-unit" data-i18n="sec">sec</span>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Ping Count</span>
+                                <span class="wan-advanced-label" data-i18n="Ping Count">Ping Count</span>
                                 <input type="number" class="wan-advanced-input" id="adv-count" min="1" max="5" value="1">
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Checks Before Down</span>
+                                <span class="wan-advanced-label" data-i18n="Checks Before Down">Checks Before Down</span>
                                 <input type="number" class="wan-advanced-input" id="adv-tries" min="1" max="10" value="2">
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Check Interval</span>
+                                <span class="wan-advanced-label" data-i18n="Check Interval">Check Interval</span>
                                 <input type="number" class="wan-advanced-input" id="adv-interval" min="1" max="10" value="1">
-                                <span class="wan-advanced-unit">sec</span>
+                                <span class="wan-advanced-unit" data-i18n="sec">sec</span>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Failure Interval</span>
+                                <span class="wan-advanced-label" data-i18n="Failure Interval">Failure Interval</span>
                                 <input type="number" class="wan-advanced-input" id="adv-failure-interval" min="1" max="30" value="2">
-                                <span class="wan-advanced-unit">sec</span>
+                                <span class="wan-advanced-unit" data-i18n="sec">sec</span>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Checks Before Up</span>
+                                <span class="wan-advanced-label" data-i18n="Checks Before Up">Checks Before Up</span>
                                 <input type="number" class="wan-advanced-input" id="adv-tries-up" min="1" max="10" value="2">
                             </div>
                         </div>
                         <!-- MPTCP Bonding Column -->
                         <div class="wan-advanced-col">
-                            <div class="wan-advanced-title">MPTCP Bonding</div>
+                            <div class="wan-advanced-title" data-i18n="MPTCP Bonding">MPTCP Bonding</div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Scheduler</span>
+                                <span class="wan-advanced-label" data-i18n="Scheduler">Scheduler</span>
                                 <select class="wan-advanced-select" id="adv-scheduler">
-                                    <option value="default">default</option>
-                                    <option value="blest">blest (balanced)</option>
-                                    <option value="roundrobin">roundrobin</option>
-                                    <option value="redundant">redundant (all paths)</option>
-                                    <option value="bpf_minrtt">bpf_minrtt (low latency)</option>
-                                    <option value="bpf_rr">bpf_rr (round-robin)</option>
-                                    <option value="bpf_red">bpf_red (redundant)</option>
-                                    <option value="bpf_burst">bpf_burst (burst)</option>
-                                    <option value="bpf_first">bpf_first (first path)</option>
-                                    <option value="bpf_bkup">bpf_bkup (backup)</option>
+                                    <option value="default" data-i18n="default">default</option>
+                                    <option value="blest" data-i18n="blest (balanced)">blest (balanced)</option>
+                                    <option value="roundrobin" data-i18n="roundrobin">roundrobin</option>
+                                    <option value="redundant" data-i18n="redundant (all paths)">redundant (all paths)</option>
+                                    <option value="bpf_minrtt" data-i18n="bpf_minrtt (low latency)">bpf_minrtt (low latency)</option>
+                                    <option value="bpf_rr" data-i18n="bpf_rr (round-robin)">bpf_rr (round-robin)</option>
+                                    <option value="bpf_red" data-i18n="bpf_red (redundant)">bpf_red (redundant)</option>
+                                    <option value="bpf_burst" data-i18n="bpf_burst (burst)">bpf_burst (burst)</option>
+                                    <option value="bpf_first" data-i18n="bpf_first (first path)">bpf_first (first path)</option>
+                                    <option value="bpf_bkup" data-i18n="bpf_bkup (backup)">bpf_bkup (backup)</option>
                                 </select>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Path Manager</span>
+                                <span class="wan-advanced-label" data-i18n="Path Manager">Path Manager</span>
                                 <select class="wan-advanced-select" id="adv-path-manager">
-                                    <option value="fullmesh">fullmesh</option>
-                                    <option value="ndiffports">ndiffports</option>
+                                    <option value="fullmesh" data-i18n="fullmesh">fullmesh</option>
+                                    <option value="ndiffports" data-i18n="ndiffports">ndiffports</option>
                                 </select>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Congestion</span>
+                                <span class="wan-advanced-label" data-i18n="Congestion">Congestion</span>
                                 <select class="wan-advanced-select" id="adv-congestion">
-                                    <option value="bbr">bbr</option>
-                                    <option value="cubic">cubic</option>
-                                    <option value="reno">reno</option>
+                                    <option value="bbr" data-i18n="bbr">bbr</option>
+                                    <option value="cubic" data-i18n="cubic">cubic</option>
+                                    <option value="reno" data-i18n="reno">reno</option>
                                 </select>
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Max Subflows</span>
+                                <span class="wan-advanced-label" data-i18n="Max Subflows">Max Subflows</span>
                                 <input type="number" class="wan-advanced-input" id="adv-subflows" min="1" max="16" value="8">
                             </div>
                             <div class="wan-advanced-row">
-                                <span class="wan-advanced-label">Stale Loss Count</span>
+                                <span class="wan-advanced-label" data-i18n="Stale Loss Count">Stale Loss Count</span>
                                 <input type="number" class="wan-advanced-input" id="adv-stale-loss" min="1" max="10" value="4">
                             </div>
                         </div>
@@ -848,8 +848,8 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <div class="wan-advanced-actions">
                         <div id="wan-advanced-error" class="wan-advanced-error"></div>
                         <div id="wan-advanced-success" class="wan-advanced-success"></div>
-                        <button class="wan-advanced-btn wan-advanced-btn-save" id="wan-advanced-save-btn" onclick="JamMonitor.saveAdvancedSettings()">Save and Apply</button>
-                        <button class="wan-advanced-btn" style="background:#fff;border:1px solid #e74c3c;color:#e74c3c;margin-left:10px;" onclick="JamMonitor.resetAdvancedSettings()">Reset</button>
+                        <button class="wan-advanced-btn wan-advanced-btn-save" id="wan-advanced-save-btn" onclick="JamMonitor.saveAdvancedSettings()" data-i18n="Save and Apply">Save and Apply</button>
+                        <button class="wan-advanced-btn" style="background:#fff;border:1px solid #e74c3c;color:#e74c3c;margin-left:10px;" onclick="JamMonitor.resetAdvancedSettings()" data-i18n="Reset">Reset</button>
                     </div>
                 </div>
             </div>

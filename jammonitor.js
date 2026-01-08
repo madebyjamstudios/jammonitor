@@ -1427,7 +1427,10 @@ var JamMonitor = (function() {
             var colspanAttr = col.colspan ? ' colspan="' + col.colspan + '"' : '';
             if (col.key && col.sortable) {
                 var isActive = clientSortColumn === col.key;
-                var arrow = isActive ? '<span class="sort-icon ' + (clientSortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
+                // Always show arrow placeholder to prevent column shifting, hide with visibility when inactive
+                var arrowStyle = isActive ? '' : 'visibility:hidden;';
+                var arrowClass = isActive ? (clientSortDirection === 'asc' ? 'sort-asc' : 'sort-desc') : 'sort-asc';
+                var arrow = '<span class="sort-icon ' + arrowClass + '" style="' + arrowStyle + '"></span>';
                 html += '<th class="sortable" data-sort="' + col.key + '"' + colspanAttr + ' style="' + style + 'white-space:nowrap;">' + col.label + arrow + '</th>';
             } else {
                 html += '<th' + colspanAttr + ' style="' + style + '">' + (col.label || '') + '</th>';
@@ -4285,7 +4288,10 @@ var JamMonitor = (function() {
                 columns.forEach(function(col) {
                     if (col.sortable) {
                         var isActive = sortColumn === col.key;
-                        var arrowHtml = isActive ? '<span class="sort-icon ' + (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
+                        // Always show arrow placeholder to prevent column shifting
+                        var arrowStyle = isActive ? '' : 'visibility:hidden;';
+                        var arrowClass = isActive ? (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') : 'sort-asc';
+                        var arrowHtml = '<span class="sort-icon ' + arrowClass + '" style="' + arrowStyle + '"></span>';
                         html += '<th class="sortable" data-sort="' + col.key + '" style="white-space:nowrap;">' + col.label + arrowHtml + '</th>';
                     } else {
                         html += '<th>' + col.label + '</th>';

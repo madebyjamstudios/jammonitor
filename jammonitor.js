@@ -1413,24 +1413,24 @@ var JamMonitor = (function() {
 
     function renderClientHeaders() {
         var columns = [
-            { key: 'ip', label: 'IP Address', width: '115px' },
-            { key: 'type', label: 'Type', width: '40px' },
-            { key: 'name', label: 'Name', width: '' },
-            { key: 'download', label: 'Download', width: '' },
-            { key: 'upload', label: 'Upload', width: '' },
-            { key: 'source', label: 'Source', width: '70px' },
-            { key: 'mac', label: 'MAC Address', width: '130px' },
-            { key: null, label: '', width: '40px' }
+            { key: 'ip', label: 'IP Address', width: '115px', sortable: true },
+            { key: 'type', label: 'Type', width: '40px', sortable: false },
+            { key: 'name', label: 'Name', width: '', sortable: true },
+            { key: 'download', label: 'Download', width: '', sortable: true },
+            { key: 'upload', label: 'Upload', width: '', sortable: true },
+            { key: 'source', label: 'Source', width: '70px', sortable: true },
+            { key: 'mac', label: 'MAC Address', width: '130px', sortable: true },
+            { key: null, label: '', width: '40px', sortable: false }
         ];
         var html = '<tr>';
         columns.forEach(function(col) {
             var style = col.width ? ' style="width:' + col.width + ';"' : '';
-            if (col.key) {
+            if (col.key && col.sortable) {
                 var isActive = clientSortColumn === col.key;
                 var arrow = isActive ? '<span class="sort-icon ' + (clientSortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
                 html += '<th class="sortable" data-sort="' + col.key + '"' + style + '>' + col.label + arrow + '</th>';
             } else {
-                html += '<th' + style + '></th>';
+                html += '<th' + style + '>' + (col.label || '') + '</th>';
             }
         });
         return html + '</tr>';
@@ -4274,18 +4274,22 @@ var JamMonitor = (function() {
 
                 // Column definitions
                 var columns = [
-                    { key: 'ip', label: 'IP Address' },
-                    { key: 'mac', label: 'MAC Address' },
-                    { key: 'type', label: 'Type' },
-                    { key: 'rx', label: 'Download' },
-                    { key: 'tx', label: 'Upload' },
-                    { key: 'total', label: 'Total' }
+                    { key: 'ip', label: 'IP Address', sortable: true },
+                    { key: 'mac', label: 'MAC Address', sortable: true },
+                    { key: 'type', label: 'Type', sortable: false },
+                    { key: 'rx', label: 'Download', sortable: true },
+                    { key: 'tx', label: 'Upload', sortable: true },
+                    { key: 'total', label: 'Total', sortable: true }
                 ];
 
                 columns.forEach(function(col) {
-                    var isActive = sortColumn === col.key;
-                    var arrowHtml = isActive ? '<span class="sort-icon ' + (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
-                    html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + arrowHtml + '</th>';
+                    if (col.sortable) {
+                        var isActive = sortColumn === col.key;
+                        var arrowHtml = isActive ? '<span class="sort-icon ' + (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') + '"></span>' : '';
+                        html += '<th class="sortable" data-sort="' + col.key + '">' + col.label + arrowHtml + '</th>';
+                    } else {
+                        html += '<th>' + col.label + '</th>';
+                    }
                 });
 
                 html += '</tr></thead><tbody>';

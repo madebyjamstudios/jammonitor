@@ -1943,12 +1943,12 @@ var JamMonitor = (function() {
                 // Render local radios with utilization bars
                 var localGrid = document.getElementById('wifi-local-grid');
                 if (data.local_radios.length === 0) {
-                    localGrid.innerHTML = '<p style="color:#999;margin:10px 0;">No local Wi-Fi radios detected</p>';
+                    localGrid.innerHTML = '<p style="color:#999;margin:10px 0;">' + _('No local Wi-Fi radios detected') + '</p>';
                 } else {
                     var html = '';
                     data.local_radios.forEach(function(radio) {
                         var indicatorClass = radio.up ? 'green' : 'red';
-                        var stateText = radio.up ? 'UP' : 'DOWN';
+                        var stateText = radio.up ? _('UP') : _('DOWN');
                         var hasUtilization = radio.utilization !== undefined;
                         var utilization = radio.utilization || 0;
                         var utilizationText = hasUtilization ? utilization + '%' : '<span class="tile-spinner" style="width:12px;height:12px;"></span>';
@@ -1962,12 +1962,12 @@ var JamMonitor = (function() {
                         }
                         html += '</div>';
                         html += '<div class="jm-big-value">' + stateText + '</div>';
-                        html += '<div class="jm-row"><span class="jm-label">Channel</span><span class="jm-value">' + escapeHtml(radio.channel) + '</span></div>';
-                        html += '<div class="jm-row"><span class="jm-label">Tx Power</span><span class="jm-value">' + escapeHtml(radio.txpower) + '</span></div>';
-                        html += '<div class="jm-row"><span class="jm-label">Clients</span><span class="jm-value">' + radio.clients + '</span></div>';
+                        html += '<div class="jm-row"><span class="jm-label">' + _('Channel') + '</span><span class="jm-value">' + escapeHtml(radio.channel) + '</span></div>';
+                        html += '<div class="jm-row"><span class="jm-label">' + _('Tx Power') + '</span><span class="jm-value">' + escapeHtml(radio.txpower) + '</span></div>';
+                        html += '<div class="jm-row"><span class="jm-label">' + _('Clients') + '</span><span class="jm-value">' + radio.clients + '</span></div>';
                         // Utilization bar
                         html += '<div class="jm-row" style="flex-direction:column;gap:2px;">';
-                        html += '<span class="jm-label" style="width:100%;">Utilization ' + utilizationText + '</span>';
+                        html += '<span class="jm-label" style="width:100%;">' + _('Utilization') + ' ' + utilizationText + '</span>';
                         html += '<div style="width:100%;height:6px;background:#ecf0f1;border-radius:3px;overflow:hidden;">';
                         html += '<div style="width:' + utilization + '%;height:100%;background:' + utilizationColor + ';"></div>';
                         html += '</div></div>';
@@ -1988,7 +1988,7 @@ var JamMonitor = (function() {
                         }
                     });
                     if (allClients.length === 0) {
-                        clientsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">No clients connected</td></tr>';
+                        clientsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + _('No clients connected') + '</td></tr>';
                     } else {
                         var rows = '';
                         allClients.forEach(function(client) {
@@ -2040,12 +2040,12 @@ var JamMonitor = (function() {
         var collapsible = document.querySelector('.jm-collapsible');
         if (remoteApsExpanded) {
             content.style.display = 'block';
-            header.textContent = '▼ Remote APs';
+            header.textContent = '▼ ' + _('Remote APs');
             collapsible.classList.add('expanded');
             updateRemoteAps();
         } else {
             content.style.display = 'none';
-            header.textContent = '▶ Remote APs';
+            header.textContent = '▶ ' + _('Remote APs');
             collapsible.classList.remove('expanded');
         }
     }
@@ -2086,7 +2086,7 @@ var JamMonitor = (function() {
 
         if (list.length === 0) {
             countEl.textContent = '';
-            listEl.innerHTML = '<div style="padding:20px;background:#f8f9fa;border-radius:6px;text-align:center;"><p style="color:#95a5a6;margin:0;">No remote APs configured</p><p style="color:#bdc3c7;font-size:11px;margin:5px 0 0;">Click "+ Add APs" below to monitor external access points</p></div>';
+            listEl.innerHTML = '<div style="padding:20px;background:#f8f9fa;border-radius:6px;text-align:center;"><p style="color:#95a5a6;margin:0;">' + _('No remote APs configured') + '</p><p style="color:#bdc3c7;font-size:11px;margin:5px 0 0;">' + _('Click "+ Add APs" below to monitor external access points') + '</p></div>';
             return;
         }
 

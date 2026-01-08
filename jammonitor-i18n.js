@@ -308,7 +308,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Restart OpenVPN tunnel",
     "Restart Shadowsocks proxy": "Restart Shadowsocks proxy",
     "Route traffic through VPS again": "Route traffic through VPS again",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Connection will be interrupted for ~10 seconds while VPN reconnects."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Connection will be interrupted for ~10 seconds while VPN reconnects.",
+
+    // WiFi APs section
+    "Channel": "Channel",
+    "Tx Power": "Tx Power",
+    "Clients": "Clients",
+    "Utilization": "Utilization",
+    "UP": "UP",
+    "DOWN": "DOWN",
+    "No local Wi-Fi radios detected": "No local Wi-Fi radios detected",
+    "No clients connected": "No clients connected",
+    "Remote APs": "Remote APs",
+    "No remote APs configured": "No remote APs configured",
+    "Click \"+ Add APs\" below to monitor external access points": "Click \"+ Add APs\" below to monitor external access points"
 },
 
 // Placeholder for other languages - will be added
@@ -612,7 +625,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "重启 OpenVPN 隧道",
     "Restart Shadowsocks proxy": "重启 Shadowsocks 代理",
     "Route traffic through VPS again": "流量重新通过 VPS 路由",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN 重新连接期间，连接将中断约 10 秒。"
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN 重新连接期间，连接将中断约 10 秒。",
+
+    // WiFi APs section
+    "Channel": "信道",
+    "Tx Power": "发射功率",
+    "Clients": "客户端",
+    "Utilization": "利用率",
+    "UP": "在线",
+    "DOWN": "离线",
+    "No local Wi-Fi radios detected": "未检测到本地 Wi-Fi 无线电",
+    "No clients connected": "无客户端连接",
+    "Remote APs": "远程接入点",
+    "No remote APs configured": "未配置远程接入点",
+    "Click \"+ Add APs\" below to monitor external access points": "点击下方的"+ 添加接入点"以监控外部接入点"
 },
 "es": {
     // Navigation
@@ -914,7 +940,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Reiniciará el túnel OpenVPN",
     "Restart Shadowsocks proxy": "Reiniciará el proxy Shadowsocks",
     "Route traffic through VPS again": "Enrutará tráfico a través del VPS nuevamente",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La conexión se interrumpirá por ~10 segundos mientras el VPN reconecta."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La conexión se interrumpirá por ~10 segundos mientras el VPN reconecta.",
+
+    // WiFi APs section
+    "Channel": "Canal",
+    "Tx Power": "Potencia Tx",
+    "Clients": "Clientes",
+    "Utilization": "Utilización",
+    "UP": "ACTIVO",
+    "DOWN": "INACTIVO",
+    "No local Wi-Fi radios detected": "No se detectaron radios Wi-Fi locales",
+    "No clients connected": "Sin clientes conectados",
+    "Remote APs": "APs Remotos",
+    "No remote APs configured": "No hay APs remotos configurados",
+    "Click \"+ Add APs\" below to monitor external access points": "Haga clic en \"+ Agregar APs\" abajo para monitorear puntos de acceso externos"
 },
 "de": {
     // Navigation
@@ -1216,7 +1255,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "OpenVPN-Tunnel neu starten",
     "Restart Shadowsocks proxy": "Shadowsocks-Proxy neu starten",
     "Route traffic through VPS again": "Datenverkehr wieder über VPS leiten",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Verbindung wird für ~10 Sekunden unterbrochen während VPN neu verbindet."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Verbindung wird für ~10 Sekunden unterbrochen während VPN neu verbindet.",
+
+    // WiFi APs section
+    "Channel": "Kanal",
+    "Tx Power": "Sendeleistung",
+    "Clients": "Clients",
+    "Utilization": "Auslastung",
+    "UP": "AKTIV",
+    "DOWN": "INAKTIV",
+    "No local Wi-Fi radios detected": "Keine lokalen WLAN-Funkmodule erkannt",
+    "No clients connected": "Keine Clients verbunden",
+    "Remote APs": "Remote-APs",
+    "No remote APs configured": "Keine Remote-APs konfiguriert",
+    "Click \"+ Add APs\" below to monitor external access points": "Klicken Sie unten auf \"+ APs hinzufügen\", um externe Access Points zu überwachen"
 },
 "fr": {
     // Navigation
@@ -1518,7 +1570,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Redémarrer le tunnel OpenVPN",
     "Restart Shadowsocks proxy": "Redémarrer le proxy Shadowsocks",
     "Route traffic through VPS again": "Router le trafic via VPS à nouveau",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La connexion sera interrompue pendant ~10 secondes pendant la reconnexion VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La connexion sera interrompue pendant ~10 secondes pendant la reconnexion VPN.",
+
+    // WiFi APs section
+    "Channel": "Canal",
+    "Tx Power": "Puissance Tx",
+    "Clients": "Clients",
+    "Utilization": "Utilisation",
+    "UP": "ACTIF",
+    "DOWN": "INACTIF",
+    "No local Wi-Fi radios detected": "Aucune radio Wi-Fi locale detectee",
+    "No clients connected": "Aucun client connecte",
+    "Remote APs": "APs distants",
+    "No remote APs configured": "Aucun AP distant configure",
+    "Click \"+ Add APs\" below to monitor external access points": "Cliquez sur \"+ Ajouter des APs\" ci-dessous pour surveiller les points d'acces externes"
 },
 "pt-br": {
     "General": "Geral", "Overview": "Visão Geral", "WAN Policy": "Política WAN", "Interfaces": "Interfaces",
@@ -1706,7 +1771,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Reiniciar túnel OpenVPN",
     "Restart Shadowsocks proxy": "Reiniciar proxy Shadowsocks",
     "Route traffic through VPS again": "Rotear tráfego pelo VPS novamente",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "A conexão será interrompida por ~10 segundos enquanto o VPN reconecta."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "A conexão será interrompida por ~10 segundos enquanto o VPN reconecta.",
+
+    // WiFi APs section
+    "Channel": "Canal",
+    "Tx Power": "Potencia Tx",
+    "Clients": "Clientes",
+    "Utilization": "Utilizacao",
+    "UP": "ATIVO",
+    "DOWN": "INATIVO",
+    "No local Wi-Fi radios detected": "Nenhum radio Wi-Fi local detectado",
+    "No clients connected": "Nenhum cliente conectado",
+    "Remote APs": "APs Remotos",
+    "No remote APs configured": "Nenhum AP remoto configurado",
+    "Click \"+ Add APs\" below to monitor external access points": "Clique em \"+ Adicionar APs\" abaixo para monitorar pontos de acesso externos"
 },
 "ru": {
     "General": "Общее", "Overview": "Обзор", "WAN Policy": "Политика WAN", "Interfaces": "Интерфейсы",
@@ -1894,7 +1972,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Перезапуск туннеля OpenVPN",
     "Restart Shadowsocks proxy": "Перезапуск прокси Shadowsocks",
     "Route traffic through VPS again": "Маршрутизация трафика через VPS снова",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Соединение будет прервано на ~10 секунд во время переподключения VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Соединение будет прервано на ~10 секунд во время переподключения VPN.",
+
+    // WiFi APs section
+    "Channel": "Канал",
+    "Tx Power": "Мощность передачи",
+    "Clients": "Клиенты",
+    "Utilization": "Загрузка",
+    "UP": "АКТИВЕН",
+    "DOWN": "НЕАКТИВЕН",
+    "No local Wi-Fi radios detected": "Локальные Wi-Fi радиомодули не обнаружены",
+    "No clients connected": "Нет подключенных клиентов",
+    "Remote APs": "Удаленные точки доступа",
+    "No remote APs configured": "Удаленные точки доступа не настроены",
+    "Click \"+ Add APs\" below to monitor external access points": "Нажмите \"+ Добавить ТД\" ниже для мониторинга внешних точек доступа"
 },
 "ja": {
     "General": "一般", "Overview": "概要", "WAN Policy": "WANポリシー", "Interfaces": "インターフェース",
@@ -2082,7 +2173,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "OpenVPNトンネルを再起動",
     "Restart Shadowsocks proxy": "Shadowsocksプロキシを再起動",
     "Route traffic through VPS again": "VPS経由でトラフィックを再度ルーティング",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN再接続中、接続が約10秒間中断されます。"
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN再接続中、接続が約10秒間中断されます。",
+
+    // WiFi APs section
+    "Channel": "チャンネル",
+    "Tx Power": "送信電力",
+    "Clients": "クライアント",
+    "Utilization": "使用率",
+    "UP": "稼働中",
+    "DOWN": "停止中",
+    "No local Wi-Fi radios detected": "ローカルWi-Fi無線が検出されませんでした",
+    "No clients connected": "接続中のクライアントなし",
+    "Remote APs": "リモートAP",
+    "No remote APs configured": "リモートAPが設定されていません",
+    "Click \"+ Add APs\" below to monitor external access points": "下の「+ APを追加」をクリックして外部アクセスポイントを監視"
 },
 "it": {
     "General": "Generale", "Overview": "Panoramica", "WAN Policy": "Politica WAN", "Interfaces": "Interfacce",
@@ -2202,7 +2306,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Riavvierà il tunnel OpenVPN",
     "Restart Shadowsocks proxy": "Riavvierà il proxy Shadowsocks",
     "Route traffic through VPS again": "Instraderà il traffico tramite VPS di nuovo",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La connessione sarà interrotta per ~10 secondi durante la riconnessione VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "La connessione sarà interrotta per ~10 secondi durante la riconnessione VPN.",
+
+    // WiFi APs section
+    "Channel": "Canale",
+    "Tx Power": "Potenza Tx",
+    "Clients": "Client",
+    "Utilization": "Utilizzo",
+    "UP": "ATTIVO",
+    "DOWN": "INATTIVO",
+    "No local Wi-Fi radios detected": "Nessuna radio Wi-Fi locale rilevata",
+    "No clients connected": "Nessun client connesso",
+    "Remote APs": "AP Remoti",
+    "No remote APs configured": "Nessun AP remoto configurato",
+    "Click \"+ Add APs\" below to monitor external access points": "Clicca su \"+ Aggiungi AP\" sotto per monitorare access point esterni"
 },
 "nl": {
     "General": "Algemeen", "Overview": "Overzicht", "WAN Policy": "WAN Beleid", "Interfaces": "Interfaces",
@@ -2309,7 +2426,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "OpenVPN-tunnel herstarten",
     "Restart Shadowsocks proxy": "Shadowsocks-proxy herstarten",
     "Route traffic through VPS again": "Verkeer weer via VPS routeren",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Verbinding wordt ~10 seconden onderbroken terwijl VPN opnieuw verbindt."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Verbinding wordt ~10 seconden onderbroken terwijl VPN opnieuw verbindt.",
+
+    // WiFi APs section
+    "Channel": "Kanaal",
+    "Tx Power": "Zendvermogen",
+    "Clients": "Clients",
+    "Utilization": "Gebruik",
+    "UP": "AAN",
+    "DOWN": "UIT",
+    "No local Wi-Fi radios detected": "Geen lokale Wi-Fi radio's gedetecteerd",
+    "No clients connected": "Geen clients verbonden",
+    "Remote APs": "Remote APs",
+    "No remote APs configured": "Geen remote APs geconfigureerd",
+    "Click \"+ Add APs\" below to monitor external access points": "Klik hieronder op \"+ APs toevoegen\" om externe toegangspunten te monitoren"
 },
 "pl": {
     "General": "Ogólne", "Overview": "Przegląd", "WAN Policy": "Polityka WAN", "Interfaces": "Interfejsy",
@@ -2400,7 +2530,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Ponowne uruchomienie tunelu OpenVPN",
     "Restart Shadowsocks proxy": "Ponowne uruchomienie proxy Shadowsocks",
     "Route traffic through VPS again": "Ponowne kierowanie ruchu przez VPS",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Połączenie zostanie przerwane na ~10 sekund podczas ponownego łączenia VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Połączenie zostanie przerwane na ~10 sekund podczas ponownego łączenia VPN.",
+
+    // WiFi APs section
+    "Channel": "Kanał",
+    "Tx Power": "Moc nadawania",
+    "Clients": "Klienci",
+    "Utilization": "Wykorzystanie",
+    "UP": "AKTYWNY",
+    "DOWN": "NIEAKTYWNY",
+    "No local Wi-Fi radios detected": "Nie wykryto lokalnych nadajników Wi-Fi",
+    "No clients connected": "Brak połączonych klientów",
+    "Remote APs": "Zdalne AP",
+    "No remote APs configured": "Nie skonfigurowano zdalnych AP",
+    "Click \"+ Add APs\" below to monitor external access points": "Kliknij \"+ Dodaj AP\" poniżej, aby monitorować zewnętrzne punkty dostępu"
 },
 "ko": {
     "General": "일반", "Overview": "개요", "WAN Policy": "WAN 정책", "Interfaces": "인터페이스",
@@ -2485,7 +2628,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "OpenVPN 터널 재시작",
     "Restart Shadowsocks proxy": "Shadowsocks 프록시 재시작",
     "Route traffic through VPS again": "VPS를 통해 다시 트래픽 라우팅",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN 재연결 중 연결이 약 10초간 중단됩니다."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN 재연결 중 연결이 약 10초간 중단됩니다.",
+
+    // WiFi APs section
+    "Channel": "채널",
+    "Tx Power": "송신 출력",
+    "Clients": "클라이언트",
+    "Utilization": "사용률",
+    "UP": "활성",
+    "DOWN": "비활성",
+    "No local Wi-Fi radios detected": "로컬 Wi-Fi 무선이 감지되지 않음",
+    "No clients connected": "연결된 클라이언트 없음",
+    "Remote APs": "원격 AP",
+    "No remote APs configured": "원격 AP가 구성되지 않음",
+    "Click \"+ Add APs\" below to monitor external access points": "아래의 \"+ AP 추가\"를 클릭하여 외부 액세스 포인트 모니터링"
 },
 "tr": {
     "General": "Genel", "Overview": "Genel Bakış", "WAN Policy": "WAN Politikası", "Interfaces": "Arayüzler",
@@ -2570,7 +2726,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "OpenVPN tünelini yeniden başlatacak",
     "Restart Shadowsocks proxy": "Shadowsocks proxy'yi yeniden başlatacak",
     "Route traffic through VPS again": "Trafiği tekrar VPS üzerinden yönlendirecek",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN yeniden bağlanırken bağlantı ~10 saniye kesintiye uğrayacak."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "VPN yeniden bağlanırken bağlantı ~10 saniye kesintiye uğrayacak.",
+
+    // WiFi APs section
+    "Channel": "Kanal",
+    "Tx Power": "Tx Gucu",
+    "Clients": "Istemciler",
+    "Utilization": "Kullanim",
+    "UP": "AKTIF",
+    "DOWN": "PASIF",
+    "No local Wi-Fi radios detected": "Yerel Wi-Fi radyosu algilanmadi",
+    "No clients connected": "Bagli istemci yok",
+    "Remote APs": "Uzak AP'ler",
+    "No remote APs configured": "Uzak AP yapilandirilmadi",
+    "Click \"+ Add APs\" below to monitor external access points": "Harici erisim noktalarini izlemek icin asagidaki \"+ AP Ekle\"ye tiklayin"
 },
 "vi": {
     "General": "Chung", "Overview": "Tổng quan", "WAN Policy": "Chính sách WAN", "Interfaces": "Giao diện",
@@ -2655,7 +2824,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Khởi động lại đường hầm OpenVPN",
     "Restart Shadowsocks proxy": "Khởi động lại proxy Shadowsocks",
     "Route traffic through VPS again": "Định tuyến lưu lượng qua VPS lại",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Kết nối sẽ bị gián đoạn khoảng 10 giây khi VPN kết nối lại."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Kết nối sẽ bị gián đoạn khoảng 10 giây khi VPN kết nối lại.",
+
+    // WiFi APs section
+    "Channel": "Kenh",
+    "Tx Power": "Cong suat phat",
+    "Clients": "Thiet bi ket noi",
+    "Utilization": "Su dung",
+    "UP": "HOAT DONG",
+    "DOWN": "NGUNG",
+    "No local Wi-Fi radios detected": "Khong phat hien song Wi-Fi cuc bo",
+    "No clients connected": "Khong co thiet bi ket noi",
+    "Remote APs": "AP tu xa",
+    "No remote APs configured": "Chua cau hinh AP tu xa",
+    "Click \"+ Add APs\" below to monitor external access points": "Nhan \"+ Them AP\" ben duoi de giam sat diem truy cap ben ngoai"
 },
 "ar": {
     "General": "عام", "Overview": "نظرة عامة", "WAN Policy": "سياسة WAN", "Interfaces": "الواجهات",
@@ -2741,7 +2923,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "إعادة تشغيل نفق OpenVPN",
     "Restart Shadowsocks proxy": "إعادة تشغيل وكيل Shadowsocks",
     "Route traffic through VPS again": "توجيه حركة المرور عبر VPS مرة أخرى",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "سينقطع الاتصال لمدة ~10 ثوانٍ أثناء إعادة اتصال VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "سينقطع الاتصال لمدة ~10 ثوانٍ أثناء إعادة اتصال VPN.",
+
+    // WiFi APs section
+    "Channel": "القناة",
+    "Tx Power": "قوة الإرسال",
+    "Clients": "العملاء",
+    "Utilization": "الاستخدام",
+    "UP": "نشط",
+    "DOWN": "متوقف",
+    "No local Wi-Fi radios detected": "لم يتم الكشف عن راديو Wi-Fi محلي",
+    "No clients connected": "لا يوجد عملاء متصلين",
+    "Remote APs": "نقاط وصول بعيدة",
+    "No remote APs configured": "لم يتم تكوين نقاط وصول بعيدة",
+    "Click \"+ Add APs\" below to monitor external access points": "انقر على \"+ إضافة نقاط وصول\" أدناه لمراقبة نقاط الوصول الخارجية"
 },
 "th": {
     "General": "ทั่วไป", "Overview": "ภาพรวม", "WAN Policy": "นโยบาย WAN", "Interfaces": "อินเทอร์เฟซ",
@@ -2826,7 +3021,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "รีสตาร์ทอุโมงค์ OpenVPN",
     "Restart Shadowsocks proxy": "รีสตาร์ทพร็อกซี Shadowsocks",
     "Route traffic through VPS again": "ส่งทราฟฟิกผ่าน VPS อีกครั้ง",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "การเชื่อมต่อจะถูกขัดจังหวะประมาณ 10 วินาทีขณะ VPN เชื่อมต่อใหม่"
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "การเชื่อมต่อจะถูกขัดจังหวะประมาณ 10 วินาทีขณะ VPN เชื่อมต่อใหม่",
+
+    // WiFi APs section
+    "Channel": "ช่อง",
+    "Tx Power": "กำลังส่ง",
+    "Clients": "ไคลเอนต์",
+    "Utilization": "การใช้งาน",
+    "UP": "ทำงาน",
+    "DOWN": "หยุด",
+    "No local Wi-Fi radios detected": "ไม่พบวิทยุ Wi-Fi ภายในเครื่อง",
+    "No clients connected": "ไม่มีไคลเอนต์เชื่อมต่อ",
+    "Remote APs": "AP ระยะไกล",
+    "No remote APs configured": "ไม่ได้กำหนดค่า AP ระยะไกล",
+    "Click \"+ Add APs\" below to monitor external access points": "คลิก \"+ เพิ่ม AP\" ด้านล่างเพื่อตรวจสอบจุดเชื่อมต่อภายนอก"
 },
 "id": {
     "General": "Umum", "Overview": "Ikhtisar", "WAN Policy": "Kebijakan WAN", "Interfaces": "Antarmuka",
@@ -2911,7 +3119,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Memulai ulang tunnel OpenVPN",
     "Restart Shadowsocks proxy": "Memulai ulang proxy Shadowsocks",
     "Route traffic through VPS again": "Merutekan lalu lintas melalui VPS lagi",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Koneksi akan terputus selama ~10 detik saat VPN menyambung kembali."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Koneksi akan terputus selama ~10 detik saat VPN menyambung kembali.",
+
+    // WiFi APs section
+    "Channel": "Saluran",
+    "Tx Power": "Daya Tx",
+    "Clients": "Klien",
+    "Utilization": "Penggunaan",
+    "UP": "AKTIF",
+    "DOWN": "NONAKTIF",
+    "No local Wi-Fi radios detected": "Tidak ada radio Wi-Fi lokal terdeteksi",
+    "No clients connected": "Tidak ada klien terhubung",
+    "Remote APs": "AP Jarak Jauh",
+    "No remote APs configured": "Tidak ada AP jarak jauh dikonfigurasi",
+    "Click \"+ Add APs\" below to monitor external access points": "Klik \"+ Tambah AP\" di bawah untuk memantau titik akses eksternal"
 },
 "cs": {
     "General": "Obecné", "Overview": "Přehled", "WAN Policy": "Politika WAN", "Interfaces": "Rozhraní",
@@ -2996,7 +3217,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Restart tunelu OpenVPN",
     "Restart Shadowsocks proxy": "Restart proxy Shadowsocks",
     "Route traffic through VPS again": "Směrování provozu znovu přes VPS",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Připojení bude přerušeno na ~10 sekund během opětovného připojení VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Připojení bude přerušeno na ~10 sekund během opětovného připojení VPN.",
+
+    // WiFi APs section
+    "Channel": "Kanal",
+    "Tx Power": "Vysilaci vykon",
+    "Clients": "Klienti",
+    "Utilization": "Vyuziti",
+    "UP": "AKTIVNI",
+    "DOWN": "NEAKTIVNI",
+    "No local Wi-Fi radios detected": "Nebyly detekovany zadne lokalni Wi-Fi radiove moduly",
+    "No clients connected": "Zadni klienti nejsou pripojeni",
+    "Remote APs": "Vzdalene pristupove body",
+    "No remote APs configured": "Zadne vzdalene pristupove body nejsou nakonfigurovany",
+    "Click \"+ Add APs\" below to monitor external access points": "Kliknete na \"+ Pridat AP\" nize pro sledovani externich pristupovych bodu"
 },
 "sv": {
     "General": "Allmänt", "Overview": "Översikt", "WAN Policy": "WAN-policy", "Interfaces": "Gränssnitt",
@@ -3081,7 +3315,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Starta om OpenVPN-tunneln",
     "Restart Shadowsocks proxy": "Starta om Shadowsocks-proxyn",
     "Route traffic through VPS again": "Dirigera trafik via VPS igen",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Anslutningen avbryts i ~10 sekunder medan VPN återansluter."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Anslutningen avbryts i ~10 sekunder medan VPN återansluter.",
+
+    // WiFi APs section
+    "Channel": "Kanal",
+    "Tx Power": "Tx-effekt",
+    "Clients": "Klienter",
+    "Utilization": "Användning",
+    "UP": "AKTIV",
+    "DOWN": "INAKTIV",
+    "No local Wi-Fi radios detected": "Inga lokala Wi-Fi-radioapparater upptäcktes",
+    "No clients connected": "Inga klienter anslutna",
+    "Remote APs": "Fjärr-AP:er",
+    "No remote APs configured": "Inga fjärr-AP:er konfigurerade",
+    "Click \"+ Add APs\" below to monitor external access points": "Klicka på \"+ Lägg till AP\" nedan för att övervaka externa åtkomstpunkter"
 },
 "el": {
     "General": "Γενικά", "Overview": "Επισκόπηση", "WAN Policy": "Πολιτική WAN", "Interfaces": "Διεπαφές",
@@ -3166,7 +3413,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Επανεκκινήσει το τούνελ OpenVPN",
     "Restart Shadowsocks proxy": "Επανεκκινήσει το proxy Shadowsocks",
     "Route traffic through VPS again": "Δρομολογήσει την κίνηση ξανά μέσω VPS",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Η σύνδεση θα διακοπεί για ~10 δευτερόλεπτα κατά την επανασύνδεση VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "Η σύνδεση θα διακοπεί για ~10 δευτερόλεπτα κατά την επανασύνδεση VPN.",
+
+    // WiFi APs section
+    "Channel": "Κανάλι",
+    "Tx Power": "Ισχύς Tx",
+    "Clients": "Πελάτες",
+    "Utilization": "Χρήση",
+    "UP": "ΕΝΕΡΓΟ",
+    "DOWN": "ΑΝΕΝΕΡΓΟ",
+    "No local Wi-Fi radios detected": "Δεν εντοπίστηκαν τοπικές ασύρματες μονάδες Wi-Fi",
+    "No clients connected": "Δεν υπάρχουν συνδεδεμένοι πελάτες",
+    "Remote APs": "Απομακρυσμένα AP",
+    "No remote APs configured": "Δεν έχουν ρυθμιστεί απομακρυσμένα AP",
+    "Click \"+ Add APs\" below to monitor external access points": "Κάντε κλικ στο \"+ Προσθήκη AP\" παρακάτω για παρακολούθηση εξωτερικών σημείων πρόσβασης"
 },
 "uk": {
     "General": "Загальне", "Overview": "Огляд", "WAN Policy": "Політика WAN", "Interfaces": "Інтерфейси",
@@ -3251,7 +3511,20 @@ window.JM_I18N = {
     "Restart OpenVPN tunnel": "Перезапуск тунелю OpenVPN",
     "Restart Shadowsocks proxy": "Перезапуск проксі Shadowsocks",
     "Route traffic through VPS again": "Маршрутизація трафіку через VPS знову",
-    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "З'єднання буде перервано на ~10 секунд під час перепідключення VPN."
+    "Connection will be interrupted for ~10 seconds while VPN reconnects.": "З'єднання буде перервано на ~10 секунд під час перепідключення VPN.",
+
+    // WiFi APs section
+    "Channel": "Канал",
+    "Tx Power": "Потужність передачі",
+    "Clients": "Клієнти",
+    "Utilization": "Використання",
+    "UP": "АКТИВНИЙ",
+    "DOWN": "НЕАКТИВНИЙ",
+    "No local Wi-Fi radios detected": "Локальні Wi-Fi радіомодулі не виявлено",
+    "No clients connected": "Немає підключених клієнтів",
+    "Remote APs": "Віддалені точки доступу",
+    "No remote APs configured": "Віддалені точки доступу не налаштовано",
+    "Click \"+ Add APs\" below to monitor external access points": "Натисніть \"+ Додати ТД\" нижче для моніторингу зовнішніх точок доступу"
 }
 
 };

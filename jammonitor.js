@@ -45,6 +45,74 @@ function loadTranslations() {
 // Initialize i18n on script load
 loadTranslations();
 
+// Translate static HTML elements on page load
+function translatePage() {
+    // Translate elements with data-i18n attribute
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+        var key = el.getAttribute('data-i18n');
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate sidebar items by their text content
+    document.querySelectorAll('.jm-sidebar-item, .jm-sidebar-section').forEach(function(el) {
+        var key = el.textContent.trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate page titles (h2 elements)
+    document.querySelectorAll('h2').forEach(function(el) {
+        var key = el.textContent.trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate block titles
+    document.querySelectorAll('.jm-block-title').forEach(function(el) {
+        var key = el.textContent.trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate labels
+    document.querySelectorAll('.jm-label').forEach(function(el) {
+        var key = el.textContent.trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate button text
+    document.querySelectorAll('button').forEach(function(el) {
+        var key = el.textContent.trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            el.textContent = JM_TRANSLATIONS[key];
+        }
+    });
+
+    // Translate table headers
+    document.querySelectorAll('th').forEach(function(el) {
+        var key = el.textContent.trim().replace(/[▲▼↑↓]/g, '').trim();
+        if (key && JM_TRANSLATIONS[key]) {
+            // Preserve sort arrows if present
+            var arrow = el.textContent.match(/[▲▼↑↓]/);
+            el.textContent = JM_TRANSLATIONS[key] + (arrow ? ' ' + arrow[0] : '');
+        }
+    });
+}
+
+// Run translation when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', translatePage);
+} else {
+    translatePage();
+}
+
 // ===== END i18n =====
 
 var JamMonitor = (function() {

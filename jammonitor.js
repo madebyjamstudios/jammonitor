@@ -1332,14 +1332,14 @@ var JamMonitor = (function() {
         popup.className = 'jm-popup-overlay';
         popup.innerHTML =
             '<div class="jm-popup">' +
-            '<h3>' + (existing ? 'Edit' : 'Add') + ' DHCP Reservation</h3>' +
-            '<div class="jm-popup-row"><label>MAC Address</label><input type="text" id="res-mac" value="' + escapeHtml(mac) + '" readonly></div>' +
-            '<div class="jm-popup-row"><label>IP Address</label><input type="text" id="res-ip" value="' + escapeHtml(existing ? existing.ip : ip) + '"></div>' +
-            '<div class="jm-popup-row"><label>Name</label><input type="text" id="res-name" value="' + escapeHtml(existing ? existing.name : name) + '"></div>' +
+            '<h3>' + (existing ? _('Edit DHCP Reservation') : _('Add DHCP Reservation')) + '</h3>' +
+            '<div class="jm-popup-row"><label>' + _('MAC Address') + '</label><input type="text" id="res-mac" value="' + escapeHtml(mac) + '" readonly></div>' +
+            '<div class="jm-popup-row"><label>' + _('IP Address') + '</label><input type="text" id="res-ip" value="' + escapeHtml(existing ? existing.ip : ip) + '"></div>' +
+            '<div class="jm-popup-row"><label>' + _('Name') + '</label><input type="text" id="res-name" value="' + escapeHtml(existing ? existing.name : name) + '"></div>' +
             '<div class="jm-popup-buttons">' +
-            (existing || pending ? '<button class="btn-danger" id="res-delete">Remove</button>' : '') +
-            '<button class="btn-secondary" id="res-cancel">Cancel</button>' +
-            '<button class="btn-primary" id="res-save">Save</button>' +
+            (existing || pending ? '<button class="btn-danger" id="res-delete">' + _('Remove') + '</button>' : '') +
+            '<button class="btn-secondary" id="res-cancel">' + _('Cancel') + '</button>' +
+            '<button class="btn-primary" id="res-save">' + _('Save') + '</button>' +
             '</div></div>';
         document.body.appendChild(popup);
 
@@ -1351,7 +1351,7 @@ var JamMonitor = (function() {
         popup.querySelector('#res-save').onclick = function() {
             var newIp = popup.querySelector('#res-ip').value.trim();
             var newName = popup.querySelector('#res-name').value.trim();
-            if (!newIp) { alert('IP address is required'); return; }
+            if (!newIp) { alert(_('IP address is required')); return; }
 
             pendingReservations[macLower] = {
                 ip: newIp,
@@ -1549,13 +1549,13 @@ var JamMonitor = (function() {
 
     function renderClientHeaders() {
         var columns = [
-            { key: 'ip', label: 'IP Address', width: '115px', sortable: true },
-            { key: 'type', label: 'Type', width: '40px', sortable: false },
-            { key: 'name', label: 'Name', width: '', sortable: true },
-            { key: 'download', label: 'Download', width: '', sortable: true },
-            { key: 'upload', label: 'Upload', width: '', sortable: true },
-            { key: 'source', label: 'Source', width: '70px', sortable: false },
-            { key: 'mac', label: 'MAC Address', width: '', sortable: true, colspan: 2 }
+            { key: 'ip', label: _('IP Address'), width: '115px', sortable: true },
+            { key: 'type', label: _('Type'), width: '40px', sortable: false },
+            { key: 'name', label: _('Name'), width: '', sortable: true },
+            { key: 'download', label: _('Download'), width: '', sortable: true },
+            { key: 'upload', label: _('Upload'), width: '', sortable: true },
+            { key: 'source', label: _('Source'), width: '70px', sortable: false },
+            { key: 'mac', label: _('MAC Address'), width: '', sortable: true, colspan: 2 }
         ];
         var html = '<tr>';
         columns.forEach(function(col) {
@@ -2266,8 +2266,8 @@ var JamMonitor = (function() {
 
         var newState = !bypassEnabled;
         var confirmMsg = newState
-            ? 'Enable VPS Bypass?\n\nThis will:\n• Stop OpenVPN tunnel\n• Stop Shadowsocks proxy\n• Route traffic directly through your primary WAN\n\nConnection will be interrupted for ~5 seconds.'
-            : 'Disable VPS Bypass?\n\nThis will:\n• Restart OpenVPN tunnel\n• Restart Shadowsocks proxy\n• Route traffic through VPS again\n\nConnection will be interrupted for ~10 seconds while VPN reconnects.';
+            ? _('Enable VPS Bypass?') + '\n\n' + _('This will:') + '\n• ' + _('Stop OpenVPN tunnel') + '\n• ' + _('Stop Shadowsocks proxy') + '\n• ' + _('Route traffic directly through your primary WAN') + '\n\n' + _('Connection will be interrupted for ~5 seconds.')
+            : _('Disable VPS Bypass?') + '\n\n' + _('This will:') + '\n• ' + _('Restart OpenVPN tunnel') + '\n• ' + _('Restart Shadowsocks proxy') + '\n• ' + _('Route traffic through VPS again') + '\n\n' + _('Connection will be interrupted for ~10 seconds while VPN reconnects.');
 
         if (!confirm(confirmMsg)) {
             // Reset checkbox to current state
@@ -2405,16 +2405,16 @@ var JamMonitor = (function() {
         var subnetText = iface.subnet ? (cidrToSubnet(iface.subnet) || '/' + iface.subnet) : '—';
 
         popup.innerHTML = '<div class="wan-ip-popup-header">' +
-            '<span>' + escapeHtml(iface.name) + ' Details</span>' +
+            '<span>' + escapeHtml(iface.name) + ' ' + _('Details') + '</span>' +
             '<span class="wan-ip-popup-close" onclick="JamMonitor.closeWanIpPopup()">×</span>' +
             '</div>' +
             '<div class="wan-ip-popup-body">' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">Connection Type</span><span class="wan-ip-popup-value">' + escapeHtml(iface.proto || '—') + '</span></div>' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">IP Address</span><span class="wan-ip-popup-value">' + escapeHtml(iface.ip || '—') + '</span></div>' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">Subnet Mask</span><span class="wan-ip-popup-value">' + escapeHtml(subnetText) + '</span></div>' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">Default Gateway</span><span class="wan-ip-popup-value">' + escapeHtml(iface.gateway || '—') + '</span></div>' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">DNS Servers</span><span class="wan-ip-popup-value">' + escapeHtml(dnsText) + '</span></div>' +
-            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">MTU</span><span class="wan-ip-popup-value">' + escapeHtml(iface.mtu || '—') + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('Connection Type') + '</span><span class="wan-ip-popup-value">' + escapeHtml(iface.proto || '—') + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('IP Address') + '</span><span class="wan-ip-popup-value">' + escapeHtml(iface.ip || '—') + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('Subnet Mask') + '</span><span class="wan-ip-popup-value">' + escapeHtml(subnetText) + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('Default Gateway') + '</span><span class="wan-ip-popup-value">' + escapeHtml(iface.gateway || '—') + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('DNS Servers') + '</span><span class="wan-ip-popup-value">' + escapeHtml(dnsText) + '</span></div>' +
+            '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('MTU') + '</span><span class="wan-ip-popup-value">' + escapeHtml(iface.mtu || '—') + '</span></div>' +
             '</div>';
 
         document.body.appendChild(popup);
@@ -2486,10 +2486,10 @@ var JamMonitor = (function() {
         popup.style.cssText = 'position:fixed;background:#fff;border-radius:6px;box-shadow:0 8px 32px rgba(0,0,0,0.2);z-index:10001;width:380px;max-width:90vw;font-size:12px;display:block;';
         popup.onclick = function(ev) { ev.stopPropagation(); };
 
-        var priorityOptions = '<option value="master"' + (currentMode === 'master' ? ' selected' : '') + '>Primary</option>' +
-            '<option value="on"' + (currentMode === 'on' ? ' selected' : '') + '>Bonded</option>' +
-            '<option value="backup"' + (currentMode === 'backup' ? ' selected' : '') + '>Standby</option>' +
-            '<option value="off"' + (currentMode === 'off' ? ' selected' : '') + '>Disabled</option>';
+        var priorityOptions = '<option value="master"' + (currentMode === 'master' ? ' selected' : '') + '>' + _('Primary') + '</option>' +
+            '<option value="on"' + (currentMode === 'on' ? ' selected' : '') + '>' + _('Bonded') + '</option>' +
+            '<option value="backup"' + (currentMode === 'backup' ? ' selected' : '') + '>' + _('Standby') + '</option>' +
+            '<option value="off"' + (currentMode === 'off' ? ' selected' : '') + '>' + _('Disabled') + '</option>';
 
         var dnsServers = iface.dns || [];
         var dns1 = dnsServers[0] || '';
@@ -2517,30 +2517,30 @@ var JamMonitor = (function() {
         var sInputSmall = 'width:70px;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;text-align:center;';
 
         popup.innerHTML = '<div style="' + sHeader + '">' +
-            '<span>Edit ' + escapeHtml(iface.name) + '</span>' +
+            '<span>' + _('Edit') + ' ' + escapeHtml(iface.name) + '</span>' +
             '<span style="' + sClose + '" onclick="JamMonitor.closeWanEditPopup()">×</span>' +
             '</div>' +
             '<div style="' + sBody + '">' +
             // Priority & Protocol row
             '<div style="' + sRow + '">' +
-            '<span style="' + sLabel + '">Priority</span>' +
+            '<span style="' + sLabel + '">' + _('Priority') + '</span>' +
             '<select id="wan-edit-priority" style="' + sSelect + '">' + priorityOptions + '</select>' +
             '</div>' +
             '<div style="' + sRow + '">' +
-            '<span style="' + sLabel + '">Protocol</span>' +
+            '<span style="' + sLabel + '">' + _('Protocol') + '</span>' +
             '<select id="wan-edit-proto" style="' + sSelect + '" onchange="JamMonitor.toggleStaticFields()">' +
             '<option value="dhcp"' + (proto === 'dhcp' ? ' selected' : '') + '>DHCP</option>' +
-            '<option value="static"' + (proto === 'static' ? ' selected' : '') + '>Static IP</option>' +
+            '<option value="static"' + (proto === 'static' ? ' selected' : '') + '>' + _('Static IP') + '</option>' +
             '</select>' +
             '</div>' +
             // Static IP fields (hidden by default)
             '<div id="wan-edit-static-fields" style="' + sStaticFields + '">' +
             '<div style="' + sRow + '">' +
-            '<span style="' + sLabel + '">IP Address</span>' +
+            '<span style="' + sLabel + '">' + _('IP Address') + '</span>' +
             '<input type="text" id="wan-edit-ip" style="' + sInput + '" placeholder="192.168.1.100" value="' + escapeHtml(iface.ip || '') + '">' +
             '</div>' +
             '<div style="' + sRow + '">' +
-            '<span style="' + sLabel + '">Subnet</span>' +
+            '<span style="' + sLabel + '">' + _('Subnet') + '</span>' +
             '<select id="wan-edit-netmask" style="' + sSelect + '">' +
             '<option value="255.255.255.0"' + (iface.subnet == 24 ? ' selected' : '') + '>/24</option>' +
             '<option value="255.255.255.128"' + (iface.subnet == 25 ? ' selected' : '') + '>/25</option>' +
@@ -2550,15 +2550,15 @@ var JamMonitor = (function() {
             '</select>' +
             '</div>' +
             '<div style="' + sRow + '">' +
-            '<span style="' + sLabel + '">Gateway</span>' +
+            '<span style="' + sLabel + '">' + _('Gateway') + '</span>' +
             '<input type="text" id="wan-edit-gateway" style="' + sInput + '" placeholder="192.168.1.1" value="' + escapeHtml(iface.gateway || '') + '">' +
             '</div>' +
             '</div>' +
             // DNS row
             '<div style="' + sRow + '">' +
             '<span style="' + sLabel + '">DNS</span>' +
-            '<label style="' + sRadioLabel + '"><input type="radio" name="wan-edit-dns-mode" style="' + sRadio + '" value="auto"' + (peerdns ? ' checked' : '') + ' onchange="JamMonitor.toggleDnsFields()">Auto</label>' +
-            '<label style="' + sRadioLabel + '"><input type="radio" name="wan-edit-dns-mode" style="' + sRadio + '" value="custom"' + (!peerdns ? ' checked' : '') + ' onchange="JamMonitor.toggleDnsFields()">Custom</label>' +
+            '<label style="' + sRadioLabel + '"><input type="radio" name="wan-edit-dns-mode" style="' + sRadio + '" value="auto"' + (peerdns ? ' checked' : '') + ' onchange="JamMonitor.toggleDnsFields()">' + _('Auto') + '</label>' +
+            '<label style="' + sRadioLabel + '"><input type="radio" name="wan-edit-dns-mode" style="' + sRadio + '" value="custom"' + (!peerdns ? ' checked' : '') + ' onchange="JamMonitor.toggleDnsFields()">' + _('Custom') + '</label>' +
             '</div>' +
             '<div id="wan-edit-dns-fields" style="' + sDnsFields + '">' +
             '<div style="' + sRow + '">' +
@@ -2579,8 +2579,8 @@ var JamMonitor = (function() {
             // Actions
             '<div id="wan-edit-error" style="' + sError + '"></div>' +
             '<div style="' + sActions + '">' +
-            '<button id="wan-edit-save-btn" style="' + sBtnSave + '" onclick="JamMonitor.saveWanSettings(' + idx + ')">Save and Apply</button>' +
-            '<button style="' + sBtnCancel + '" onclick="JamMonitor.closeWanEditPopup()">Cancel</button>' +
+            '<button id="wan-edit-save-btn" style="' + sBtnSave + '" onclick="JamMonitor.saveWanSettings(' + idx + ')">' + _('Save and Apply') + '</button>' +
+            '<button style="' + sBtnCancel + '" onclick="JamMonitor.closeWanEditPopup()">' + _('Cancel') + '</button>' +
             '</div>' +
             '</div>';
 
@@ -2645,14 +2645,14 @@ var JamMonitor = (function() {
 
             // Validate IP
             if (!data.ipaddr || !data.ipaddr.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                errorDiv.textContent = 'Please enter a valid IP address';
+                errorDiv.textContent = _('Please enter a valid IP address');
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
                 saveBtn.textContent = _('Save and Apply');
                 return;
             }
             if (!data.gateway || !data.gateway.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                errorDiv.textContent = 'Please enter a valid gateway address';
+                errorDiv.textContent = _('Please enter a valid gateway address');
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
                 saveBtn.textContent = _('Save and Apply');
@@ -2667,7 +2667,7 @@ var JamMonitor = (function() {
             data.dns = [];
             if (dns1) {
                 if (!dns1.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                    errorDiv.textContent = 'Please enter a valid DNS server 1 address';
+                    errorDiv.textContent = _('Please enter a valid DNS server 1 address');
                     errorDiv.style.display = 'block';
                     saveBtn.disabled = false;
                     saveBtn.textContent = _('Save and Apply');
@@ -2677,7 +2677,7 @@ var JamMonitor = (function() {
             }
             if (dns2) {
                 if (!dns2.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                    errorDiv.textContent = 'Please enter a valid DNS server 2 address';
+                    errorDiv.textContent = _('Please enter a valid DNS server 2 address');
                     errorDiv.style.display = 'block';
                     saveBtn.disabled = false;
                     saveBtn.textContent = _('Save and Apply');
@@ -2692,7 +2692,7 @@ var JamMonitor = (function() {
         if (mtu) {
             var mtuNum = parseInt(mtu, 10);
             if (isNaN(mtuNum) || mtuNum < 576 || mtuNum > 9000) {
-                errorDiv.textContent = 'MTU must be between 576 and 9000';
+                errorDiv.textContent = _('MTU must be between 576 and 9000');
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
                 saveBtn.textContent = _('Save and Apply');
@@ -3133,11 +3133,11 @@ var JamMonitor = (function() {
                     // Build status badge
                     var statusBadge = '';
                     if (iface.multipath === 'master') {
-                        statusBadge = '<span style="color:#3498db;font-size:9px;margin-left:5px;">(primary)</span>';
+                        statusBadge = '<span style="color:#3498db;font-size:9px;margin-left:5px;">' + _('(primary)') + '</span>';
                     } else if (iface.is_up && iface.ip) {
-                        statusBadge = '<span style="color:#27ae60;font-size:9px;margin-left:5px;">(connected)</span>';
+                        statusBadge = '<span style="color:#27ae60;font-size:9px;margin-left:5px;">' + _('(connected)') + '</span>';
                     } else if (iface.is_up) {
-                        statusBadge = '<span style="color:#f39c12;font-size:9px;margin-left:5px;">(up)</span>';
+                        statusBadge = '<span style="color:#f39c12;font-size:9px;margin-left:5px;">' + _('(up)') + '</span>';
                     }
 
                     html += '<label class="wan-iface-item' + checkedClass + '" data-tooltip="' + iface.name + '">';
@@ -3539,15 +3539,15 @@ var JamMonitor = (function() {
         ctx.fillStyle = '#2c3e50';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText('Download', w - 115, 18);
+        ctx.fillText(_('Download'), w - 115, 18);
         ctx.fillStyle = palette.upload;
         ctx.fillRect(w - 130, 24, 12, 12);
         ctx.fillStyle = '#2c3e50';
-        ctx.fillText('Upload', w - 115, 34);
+        ctx.fillText(_('Upload'), w - 115, 34);
         ctx.fillStyle = palette.total;
         ctx.fillRect(w - 130, 40, 12, 12);
         ctx.fillStyle = '#2c3e50';
-        ctx.fillText('Total', w - 115, 50);
+        ctx.fillText(_('Total'), w - 115, 50);
 
         // Store state for hover redraw
         var chartState = {
@@ -3582,9 +3582,9 @@ var JamMonitor = (function() {
 
                 // Show tooltip
                 var html = '<div class="chart-tooltip-title">' + nearest.label + '</div>';
-                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.download + '">▼ Download</span><span class="chart-tooltip-value">' + formatValue(nearest.rx) + '</span></div>';
-                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.upload + '">▲ Upload</span><span class="chart-tooltip-value">' + formatValue(nearest.tx) + '</span></div>';
-                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.total + '">● Total</span><span class="chart-tooltip-value">' + formatValue(nearest.total) + '</span></div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.download + '">▼ ' + _('Download') + '</span><span class="chart-tooltip-value">' + formatValue(nearest.rx) + '</span></div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.upload + '">▲ ' + _('Upload') + '</span><span class="chart-tooltip-value">' + formatValue(nearest.tx) + '</span></div>';
+                html += '<div class="chart-tooltip-row"><span class="chart-tooltip-label" style="color:' + palette.total + '">● ' + _('Total') + '</span><span class="chart-tooltip-value">' + formatValue(nearest.total) + '</span></div>';
                 showChartTooltip(canvasRect.left + nearest.x, e.clientY, html);
             } else {
                 redrawLineChart(chartState, null);
@@ -3718,15 +3718,15 @@ var JamMonitor = (function() {
         ctx.fillStyle = '#2c3e50';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText('Download', w - 115, 18);
+        ctx.fillText(_('Download'), w - 115, 18);
         ctx.fillStyle = palette.upload;
         ctx.fillRect(w - 130, 24, 12, 12);
         ctx.fillStyle = '#2c3e50';
-        ctx.fillText('Upload', w - 115, 34);
+        ctx.fillText(_('Upload'), w - 115, 34);
         ctx.fillStyle = palette.total;
         ctx.fillRect(w - 130, 40, 12, 12);
         ctx.fillStyle = '#2c3e50';
-        ctx.fillText('Total', w - 115, 50);
+        ctx.fillText(_('Total'), w - 115, 50);
     }
 
     // Realtime chart - uses Palette A with rate formatting
@@ -3784,7 +3784,7 @@ var JamMonitor = (function() {
         }
 
         function formatSeparatorLabel() {
-            return 'Yesterday';
+            return _('Yesterday');
         }
 
         var html = '';
@@ -4333,14 +4333,14 @@ var JamMonitor = (function() {
         var popup = document.createElement('div');
         popup.className = 'jm-popup bw-bucket-popup';
         popup.innerHTML = '<div class="jm-popup-header">' +
-            '<span>Device Breakdown - ' + escapeHtml(labelText) + '</span>' +
+            '<span>' + _('Device Breakdown') + ' - ' + escapeHtml(labelText) + '</span>' +
             '<button class="jm-popup-close" onclick="JamMonitor.closeBwBucketPopup()">&times;</button>' +
             '</div>' +
             '<div class="jm-popup-body">' +
-            '<div class="bw-bucket-loading"><div class="chart-spinner"></div><div>Loading device data...</div></div>' +
+            '<div class="bw-bucket-loading"><div class="chart-spinner"></div><div>' + _('Loading device data...') + '</div></div>' +
             '</div>' +
             '<div class="jm-popup-footer">' +
-            '<button class="jm-btn" onclick="JamMonitor.closeBwBucketPopup()">Close</button>' +
+            '<button class="jm-btn" onclick="JamMonitor.closeBwBucketPopup()">' + _('Close') + '</button>' +
             '</div>';
 
         overlay.appendChild(popup);
@@ -4361,7 +4361,7 @@ var JamMonitor = (function() {
             var body = popup.querySelector('.jm-popup-body');
 
             if (!data || !data.ok || !data.devices || data.devices.length === 0) {
-                body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">No device data for this period.<br><small style="color:#bdc3c7;">Data collection started recently or no traffic recorded.</small></div>';
+                body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">' + _('No device data for this period.') + '<br><small style="color:#bdc3c7;">' + _('Data collection started recently or no traffic recorded.') + '</small></div>';
                 return;
             }
 
@@ -4428,12 +4428,12 @@ var JamMonitor = (function() {
 
                 // Column definitions
                 var columns = [
-                    { key: 'ip', label: 'IP Address', sortable: true },
-                    { key: 'mac', label: 'MAC Address', sortable: true },
-                    { key: 'type', label: 'Type', sortable: false },
-                    { key: 'rx', label: 'Download', sortable: true },
-                    { key: 'tx', label: 'Upload', sortable: true },
-                    { key: 'total', label: 'Total', sortable: true }
+                    { key: 'ip', label: _('IP Address'), sortable: true },
+                    { key: 'mac', label: _('MAC Address'), sortable: true },
+                    { key: 'type', label: _('Type'), sortable: false },
+                    { key: 'rx', label: _('Download'), sortable: true },
+                    { key: 'tx', label: _('Upload'), sortable: true },
+                    { key: 'total', label: _('Total'), sortable: true }
                 ];
 
                 columns.forEach(function(col) {

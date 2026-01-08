@@ -144,9 +144,13 @@ table.jm-table th { background: #2c3e50; color: #fff; font-weight: 600; font-siz
 table.jm-table tr:nth-child(even) { background: #f8f9fa; }
 table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 
+/* Compact rows for client list */
+#clients-table td { padding: 6px 10px; }
+#clients-table th { padding: 8px 10px; }
+
 /* Client name inline editing - no layout shift on hover, buttons at bottom on click */
 #clients-table td.client-name { cursor: pointer; position: relative; min-width: 140px; }
-#clients-table td.client-name .name-display { line-height: 28px; }
+#clients-table td.client-name .name-display { line-height: 22px; }
 #clients-table td.client-name .name-edit { position: absolute; top: 7px; left: 8px; right: 8px; display: none; z-index: 10; }
 #clients-table td.client-name:hover .name-edit, #clients-table td.client-name.editing .name-edit { display: block; }
 #clients-table td.client-name:hover .name-display, #clients-table td.client-name.editing .name-display { visibility: hidden; }
@@ -247,7 +251,7 @@ table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 #clients-table th.sortable:hover { background: #d4e6f1; }
 .client-group-header { background: #f8f9fa; cursor: pointer; font-weight: 600; }
 .client-group-header:hover { background: #d4e6f1; }
-.client-group-header td { padding: 10px 12px !important; }
+.client-group-header td { padding: 8px 10px !important; }
 .client-group-arrow { display: inline-block; transition: transform 0.2s; margin-right: 8px; font-size: 10px; }
 .client-group-arrow.collapsed { transform: rotate(-90deg); }
 .client-group-count { color: #7f8c8d; font-weight: normal; margin-left: 8px; font-size: 12px; }

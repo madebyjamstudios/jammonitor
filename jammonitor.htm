@@ -901,25 +901,25 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
             <div class="jm-health-tiles">
                 <div class="jm-health-tile">
                     <div class="tile-value" id="wifi-aps-online"><span class="tile-spinner"></span></div>
-                    <div class="tile-label">APs Online</div>
+                    <div class="tile-label" data-i18n="APs Online">APs Online</div>
                 </div>
                 <div class="jm-health-tile">
                     <div class="tile-value" id="wifi-total-clients"><span class="tile-spinner"></span></div>
-                    <div class="tile-label">Total Clients</div>
+                    <div class="tile-label" data-i18n="Total Clients">Total Clients</div>
                 </div>
                 <div class="jm-health-tile">
                     <div class="tile-value" id="wifi-worst-ap"><span class="tile-spinner"></span></div>
-                    <div class="tile-label">Worst AP</div>
+                    <div class="tile-label" data-i18n="Worst AP">Worst AP</div>
                 </div>
                 <div class="jm-health-tile">
                     <div class="tile-value" id="wifi-local-radios"><span class="tile-spinner"></span></div>
-                    <div class="tile-label">Local Radios</div>
+                    <div class="tile-label" data-i18n="Local Radios">Local Radios</div>
                 </div>
             </div>
 
             <!-- Local Radios Section -->
             <div class="jm-block" style="margin-bottom:20px;">
-                <div class="jm-block-header"><span class="jm-block-title">Local Radios</span></div>
+                <div class="jm-block-header"><span class="jm-block-title" data-i18n="Local Radios">Local Radios</span></div>
                 <div id="wifi-local-grid" class="jm-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin:0;">
                     <p style="color:#999;margin:15px 0;text-align:center;"><span class="content-spinner"></span>Loading radios...</p>
                 </div>
@@ -946,7 +946,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 </div>
                 <div id="remote-aps-content" class="jm-collapsible-content" style="display:none;">
                     <div style="padding:15px;background:#fff;border-radius:0 0 8px 8px;border:1px solid #eee;border-top:none;">
-                        <p style="font-size:11px;color:#7f8c8d;margin:0 0 10px;">Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.</p>
+                        <p style="font-size:11px;color:#7f8c8d;margin:0 0 10px;" data-i18n="Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.">Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.</p>
                         <div id="remote-ap-editor" style="display:none;margin-bottom:15px;">
                             <p style="font-size:10px;color:#95a5a6;margin:0 0 8px;font-family:monospace;">Example: [{"name":"AP-Living","ip":"10.201.10.50"},{"name":"AP-Garage","ip":"10.201.10.51"}]</p>
                             <textarea id="ap-list-editor" style="width:100%;height:60px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #ddd;border-radius:4px;" placeholder='[{"name":"AP-Living","ip":"10.0.0.2"},{"name":"AP-Office","ip":"10.0.0.3"}]'></textarea>

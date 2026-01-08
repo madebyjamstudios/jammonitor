@@ -321,7 +321,8 @@ window.JM_I18N = {
     "No clients connected": "No clients connected",
     "Remote APs": "Remote APs",
     "No remote APs configured": "No remote APs configured",
-    "Click \"+ Add APs\" below to monitor external access points": "Click \"+ Add APs\" below to monitor external access points"
+    "Click \"+ Add APs\" below to monitor external access points": "Click \"+ Add APs\" below to monitor external access points",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track."
 },
 
 // Placeholder for other languages - will be added
@@ -638,7 +639,8 @@ window.JM_I18N = {
     "No clients connected": "无客户端连接",
     "Remote APs": "远程接入点",
     "No remote APs configured": "未配置远程接入点",
-    "Click \"+ Add APs\" below to monitor external access points": "点击下方 \"+ 添加接入点\" 以监控外部接入点"
+    "Click \"+ Add APs\" below to monitor external access points": "点击下方 \"+ 添加接入点\" 以监控外部接入点",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "通过 IP 地址监控网络上的外部接入点。添加连接到您的 LAN/交换机的接入点以进行跟踪。"
 },
 "es": {
     // Navigation
@@ -953,7 +955,8 @@ window.JM_I18N = {
     "No clients connected": "Sin clientes conectados",
     "Remote APs": "APs Remotos",
     "No remote APs configured": "No hay APs remotos configurados",
-    "Click \"+ Add APs\" below to monitor external access points": "Haga clic en \"+ Agregar APs\" abajo para monitorear puntos de acceso externos"
+    "Click \"+ Add APs\" below to monitor external access points": "Haga clic en \"+ Agregar APs\" abajo para monitorear puntos de acceso externos",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitoree puntos de acceso externos en su red por direccion IP. Agregue APs conectados a su LAN/switch que desee rastrear."
 },
 "de": {
     // Navigation
@@ -1268,7 +1271,8 @@ window.JM_I18N = {
     "No clients connected": "Keine Clients verbunden",
     "Remote APs": "Remote-APs",
     "No remote APs configured": "Keine Remote-APs konfiguriert",
-    "Click \"+ Add APs\" below to monitor external access points": "Klicken Sie unten auf \"+ APs hinzufügen\", um externe Access Points zu überwachen"
+    "Click \"+ Add APs\" below to monitor external access points": "Klicken Sie unten auf \"+ APs hinzufügen\", um externe Access Points zu überwachen",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Uberwachen Sie externe Access Points in Ihrem Netzwerk per IP-Adresse. Fugen Sie APs hinzu, die mit Ihrem LAN/Switch verbunden sind und die Sie verfolgen mochten."
 },
 "fr": {
     // Navigation
@@ -1583,7 +1587,8 @@ window.JM_I18N = {
     "No clients connected": "Aucun client connecte",
     "Remote APs": "APs distants",
     "No remote APs configured": "Aucun AP distant configure",
-    "Click \"+ Add APs\" below to monitor external access points": "Cliquez sur \"+ Ajouter des APs\" ci-dessous pour surveiller les points d'acces externes"
+    "Click \"+ Add APs\" below to monitor external access points": "Cliquez sur \"+ Ajouter des APs\" ci-dessous pour surveiller les points d'acces externes",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Surveillez les points d'acces externes sur votre reseau par adresse IP. Ajoutez les APs connectes a votre LAN/switch que vous souhaitez suivre."
 },
 "pt-br": {
     "General": "Geral", "Overview": "Visão Geral", "WAN Policy": "Política WAN", "Interfaces": "Interfaces",
@@ -1784,7 +1789,8 @@ window.JM_I18N = {
     "No clients connected": "Nenhum cliente conectado",
     "Remote APs": "APs Remotos",
     "No remote APs configured": "Nenhum AP remoto configurado",
-    "Click \"+ Add APs\" below to monitor external access points": "Clique em \"+ Adicionar APs\" abaixo para monitorar pontos de acesso externos"
+    "Click \"+ Add APs\" below to monitor external access points": "Clique em \"+ Adicionar APs\" abaixo para monitorar pontos de acesso externos",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitore pontos de acesso externos em sua rede por endereco IP. Adicione APs conectados ao seu LAN/switch que voce deseja rastrear."
 },
 "ru": {
     "General": "Общее", "Overview": "Обзор", "WAN Policy": "Политика WAN", "Interfaces": "Интерфейсы",
@@ -1985,7 +1991,8 @@ window.JM_I18N = {
     "No clients connected": "Нет подключенных клиентов",
     "Remote APs": "Удаленные точки доступа",
     "No remote APs configured": "Удаленные точки доступа не настроены",
-    "Click \"+ Add APs\" below to monitor external access points": "Нажмите \"+ Добавить ТД\" ниже для мониторинга внешних точек доступа"
+    "Click \"+ Add APs\" below to monitor external access points": "Нажмите \"+ Добавить ТД\" ниже для мониторинга внешних точек доступа",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Мониторинг внешних точек доступа в вашей сети по IP-адресу. Добавьте точки доступа, подключенные к вашей LAN/коммутатору, которые вы хотите отслеживать."
 },
 "ja": {
     "General": "一般", "Overview": "概要", "WAN Policy": "WANポリシー", "Interfaces": "インターフェース",
@@ -2186,7 +2193,8 @@ window.JM_I18N = {
     "No clients connected": "接続中のクライアントなし",
     "Remote APs": "リモートAP",
     "No remote APs configured": "リモートAPが設定されていません",
-    "Click \"+ Add APs\" below to monitor external access points": "下の「+ APを追加」をクリックして外部アクセスポイントを監視"
+    "Click \"+ Add APs\" below to monitor external access points": "下の「+ APを追加」をクリックして外部アクセスポイントを監視",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "IPアドレスでネットワーク上の外部アクセスポイントを監視します。追跡したいLAN/スイッチに接続されているAPを追加してください。"
 },
 "it": {
     "General": "Generale", "Overview": "Panoramica", "WAN Policy": "Politica WAN", "Interfaces": "Interfacce",
@@ -2319,7 +2327,8 @@ window.JM_I18N = {
     "No clients connected": "Nessun client connesso",
     "Remote APs": "AP Remoti",
     "No remote APs configured": "Nessun AP remoto configurato",
-    "Click \"+ Add APs\" below to monitor external access points": "Clicca su \"+ Aggiungi AP\" sotto per monitorare access point esterni"
+    "Click \"+ Add APs\" below to monitor external access points": "Clicca su \"+ Aggiungi AP\" sotto per monitorare access point esterni",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitora gli access point esterni sulla tua rete tramite indirizzo IP. Aggiungi gli AP collegati alla tua LAN/switch che vuoi tracciare."
 },
 "nl": {
     "General": "Algemeen", "Overview": "Overzicht", "WAN Policy": "WAN Beleid", "Interfaces": "Interfaces",
@@ -2439,7 +2448,8 @@ window.JM_I18N = {
     "No clients connected": "Geen clients verbonden",
     "Remote APs": "Remote APs",
     "No remote APs configured": "Geen remote APs geconfigureerd",
-    "Click \"+ Add APs\" below to monitor external access points": "Klik hieronder op \"+ APs toevoegen\" om externe toegangspunten te monitoren"
+    "Click \"+ Add APs\" below to monitor external access points": "Klik hieronder op \"+ APs toevoegen\" om externe toegangspunten te monitoren",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitor externe toegangspunten op uw netwerk via IP-adres. Voeg APs toe die verbonden zijn met uw LAN/switch die u wilt volgen."
 },
 "pl": {
     "General": "Ogólne", "Overview": "Przegląd", "WAN Policy": "Polityka WAN", "Interfaces": "Interfejsy",
@@ -2543,7 +2553,8 @@ window.JM_I18N = {
     "No clients connected": "Brak połączonych klientów",
     "Remote APs": "Zdalne AP",
     "No remote APs configured": "Nie skonfigurowano zdalnych AP",
-    "Click \"+ Add APs\" below to monitor external access points": "Kliknij \"+ Dodaj AP\" poniżej, aby monitorować zewnętrzne punkty dostępu"
+    "Click \"+ Add APs\" below to monitor external access points": "Kliknij \"+ Dodaj AP\" poniżej, aby monitorować zewnętrzne punkty dostępu",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitoruj zewnętrzne punkty dostępu w sieci według adresu IP. Dodaj punkty dostępu podłączone do LAN/przełącznika, które chcesz śledzić."
 },
 "ko": {
     "General": "일반", "Overview": "개요", "WAN Policy": "WAN 정책", "Interfaces": "인터페이스",
@@ -2641,7 +2652,8 @@ window.JM_I18N = {
     "No clients connected": "연결된 클라이언트 없음",
     "Remote APs": "원격 AP",
     "No remote APs configured": "원격 AP가 구성되지 않음",
-    "Click \"+ Add APs\" below to monitor external access points": "아래의 \"+ AP 추가\"를 클릭하여 외부 액세스 포인트 모니터링"
+    "Click \"+ Add APs\" below to monitor external access points": "아래의 \"+ AP 추가\"를 클릭하여 외부 액세스 포인트 모니터링",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "IP 주소로 네트워크의 외부 액세스 포인트를 모니터링합니다. 추적하려는 LAN/스위치에 연결된 AP를 추가하세요."
 },
 "tr": {
     "General": "Genel", "Overview": "Genel Bakış", "WAN Policy": "WAN Politikası", "Interfaces": "Arayüzler",
@@ -2739,7 +2751,8 @@ window.JM_I18N = {
     "No clients connected": "Bagli istemci yok",
     "Remote APs": "Uzak AP'ler",
     "No remote APs configured": "Uzak AP yapilandirilmadi",
-    "Click \"+ Add APs\" below to monitor external access points": "Harici erisim noktalarini izlemek icin asagidaki \"+ AP Ekle\"ye tiklayin"
+    "Click \"+ Add APs\" below to monitor external access points": "Harici erisim noktalarini izlemek icin asagidaki \"+ AP Ekle\"ye tiklayin",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "IP adresine gore aginizdaki harici erisim noktalarini izleyin. Izlemek istediginiz LAN/switch'e bagli AP'leri ekleyin."
 },
 "vi": {
     "General": "Chung", "Overview": "Tổng quan", "WAN Policy": "Chính sách WAN", "Interfaces": "Giao diện",
@@ -2837,7 +2850,8 @@ window.JM_I18N = {
     "No clients connected": "Khong co thiet bi ket noi",
     "Remote APs": "AP tu xa",
     "No remote APs configured": "Chua cau hinh AP tu xa",
-    "Click \"+ Add APs\" below to monitor external access points": "Nhan \"+ Them AP\" ben duoi de giam sat diem truy cap ben ngoai"
+    "Click \"+ Add APs\" below to monitor external access points": "Nhan \"+ Them AP\" ben duoi de giam sat diem truy cap ben ngoai",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Giam sat cac diem truy cap ben ngoai tren mang cua ban theo dia chi IP. Them cac AP ket noi voi LAN/switch ma ban muon theo doi."
 },
 "ar": {
     "General": "عام", "Overview": "نظرة عامة", "WAN Policy": "سياسة WAN", "Interfaces": "الواجهات",
@@ -2936,7 +2950,8 @@ window.JM_I18N = {
     "No clients connected": "لا يوجد عملاء متصلين",
     "Remote APs": "نقاط وصول بعيدة",
     "No remote APs configured": "لم يتم تكوين نقاط وصول بعيدة",
-    "Click \"+ Add APs\" below to monitor external access points": "انقر على \"+ إضافة نقاط وصول\" أدناه لمراقبة نقاط الوصول الخارجية"
+    "Click \"+ Add APs\" below to monitor external access points": "انقر على \"+ إضافة نقاط وصول\" أدناه لمراقبة نقاط الوصول الخارجية",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "راقب نقاط الوصول الخارجية على شبكتك عبر عنوان IP. أضف نقاط الوصول المتصلة بشبكة LAN/المحول التي تريد تتبعها."
 },
 "th": {
     "General": "ทั่วไป", "Overview": "ภาพรวม", "WAN Policy": "นโยบาย WAN", "Interfaces": "อินเทอร์เฟซ",
@@ -3034,7 +3049,8 @@ window.JM_I18N = {
     "No clients connected": "ไม่มีไคลเอนต์เชื่อมต่อ",
     "Remote APs": "AP ระยะไกล",
     "No remote APs configured": "ไม่ได้กำหนดค่า AP ระยะไกล",
-    "Click \"+ Add APs\" below to monitor external access points": "คลิก \"+ เพิ่ม AP\" ด้านล่างเพื่อตรวจสอบจุดเชื่อมต่อภายนอก"
+    "Click \"+ Add APs\" below to monitor external access points": "คลิก \"+ เพิ่ม AP\" ด้านล่างเพื่อตรวจสอบจุดเชื่อมต่อภายนอก",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "ตรวจสอบจุดเชื่อมต่อภายนอกบนเครือข่ายของคุณด้วยที่อยู่ IP เพิ่ม AP ที่เชื่อมต่อกับ LAN/สวิตช์ที่คุณต้องการติดตาม"
 },
 "id": {
     "General": "Umum", "Overview": "Ikhtisar", "WAN Policy": "Kebijakan WAN", "Interfaces": "Antarmuka",
@@ -3132,7 +3148,8 @@ window.JM_I18N = {
     "No clients connected": "Tidak ada klien terhubung",
     "Remote APs": "AP Jarak Jauh",
     "No remote APs configured": "Tidak ada AP jarak jauh dikonfigurasi",
-    "Click \"+ Add APs\" below to monitor external access points": "Klik \"+ Tambah AP\" di bawah untuk memantau titik akses eksternal"
+    "Click \"+ Add APs\" below to monitor external access points": "Klik \"+ Tambah AP\" di bawah untuk memantau titik akses eksternal",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Pantau titik akses eksternal di jaringan Anda berdasarkan alamat IP. Tambahkan AP yang terhubung ke LAN/switch yang ingin Anda lacak."
 },
 "cs": {
     "General": "Obecné", "Overview": "Přehled", "WAN Policy": "Politika WAN", "Interfaces": "Rozhraní",
@@ -3230,7 +3247,8 @@ window.JM_I18N = {
     "No clients connected": "Zadni klienti nejsou pripojeni",
     "Remote APs": "Vzdalene pristupove body",
     "No remote APs configured": "Zadne vzdalene pristupove body nejsou nakonfigurovany",
-    "Click \"+ Add APs\" below to monitor external access points": "Kliknete na \"+ Pridat AP\" nize pro sledovani externich pristupovych bodu"
+    "Click \"+ Add APs\" below to monitor external access points": "Kliknete na \"+ Pridat AP\" nize pro sledovani externich pristupovych bodu",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Sledujte externi pristupove body ve vasi siti podle IP adresy. Pridejte pristupove body pripojene k vasi LAN/switchi, ktere chcete sledovat."
 },
 "sv": {
     "General": "Allmänt", "Overview": "Översikt", "WAN Policy": "WAN-policy", "Interfaces": "Gränssnitt",
@@ -3328,7 +3346,8 @@ window.JM_I18N = {
     "No clients connected": "Inga klienter anslutna",
     "Remote APs": "Fjärr-AP:er",
     "No remote APs configured": "Inga fjärr-AP:er konfigurerade",
-    "Click \"+ Add APs\" below to monitor external access points": "Klicka på \"+ Lägg till AP\" nedan för att övervaka externa åtkomstpunkter"
+    "Click \"+ Add APs\" below to monitor external access points": "Klicka på \"+ Lägg till AP\" nedan för att övervaka externa åtkomstpunkter",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Overvaka externa atkomstpunkter pa ditt natverk via IP-adress. Lagg till AP:er anslutna till din LAN/switch som du vill spara."
 },
 "el": {
     "General": "Γενικά", "Overview": "Επισκόπηση", "WAN Policy": "Πολιτική WAN", "Interfaces": "Διεπαφές",
@@ -3426,7 +3445,8 @@ window.JM_I18N = {
     "No clients connected": "Δεν υπάρχουν συνδεδεμένοι πελάτες",
     "Remote APs": "Απομακρυσμένα AP",
     "No remote APs configured": "Δεν έχουν ρυθμιστεί απομακρυσμένα AP",
-    "Click \"+ Add APs\" below to monitor external access points": "Κάντε κλικ στο \"+ Προσθήκη AP\" παρακάτω για παρακολούθηση εξωτερικών σημείων πρόσβασης"
+    "Click \"+ Add APs\" below to monitor external access points": "Κάντε κλικ στο \"+ Προσθήκη AP\" παρακάτω για παρακολούθηση εξωτερικών σημείων πρόσβασης",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Παρακολουθήστε εξωτερικά σημεία πρόσβασης στο δίκτυό σας μέσω διεύθυνσης IP. Προσθέστε AP συνδεδεμένα στο LAN/switch σας που θέλετε να παρακολουθείτε."
 },
 "uk": {
     "General": "Загальне", "Overview": "Огляд", "WAN Policy": "Політика WAN", "Interfaces": "Інтерфейси",
@@ -3524,7 +3544,8 @@ window.JM_I18N = {
     "No clients connected": "Немає підключених клієнтів",
     "Remote APs": "Віддалені точки доступу",
     "No remote APs configured": "Віддалені точки доступу не налаштовано",
-    "Click \"+ Add APs\" below to monitor external access points": "Натисніть \"+ Додати ТД\" нижче для моніторингу зовнішніх точок доступу"
+    "Click \"+ Add APs\" below to monitor external access points": "Натисніть \"+ Додати ТД\" нижче для моніторингу зовнішніх точок доступу",
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Моніторинг зовнішніх точок доступу у вашій мережі за IP-адресою. Додайте точки доступу, підключені до вашої LAN/комутатора, які ви хочете відстежувати."
 }
 
 };

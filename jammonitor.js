@@ -4131,8 +4131,8 @@ var JamMonitor = (function() {
                 html += '<span class="wan-ip">' + escapeHtml(ipDisplay) + '</span>';
                 html += '<span class="wan-name" title="' + escapeHtml(wan.name) + '">' + escapeHtml(wan.name) + '</span>';
                 html += '<div class="test-buttons">';
-                html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; Download</button>';
-                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + disabled + '>&#8593; Upload</button>';
+                html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; ' + _('Download') + '</button>';
+                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + disabled + '>&#8593; ' + _('Upload') + '</button>';
                 html += '</div>';
                 html += '<div class="status" id="speedtest-status-' + escapeHtml(wan.name) + '">';
                 html += '<div>&#8595; ' + downStatus + '</div>';

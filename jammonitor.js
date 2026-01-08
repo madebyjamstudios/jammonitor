@@ -1,3 +1,52 @@
+// ===== INTERNATIONALIZATION (i18n) =====
+var JM_TRANSLATIONS = {};
+var JM_LANG = 'en';
+
+// Translation function - call as _('string') or _('string with %s', value)
+function _(key) {
+    var translated = JM_TRANSLATIONS[key] || key;
+    if (arguments.length > 1) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        var i = 0;
+        translated = translated.replace(/%[sd]/g, function() {
+            return args[i++] !== undefined ? args[i - 1] : '';
+        });
+    }
+    return translated;
+}
+
+// Detect language from localStorage override or browser setting
+function detectLanguage() {
+    var saved = localStorage.getItem('jammonitor_lang');
+    if (saved && saved !== 'auto') return saved;
+
+    var browserLang = navigator.language || navigator.userLanguage || 'en';
+    var langMap = {
+        'zh': 'zh-cn', 'zh-CN': 'zh-cn', 'zh-TW': 'zh-cn',
+        'es': 'es', 'de': 'de', 'fr': 'fr', 'pt': 'pt-br',
+        'pt-BR': 'pt-br', 'ru': 'ru', 'ja': 'ja', 'it': 'it',
+        'nl': 'nl', 'pl': 'pl', 'ko': 'ko', 'tr': 'tr',
+        'vi': 'vi', 'ar': 'ar', 'th': 'th', 'id': 'id',
+        'cs': 'cs', 'sv': 'sv', 'el': 'el', 'uk': 'uk'
+    };
+    var shortLang = browserLang.split('-')[0];
+    return langMap[browserLang] || langMap[shortLang] || 'en';
+}
+
+// Load translations for detected/selected language
+function loadTranslations() {
+    var lang = detectLanguage();
+    if (window.JM_I18N && window.JM_I18N[lang]) {
+        JM_TRANSLATIONS = window.JM_I18N[lang];
+        JM_LANG = lang;
+    }
+}
+
+// Initialize i18n on script load
+loadTranslations();
+
+// ===== END i18n =====
+
 var JamMonitor = (function() {
     'use strict';
 
@@ -77,6 +126,19 @@ var JamMonitor = (function() {
 
     function init() {
         loadState();
+
+        // Language selector handler
+        var langSelect = document.getElementById('jm-lang-select');
+        if (langSelect) {
+            // Set current value from localStorage
+            var savedLang = localStorage.getItem('jammonitor_lang') || 'auto';
+            langSelect.value = savedLang;
+            // Handle change
+            langSelect.addEventListener('change', function() {
+                localStorage.setItem('jammonitor_lang', this.value);
+                location.reload();
+            });
+        }
 
         document.querySelectorAll('.jm-sidebar-item').forEach(function(item) {
             item.addEventListener('click', function() {
@@ -366,7 +428,7 @@ var JamMonitor = (function() {
                     sel.innerHTML = '';
                     var optAll = document.createElement('option');
                     optAll.value = 'all';
-                    optAll.textContent = 'All WANs';
+                    optAll.textContent = _('All WANs');
                     sel.appendChild(optAll);
                     wanIfaces.forEach(function(iface) {
                         if (iface) {
@@ -429,7 +491,7 @@ var JamMonitor = (function() {
             // Uptime
             if (data.uptime_secs) {
                 document.getElementById('uptime-val').textContent = formatUptime(data.uptime_secs);
-                document.getElementById('uptime-tooltip').textContent = 'Since boot';
+                document.getElementById('uptime-tooltip').textContent = _('Since boot');
             }
 
             // Date
@@ -452,7 +514,7 @@ var JamMonitor = (function() {
             // Check tunnel (tun0) first
             if (data.tunnel && data.tunnel.exists && data.tunnel.ip) {
                 vpnInd.className = 'jm-indicator green';
-                vpnStatus.textContent = 'Connected';
+                vpnStatus.textContent = _('Connected');
                 vpnIface.textContent = 'tun0';
                 vpnIp.textContent = data.tunnel.ip;
 
@@ -466,26 +528,26 @@ var JamMonitor = (function() {
                     var m = Math.floor((secs % 3600) / 60);
                     vpnHandshake.textContent = h + 'h ' + m + 'm';
                 } else {
-                    vpnHandshake.textContent = 'Connected';
+                    vpnHandshake.textContent = _('Connected');
                 }
             } else if (data.wireguard && data.wireguard.active) {
                 // WireGuard fallback
                 vpnInd.className = 'jm-indicator green';
-                vpnStatus.textContent = 'Connected (WG)';
+                vpnStatus.textContent = _('Connected (WG)');
                 vpnIface.textContent = data.wireguard.interface || 'wg0';
                 vpnIp.textContent = data.wireguard.ip || 'N/A';
                 if (data.wireguard.endpoint) {
                     vpnEndpoint.textContent = data.wireguard.endpoint;
                 }
-                vpnHandshake.textContent = 'Connected';
+                vpnHandshake.textContent = _('Connected');
             } else {
                 // No VPN connection
                 vpnInd.className = 'jm-indicator red';
-                vpnStatus.textContent = 'Disconnected';
-                vpnIface.textContent = 'N/A';
-                vpnIp.textContent = 'N/A';
-                vpnEndpoint.textContent = data.vps && data.vps.ip ? data.vps.ip : 'N/A';
-                vpnHandshake.textContent = 'N/A';
+                vpnStatus.textContent = _('Disconnected');
+                vpnIface.textContent = _('N/A');
+                vpnIp.textContent = _('N/A');
+                vpnEndpoint.textContent = data.vps && data.vps.ip ? data.vps.ip : _('N/A');
+                vpnHandshake.textContent = _('N/A');
             }
         });
 
@@ -503,7 +565,7 @@ var JamMonitor = (function() {
                 if (devMatch) document.getElementById('wan-iface').textContent = devMatch[1];
             } else {
                 document.getElementById('wan-indicator').className = 'jm-indicator red';
-                document.getElementById('wan-status').textContent = 'No Route';
+                document.getElementById('wan-status').textContent = _('No Route');
                 document.getElementById('wan-ip').textContent = '--';
                 document.getElementById('wan-gw').textContent = '--';
                 document.getElementById('wan-iface').textContent = '--';
@@ -515,10 +577,10 @@ var JamMonitor = (function() {
             if (data && data.success && data.ip) {
                 document.getElementById('wan-ip').textContent = data.ip;
                 document.getElementById('wan-indicator').className = 'jm-indicator green';
-                document.getElementById('wan-status').textContent = 'Connected';
+                document.getElementById('wan-status').textContent = _('Connected');
             } else {
                 document.getElementById('wan-indicator').className = 'jm-indicator red';
-                document.getElementById('wan-status').textContent = 'No Internet';
+                document.getElementById('wan-status').textContent = _('No Internet');
                 document.getElementById('wan-ip').textContent = '--';
             }
         });
@@ -621,7 +683,7 @@ var JamMonitor = (function() {
 
         // Show red immediately if 2+ consecutive failures (faster response)
         if (recentFailures >= 2) {
-            valEl.textContent = 'timeout';
+            valEl.textContent = _('timeout');
             indEl.className = 'jm-indicator red';
         } else if (history.length > 0 && history[history.length - 1].value === null) {
             // Single failure - show yellow warning
@@ -633,7 +695,7 @@ var JamMonitor = (function() {
             else if (latest < 150 && loss < 20) indEl.className = 'jm-indicator yellow';
             else indEl.className = 'jm-indicator red';
         } else {
-            valEl.textContent = 'timeout';
+            valEl.textContent = _('timeout');
             indEl.className = 'jm-indicator red';
         }
 
@@ -1284,7 +1346,7 @@ var JamMonitor = (function() {
         var saveBtn = document.getElementById('client-save-btn');
         if (saveBtn) {
             saveBtn.disabled = true;
-            saveBtn.textContent = 'Saving...';
+            saveBtn.textContent = _('Saving...');
         }
 
         var promises = [];
@@ -1319,13 +1381,13 @@ var JamMonitor = (function() {
             updatePendingUI();
             updateClients();
             if (saveBtn) {
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
             }
         }).catch(function(err) {
             alert('Failed to save changes: ' + err);
             if (saveBtn) {
                 saveBtn.disabled = false;
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
             }
         });
     }
@@ -1798,7 +1860,7 @@ var JamMonitor = (function() {
                             worstApEl.textContent = sorted[0].name + ' (' + sorted[0].utilization + '%)';
                             worstApEl.style.color = sorted[0].utilization > 70 ? '#e74c3c' : '#f39c12';
                         } else {
-                            worstApEl.textContent = 'All Good';
+                            worstApEl.textContent = _('All Good');
                             worstApEl.style.color = '#27ae60';
                         }
                     }
@@ -2090,16 +2152,16 @@ var JamMonitor = (function() {
         if (bypassToggling) {
             banner.classList.add('active');
             icon.innerHTML = '&#8987;'; // Hourglass
-            title.textContent = 'Switching...';
-            desc.textContent = 'Stopping/starting VPN services (~10 seconds)...';
+            title.textContent = _('Switching...');
+            desc.textContent = _('Stopping/starting VPN services (~10 seconds)...');
             return;
         }
 
         if (bypassEnabled) {
             banner.classList.add('active');
             icon.innerHTML = '&#9888;'; // Warning sign
-            title.textContent = 'VPS BYPASS ACTIVE';
-            desc.textContent = 'VPS connection is OFF - traffic going direct via ' + (bypassActiveWan || 'WAN');
+            title.textContent = _('VPS BYPASS ACTIVE');
+            desc.textContent = _('VPS connection is OFF - traffic going direct via %s', bypassActiveWan || 'WAN');
             hint.style.display = 'none';
             container.classList.add('wan-policy-disabled');
 
@@ -2114,8 +2176,8 @@ var JamMonitor = (function() {
         } else {
             banner.classList.remove('active');
             icon.innerHTML = '&#128274;'; // Lock icon
-            title.textContent = 'VPS Bypass: OFF';
-            desc.textContent = 'Traffic routed through VPS via MPTCP bonding';
+            title.textContent = _('VPS Bypass: OFF');
+            desc.textContent = _('Traffic routed through VPS via MPTCP bonding');
             hint.style.display = 'block';
             container.classList.remove('wan-policy-disabled');
 
@@ -2486,7 +2548,7 @@ var JamMonitor = (function() {
         var saveBtn = document.getElementById('wan-edit-save-btn');
         var errorDiv = document.getElementById('wan-edit-error');
         saveBtn.disabled = true;
-        saveBtn.textContent = 'Applying...';
+        saveBtn.textContent = _('Applying...');
         errorDiv.style.display = 'none';
 
         // Collect form data
@@ -2512,14 +2574,14 @@ var JamMonitor = (function() {
                 errorDiv.textContent = 'Please enter a valid IP address';
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
                 return;
             }
             if (!data.gateway || !data.gateway.match(/^\d+\.\d+\.\d+\.\d+$/)) {
                 errorDiv.textContent = 'Please enter a valid gateway address';
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
                 return;
             }
         }
@@ -2534,7 +2596,7 @@ var JamMonitor = (function() {
                     errorDiv.textContent = 'Please enter a valid DNS server 1 address';
                     errorDiv.style.display = 'block';
                     saveBtn.disabled = false;
-                    saveBtn.textContent = 'Save and Apply';
+                    saveBtn.textContent = _('Save and Apply');
                     return;
                 }
                 data.dns.push(dns1);
@@ -2544,7 +2606,7 @@ var JamMonitor = (function() {
                     errorDiv.textContent = 'Please enter a valid DNS server 2 address';
                     errorDiv.style.display = 'block';
                     saveBtn.disabled = false;
-                    saveBtn.textContent = 'Save and Apply';
+                    saveBtn.textContent = _('Save and Apply');
                     return;
                 }
                 data.dns.push(dns2);
@@ -2559,7 +2621,7 @@ var JamMonitor = (function() {
                 errorDiv.textContent = 'MTU must be between 576 and 9000';
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
                 return;
             }
             data.mtu = mtuNum;
@@ -2606,7 +2668,7 @@ var JamMonitor = (function() {
                 errorDiv.textContent = result.error || 'Failed to save settings';
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
-                saveBtn.textContent = 'Save and Apply';
+                saveBtn.textContent = _('Save and Apply');
             }
         })
         .catch(function(e) {
@@ -2614,7 +2676,7 @@ var JamMonitor = (function() {
             errorDiv.textContent = 'Network error: ' + e.message;
             errorDiv.style.display = 'block';
             saveBtn.disabled = false;
-            saveBtn.textContent = 'Save and Apply';
+            saveBtn.textContent = _('Save and Apply');
         });
     }
 
@@ -2895,7 +2957,7 @@ var JamMonitor = (function() {
         }
 
         saveBtn.disabled = true;
-        saveBtn.textContent = 'Applying...';
+        saveBtn.textContent = _('Applying...');
         errorDiv.style.display = 'none';
         successDiv.style.display = 'none';
 
@@ -2932,7 +2994,7 @@ var JamMonitor = (function() {
         ])
         .then(function(results) {
             saveBtn.disabled = false;
-            saveBtn.textContent = 'Save and Apply';
+            saveBtn.textContent = _('Save and Apply');
             var ifaceResult = results[0];
             var advResult = results[1];
             if (ifaceResult.success && advResult.success) {
@@ -2948,7 +3010,7 @@ var JamMonitor = (function() {
         .catch(function(e) {
             console.error('Save advanced settings error:', e);
             saveBtn.disabled = false;
-            saveBtn.textContent = 'Save and Apply';
+            saveBtn.textContent = _('Save and Apply');
             errorDiv.textContent = 'Network error: ' + e.message;
             errorDiv.style.display = 'block';
         });
@@ -3753,7 +3815,7 @@ var JamMonitor = (function() {
         var btn = document.getElementById('diag-btn');
         var status = document.getElementById('diag-status');
         btn.disabled = true;
-        btn.textContent = 'Generating...';
+        btn.textContent = _('Generating...');
         status.innerHTML = '<span style="color:#7f8c8d;">Creating diagnostic bundle...</span>';
         window.location.href = window.location.pathname + '/diag';
         setTimeout(function() {

@@ -11,7 +11,7 @@
 
 /* Layout */
 .jm-container { display: flex; min-height: 700px; }
-.jm-sidebar { width: 180px; background: #2c3e50; padding: 10px 0; flex-shrink: 0; transition: width 0.2s; }
+.jm-sidebar { width: 180px; background: #2c3e50; padding: 10px 0; flex-shrink: 0; transition: width 0.2s; display: flex; flex-direction: column; }
 .jm-sidebar-section { padding: 12px 15px 6px; font-weight: bold; color: #7f8c8d; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .jm-sidebar-item { padding: 10px 20px; cursor: pointer; color: #ecf0f1; border-left: 3px solid transparent; transition: all 0.15s; white-space: nowrap; overflow: hidden; }
 .jm-sidebar-item:hover { background: #34495e; }
@@ -88,6 +88,37 @@
     .jm-health-tile { padding: 8px; }
     .jm-health-tile .tile-value { font-size: 18px; }
     .jm-health-tile .tile-label { font-size: 8px; }
+}
+
+/* Language selector */
+.jm-lang-selector {
+    margin-top: auto;
+    padding: 12px 16px;
+    border-top: 1px solid #3d5a73;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.jm-lang-selector label { font-size: 16px; cursor: pointer; }
+.jm-lang-selector select {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #3d5a73;
+    background: #1a252f;
+    color: #ecf0f1;
+    font-size: 12px;
+    cursor: pointer;
+}
+.jm-lang-selector select:hover { border-color: #5a7a8a; }
+.jm-lang-selector select:focus { outline: none; border-color: #3498db; }
+@media (max-width: 900px) {
+    .jm-lang-selector { padding: 8px; justify-content: center; }
+    .jm-lang-selector select { display: none; }
+}
+@media (max-width: 450px) {
+    .jm-lang-selector { padding: 6px; }
+    .jm-lang-selector label { font-size: 14px; }
 }
 
 /* Collapsible sections */
@@ -512,6 +543,33 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <div class="jm-sidebar-item" data-view="bw-hourly">Hourly</div>
         <div class="jm-sidebar-item" data-view="bw-daily">Daily</div>
         <div class="jm-sidebar-item" data-view="bw-monthly">Monthly</div>
+        <div class="jm-lang-selector">
+            <label for="jm-lang-select" title="Language">&#127760;</label>
+            <select id="jm-lang-select">
+                <option value="auto">Auto</option>
+                <option value="en">English</option>
+                <option value="zh-cn">中文</option>
+                <option value="es">Español</option>
+                <option value="de">Deutsch</option>
+                <option value="fr">Français</option>
+                <option value="pt-br">Português</option>
+                <option value="ru">Русский</option>
+                <option value="ja">日本語</option>
+                <option value="it">Italiano</option>
+                <option value="nl">Nederlands</option>
+                <option value="pl">Polski</option>
+                <option value="ko">한국어</option>
+                <option value="tr">Türkçe</option>
+                <option value="vi">Tiếng Việt</option>
+                <option value="ar">العربية</option>
+                <option value="th">ไทย</option>
+                <option value="id">Indonesia</option>
+                <option value="cs">Čeština</option>
+                <option value="sv">Svenska</option>
+                <option value="el">Ελληνικά</option>
+                <option value="uk">Українська</option>
+            </select>
+        </div>
     </div>
 
     <div class="jm-main">
@@ -1128,6 +1186,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
     </div>
 </div>
 
-<script src="<%=resource%>/jammonitor.js?v=123"></script>
+<script src="<%=resource%>/jammonitor-i18n.js?v=1"></script>
+<script src="<%=resource%>/jammonitor.js?v=124"></script>
 
 <%+footer%>

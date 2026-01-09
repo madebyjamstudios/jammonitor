@@ -3924,7 +3924,7 @@ var JamMonitor = (function() {
         if (!estimateDiv) return;
 
         if (!storageStatusCache || !storageStatusCache.entry_count) {
-            estimateDiv.innerHTML = '<span style="color:#7f8c8d;">Calculating...</span>';
+            estimateDiv.innerHTML = '<span style="color:#7f8c8d;">' + _('Calculating...') + '</span>';
             return;
         }
 
@@ -3960,10 +3960,10 @@ var JamMonitor = (function() {
         var rangeNote = '';
         if (maxEntries > data.entry_count) {
             var availableHours = Math.round(data.entry_count / 60);
-            rangeNote = ' <span style="color:#f39c12;">(only ' + availableHours + 'h available)</span>';
+            rangeNote = ' <span style="color:#f39c12;">(' + _('only') + ' ' + availableHours + 'h ' + _('available') + ')</span>';
         }
 
-        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' entries &middot; ~' + sizeStr + rangeNote;
+        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' ' + _('entries') + ' &middot; ~' + sizeStr + rangeNote;
     }
 
     // Load storage status for diagnostics page
@@ -4001,7 +4001,7 @@ var JamMonitor = (function() {
 
             // Entry count (total in database)
             if (data.entry_count) {
-                parts.push(data.entry_count.toLocaleString() + ' total entries');
+                parts.push(data.entry_count.toLocaleString() + ' ' + _('total entries'));
             }
 
             // Data range (oldest to newest)
@@ -4013,18 +4013,18 @@ var JamMonitor = (function() {
 
             // Database size
             if (data.database_size) {
-                parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB on disk');
+                parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB ' + _('on disk'));
             }
 
             // Collector status
             var collectorHtml = data.collector_running
-                ? '<span style="color:#27ae60;">Collector running</span>'
-                : '<span style="color:#e74c3c;">Collector stopped</span>';
+                ? '<span style="color:#27ae60;">' + _('Collector running') + '</span>'
+                : '<span style="color:#e74c3c;">' + _('Collector stopped') + '</span>';
             parts.push(collectorHtml);
 
             // Anomalies warning (last 24h)
             if (data.recent_anomalies > 0) {
-                parts.push('<span style="color:#f39c12;">' + data.recent_anomalies + ' anomalies (24h)</span>');
+                parts.push('<span style="color:#f39c12;">' + data.recent_anomalies + ' ' + _('anomalies (24h)') + '</span>');
             }
 
             infoDiv.innerHTML = parts.join(' &middot; ');
@@ -4125,7 +4125,7 @@ var JamMonitor = (function() {
 
                 var statusStyle = wan.up ? '' : 'opacity:0.5;';
                 var disabled = wan.up ? '' : 'disabled';
-                var ipDisplay = wan.ip || (wan.up ? 'Getting IP...' : 'No IP');
+                var ipDisplay = wan.ip || (wan.up ? _('Getting IP...') : _('No IP'));
 
                 html += '<div class="speedtest-row" style="' + statusStyle + '" data-wan="' + escapeHtml(wan.name) + '">';
                 html += '<span class="wan-ip">' + escapeHtml(ipDisplay) + '</span>';
@@ -4165,7 +4165,7 @@ var JamMonitor = (function() {
         var arrow = direction === 'download' ? '&#8595;' : '&#8593;';
         var originalStatus = statusEl ? statusEl.innerHTML : '';
         if (statusEl) {
-            statusEl.innerHTML = '<div>' + arrow + ' <span class="speedtest-spinner"></span> Testing...</div>';
+            statusEl.innerHTML = '<div>' + arrow + ' <span class="speedtest-spinner"></span> ' + _('Testing...') + '</div>';
         }
 
         // Calculate timeout based on size

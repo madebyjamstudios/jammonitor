@@ -1171,10 +1171,11 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                             <span style="color:#bdc3c7;margin:0 4px;">|</span>
                             <span style="color:#7f8c8d;font-size:13px;" data-i18n="Server:">Server:</span>
                             <select id="speedtest-server" onchange="JamMonitor.setSpeedTestServer(this.value)" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;background:#fff;">
-                                <option value="cloudflare" data-i18n="Cloudflare (Global)">Cloudflare (Global)</option>
-                                <option value="china" data-i18n="China (CacheFly)">China (CacheFly)</option>
-                                <option value="global" data-i18n="Global Fallback">Global Fallback</option>
+                                <option value="cloudflare">Cloudflare ↑↓</option>
+                                <option value="china">China ↓</option>
+                                <option value="global">Global ↓</option>
                             </select>
+                            <span style="color:#95a5a6;font-size:11px;" title="↑↓ = upload & download, ↓ = download only">(?)</span>
                         </div>
                     </div>
 

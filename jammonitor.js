@@ -4492,11 +4492,15 @@ var JamMonitor = (function() {
         var key = ifname + '_' + direction;
         delete speedTestRunning[key];
 
-        // Re-enable buttons
+        // Re-enable buttons (but keep upload disabled for non-Cloudflare servers)
         var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
         if (row) {
             row.querySelectorAll('.test-btn').forEach(function(btn) {
-                btn.disabled = false;
+                if (btn.classList.contains('upload') && speedTestServer !== 'cloudflare') {
+                    btn.disabled = true;
+                } else {
+                    btn.disabled = false;
+                }
             });
         }
 
@@ -4539,7 +4543,11 @@ var JamMonitor = (function() {
         var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
         if (row) {
             row.querySelectorAll('.test-btn').forEach(function(btn) {
-                btn.disabled = false;
+                if (btn.classList.contains('upload') && speedTestServer !== 'cloudflare') {
+                    btn.disabled = true;
+                } else {
+                    btn.disabled = false;
+                }
             });
         }
         var statusEl = document.getElementById('speedtest-status-' + ifname);

@@ -98,6 +98,8 @@ window.JM_I18N = {
     "None": "None",
     "Enabled": "Enabled",
     "No interfaces found": "No interfaces found",
+    "Connected Clients": "Connected Clients",
+    "Loading clients...": "Loading clients...",
 
     // Overview section labels
     "VPN / Tunnel": "VPN / Tunnel",
@@ -3158,7 +3160,9 @@ window.JM_I18N = {
     "None": "Yok",
     "Enabled": "Etkin",
     "No interfaces found": "Arayüz bulunamadı",
-    "Total": "Toplam"
+    "Total": "Toplam",
+    "Connected Clients": "Bağlı İstemciler",
+    "Loading clients...": "İstemciler yükleniyor..."
 },
 "vi": {
     "General": "Chung", "Overview": "Tổng quan", "WAN Policy": "Chính sách WAN", "Interfaces": "Giao diện",
@@ -3374,7 +3378,9 @@ window.JM_I18N = {
     "None": "Không có",
     "Enabled": "Đã bật",
     "No interfaces found": "Không tìm thấy giao diện",
-    "Total": "Tổng"
+    "Total": "Tổng",
+    "Connected Clients": "Thiết bị đã kết nối",
+    "Loading clients...": "Đang tải thiết bị..."
 },
 "ar": {
     "General": "عام", "Overview": "نظرة عامة", "WAN Policy": "سياسة WAN", "Interfaces": "الواجهات",
@@ -3591,7 +3597,9 @@ window.JM_I18N = {
     "None": "لا يوجد",
     "Enabled": "مفعّل",
     "No interfaces found": "لم يتم العثور على واجهات",
-    "Total": "المجموع"
+    "Total": "المجموع",
+    "Connected Clients": "العملاء المتصلين",
+    "Loading clients...": "جاري تحميل العملاء..."
 },
 "th": {
     "General": "ทั่วไป", "Overview": "ภาพรวม", "WAN Policy": "นโยบาย WAN", "Interfaces": "อินเทอร์เฟซ",
@@ -3807,7 +3815,9 @@ window.JM_I18N = {
     "None": "ไม่มี",
     "Enabled": "เปิดใช้งาน",
     "No interfaces found": "ไม่พบอินเทอร์เฟซ",
-    "Total": "รวม"
+    "Total": "รวม",
+    "Connected Clients": "ไคลเอนต์ที่เชื่อมต่อ",
+    "Loading clients...": "กำลังโหลดไคลเอนต์..."
 },
 "id": {
     "General": "Umum", "Overview": "Ikhtisar", "WAN Policy": "Kebijakan WAN", "Interfaces": "Antarmuka",
@@ -4023,7 +4033,9 @@ window.JM_I18N = {
     "None": "Tidak ada",
     "Enabled": "Diaktifkan",
     "No interfaces found": "Antarmuka tidak ditemukan",
-    "Total": "Total"
+    "Total": "Total",
+    "Connected Clients": "Klien Terhubung",
+    "Loading clients...": "Memuat klien..."
 },
 "cs": {
     "General": "Obecné", "Overview": "Přehled", "WAN Policy": "Politika WAN", "Interfaces": "Rozhraní",
@@ -4239,7 +4251,9 @@ window.JM_I18N = {
     "None": "Žádné",
     "Enabled": "Povoleno",
     "No interfaces found": "Rozhraní nenalezena",
-    "Total": "Celkem"
+    "Total": "Celkem",
+    "Connected Clients": "Připojení klienti",
+    "Loading clients...": "Načítání klientů..."
 },
 "sv": {
     "General": "Allmänt", "Overview": "Översikt", "WAN Policy": "WAN-policy", "Interfaces": "Gränssnitt",
@@ -4455,7 +4469,9 @@ window.JM_I18N = {
     "None": "Ingen",
     "Enabled": "Aktiverad",
     "No interfaces found": "Inga gränssnitt hittades",
-    "Total": "Totalt"
+    "Total": "Totalt",
+    "Connected Clients": "Anslutna klienter",
+    "Loading clients...": "Laddar klienter..."
 },
 "el": {
     "General": "Γενικά", "Overview": "Επισκόπηση", "WAN Policy": "Πολιτική WAN", "Interfaces": "Διεπαφές",
@@ -4671,7 +4687,9 @@ window.JM_I18N = {
     "None": "Κανένα",
     "Enabled": "Ενεργοποιημένο",
     "No interfaces found": "Δεν βρέθηκαν διεπαφές",
-    "Total": "Σύνολο"
+    "Total": "Σύνολο",
+    "Connected Clients": "Συνδεδεμένοι πελάτες",
+    "Loading clients...": "Φόρτωση πελατών..."
 },
 "uk": {
     "General": "Загальне", "Overview": "Огляд", "WAN Policy": "Політика WAN", "Interfaces": "Інтерфейси",
@@ -4887,7 +4905,9 @@ window.JM_I18N = {
     "None": "Немає",
     "Enabled": "Увімкнено",
     "No interfaces found": "Інтерфейси не знайдено",
-    "Total": "Всього"
+    "Total": "Всього",
+    "Connected Clients": "Підключені клієнти",
+    "Loading clients...": "Завантаження клієнтів..."
 }
 
 };

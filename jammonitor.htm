@@ -1168,6 +1168,13 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                             <button class="jm-quick-range active" data-size="10" onclick="JamMonitor.setSpeedTestSize(10, this)" data-i18n="Quick 10MB">Quick 10MB</button>
                             <button class="jm-quick-range" data-size="25" onclick="JamMonitor.setSpeedTestSize(25, this)" data-i18n="Normal 25MB">Normal 25MB</button>
                             <button class="jm-quick-range" data-size="100" onclick="JamMonitor.setSpeedTestSize(100, this)" data-i18n="Heavy 100MB">Heavy 100MB</button>
+                            <span style="color:#bdc3c7;margin:0 4px;">|</span>
+                            <span style="color:#7f8c8d;font-size:13px;" data-i18n="Server:">Server:</span>
+                            <select id="speedtest-server" onchange="JamMonitor.setSpeedTestServer(this.value)" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;background:#fff;">
+                                <option value="cloudflare" data-i18n="Cloudflare (Global)">Cloudflare (Global)</option>
+                                <option value="china" data-i18n="China (Aliyun)">China (Aliyun)</option>
+                                <option value="global" data-i18n="Global Fallback">Global Fallback</option>
+                            </select>
                         </div>
                     </div>
 

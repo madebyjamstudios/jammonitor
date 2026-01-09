@@ -185,8 +185,20 @@ var JamMonitor = (function() {
 
     // Speed test state
     var speedTestSize = 10;          // Default 10MB
+    var speedTestServer = detectSpeedTestServer(); // Auto-detect based on region
     var speedTestResults = {};       // {wan1: {download: {...}, upload: {...}}, ...}
     var speedTestRunning = {};       // {wan1_download: job_id, ...}
+
+    // Auto-detect best speed test server based on browser language
+    function detectSpeedTestServer() {
+        var lang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+        // Chinese users - use China server (Cloudflare is blocked)
+        if (lang.startsWith('zh')) {
+            return 'china';
+        }
+        // Default to Cloudflare for everyone else
+        return 'cloudflare';
+    }
 
     // Check if interface is a WAN or VPN (for bandwidth tracking)
     // OMR naming: lan1/2/3/4 are WANs, sfp-lan is SFP WAN, tun0 is VPN tunnel
@@ -4311,9 +4323,30 @@ var JamMonitor = (function() {
         btn.classList.add('active');
     }
 
+    function setSpeedTestServer(server) {
+        speedTestServer = server;
+        // Update upload button state - disable if server doesn't support upload
+        var uploadBtns = document.querySelectorAll('.test-btn.upload');
+        uploadBtns.forEach(function(btn) {
+            if (server !== 'cloudflare') {
+                btn.disabled = true;
+                btn.title = _('Upload not supported for this server');
+            } else {
+                btn.disabled = false;
+                btn.title = '';
+            }
+        });
+    }
+
     function populateSpeedTestWans() {
         var container = document.getElementById('speedtest-wans');
         if (!container) return;
+
+        // Set server dropdown to auto-detected value
+        var serverDropdown = document.getElementById('speedtest-server');
+        if (serverDropdown) {
+            serverDropdown.value = speedTestServer;
+        }
 
         // Get WAN list from wan_policy endpoint
         api('wan_policy').then(function(data) {
@@ -4347,7 +4380,9 @@ var JamMonitor = (function() {
                 html += '<span class="wan-name" title="' + escapeHtml(wan.name) + '">' + escapeHtml(wan.name) + '</span>';
                 html += '<div class="test-buttons">';
                 html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; ' + _('Download') + '</button>';
-                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + disabled + '>&#8593; ' + _('Upload') + '</button>';
+                var uploadDisabled = disabled || (speedTestServer !== 'cloudflare' ? 'disabled' : '');
+                var uploadTitle = speedTestServer !== 'cloudflare' ? ' title="' + _('Upload not supported for this server') + '"' : '';
+                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + uploadDisabled + uploadTitle + '>&#8593; ' + _('Upload') + '</button>';
                 html += '</div>';
                 html += '<div class="status" id="speedtest-status-' + escapeHtml(wan.name) + '">';
                 html += '<div>&#8595; ' + downStatus + '</div>';
@@ -4390,7 +4425,8 @@ var JamMonitor = (function() {
         var url = window.location.pathname + '/speedtest_start?ifname=' + encodeURIComponent(ifname) +
             '&direction=' + encodeURIComponent(direction) +
             '&size_mb=' + speedTestSize +
-            '&timeout_s=' + timeout;
+            '&timeout_s=' + timeout +
+            '&server=' + encodeURIComponent(speedTestServer);
 
         fetch(url)
             .then(function(r) { return r.json(); })
@@ -4739,6 +4775,7 @@ var JamMonitor = (function() {
         saveClientChanges: saveClientChanges,
         resetClientChanges: resetClientChanges,
         setSpeedTestSize: setSpeedTestSize,
+        setSpeedTestServer: setSpeedTestServer,
         runSpeedTest: runSpeedTest,
         closeBwBucketPopup: closeBwBucketPopup,
         checkStorageSetup: checkStorageSetup,

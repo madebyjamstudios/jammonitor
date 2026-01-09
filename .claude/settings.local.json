@@ -26,7 +26,11 @@
       "Bash(ls:*)",
       "WebFetch(domain:forum.peplink.com)",
       "WebFetch(domain:openwrt.github.io)",
-      "Bash(node -c:*)"
+      "Bash(node -c:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue close 2 --comment \"$\\(cat <<''EOF''\nGreat news! Multilingual support has been implemented! 🎉\n\n**Features:**\n- **21 languages** supported: English, Chinese \\(简体中文\\), Spanish, German, French, Portuguese, Russian, Japanese, Italian, Dutch, Polish, Korean, Turkish, Vietnamese, Arabic, Thai, Indonesian, Czech, Swedish, Greek, and Ukrainian\n- **Auto-detection** - JamMonitor automatically detects your browser/system language and switches to it\n- **Full coverage** - All UI elements are translated including navigation, status messages, buttons, tooltips, and dynamic content\n\n**How it works:**\nThe system reads your browser''s language preference \\(`navigator.language`\\) and automatically displays the interface in your language. No manual configuration needed!\n\n**Implementation commits:**\n- Initial i18n system: 296c9cc\n- Phase 2 dynamic strings: d40e80d  \n- Latest translation fixes: f7ad9f6\n\nIf you find any missing or incorrect translations, feel free to open a new issue. Thanks for the suggestion!\nEOF\n\\)\")",
+      "Bash(gh issue close:*)"
     ]
   }
 }

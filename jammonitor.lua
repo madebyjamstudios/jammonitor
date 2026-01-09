@@ -3290,6 +3290,34 @@ function action_speedtest_start()
     local direction = http.formvalue("direction")
     local size_mb = tonumber(http.formvalue("size_mb")) or 10
     local timeout_s = tonumber(http.formvalue("timeout_s")) or 30
+    local server = http.formvalue("server") or "cloudflare"
+
+    -- Speed test server configurations
+    local servers = {
+        cloudflare = {
+            name = "Cloudflare (Global)",
+            download = "https://speed.cloudflare.com/__down?bytes=%d",
+            upload = "https://speed.cloudflare.com/__up"
+        },
+        china = {
+            name = "China (Aliyun)",
+            -- Alibaba Cloud CDN test files - accessible in China
+            download = "http://aliyun-oss-speedtest.oss-cn-hangzhou.aliyuncs.com/speedtest/%dMB.bin",
+            upload = nil  -- Upload not supported for this server
+        },
+        global = {
+            name = "Global Fallback",
+            -- Tele2 speed test - works globally including China
+            download = "http://speedtest.tele2.net/%dMB.zip",
+            upload = nil  -- Upload not supported for this server
+        }
+    }
+
+    -- Validate server choice
+    if not servers[server] then
+        server = "cloudflare"
+    end
+    local srv = servers[server]
 
     -- Validate interface name
     local safe_iface = validate_iface(ifname)
@@ -3338,18 +3366,29 @@ function action_speedtest_start()
     local job_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".json"
     local bytes = size_mb * 1024 * 1024
 
-    -- Build curl command
+    -- Build curl command based on server
     local curl_cmd
     if direction == "download" then
+        local url
+        if server == "cloudflare" then
+            url = string.format(srv.download, bytes)
+        else
+            -- Other servers use MB-based files
+            url = string.format(srv.download, size_mb)
+        end
         curl_cmd = string.format(
-            [[curl -4 -L --max-time %d --interface '%s' -o /dev/null -s -w '{"speed":%%{speed_download},"time":%%{time_total},"size":%%{size_download}}' 'https://speed.cloudflare.com/__down?bytes=%d']],
-            timeout_s, bind_arg, bytes
+            [[curl -4 -L --max-time %d --interface '%s' -o /dev/null -s -w '{"speed":%%{speed_download},"time":%%{time_total},"size":%%{size_download}}' '%s']],
+            timeout_s, bind_arg, url
         )
     else
-        -- Upload test using dd to generate data
+        -- Upload test - only supported on Cloudflare
+        if not srv.upload then
+            http.write(json.stringify({ok = false, error = "Upload test not supported for " .. srv.name .. ". Use Cloudflare server."}))
+            return
+        end
         curl_cmd = string.format(
-            [[dd if=/dev/zero bs=1M count=%d 2>/dev/null | curl -4 -L --max-time %d --interface '%s' -X POST -o /dev/null -s -w '{"speed":%%{speed_upload},"time":%%{time_total},"size":%%{size_upload}}' --data-binary @- 'https://speed.cloudflare.com/__up']],
-            size_mb, timeout_s, bind_arg
+            [[dd if=/dev/zero bs=1M count=%d 2>/dev/null | curl -4 -L --max-time %d --interface '%s' -X POST -o /dev/null -s -w '{"speed":%%{speed_upload},"time":%%{time_total},"size":%%{size_upload}}' --data-binary @- '%s']],
+            size_mb, timeout_s, bind_arg, srv.upload
         )
     end
 

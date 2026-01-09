@@ -25,7 +25,8 @@
       "Bash(curl:*)",
       "Bash(ls:*)",
       "WebFetch(domain:forum.peplink.com)",
-      "WebFetch(domain:openwrt.github.io)"
+      "WebFetch(domain:openwrt.github.io)",
+      "Bash(node -c:*)"
     ]
   }
 }

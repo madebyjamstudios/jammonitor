@@ -348,7 +348,18 @@ window.JM_I18N = {
     "Remote APs": "Remote APs",
     "No remote APs configured": "No remote APs configured",
     "Click \"+ Add APs\" below to monitor external access points": "Click \"+ Add APs\" below to monitor external access points",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.",
+
+    // Diagnostics dynamic strings
+    "total entries": "total entries",
+    "on disk": "on disk",
+    "Collector running": "Collector running",
+    "Collector stopped": "Collector stopped",
+    "Collecting data...": "Collecting data...",
+    "No data available": "No data available",
+    "No IP": "No IP",
+    "Getting IP...": "Getting IP...",
+    "Mbps": "Mbps"
 },
 
 // Placeholder for other languages - will be added
@@ -666,7 +677,18 @@ window.JM_I18N = {
     "Remote APs": "远程接入点",
     "No remote APs configured": "未配置远程接入点",
     "Click \"+ Add APs\" below to monitor external access points": "点击下方 \"+ 添加接入点\" 以监控外部接入点",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "通过 IP 地址监控网络上的外部接入点。添加连接到您的 LAN/交换机的接入点以进行跟踪。"
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "通过 IP 地址监控网络上的外部接入点。添加连接到您的 LAN/交换机的接入点以进行跟踪。",
+
+    // Diagnostics dynamic strings
+    "total entries": "条目总数",
+    "on disk": "磁盘占用",
+    "Collector running": "收集器运行中",
+    "Collector stopped": "收集器已停止",
+    "Collecting data...": "正在收集数据...",
+    "No data available": "无可用数据",
+    "No IP": "无 IP",
+    "Getting IP...": "获取 IP...",
+    "Mbps": "Mbps"
 },
 "es": {
     // Navigation
@@ -982,7 +1004,18 @@ window.JM_I18N = {
     "Remote APs": "APs Remotos",
     "No remote APs configured": "No hay APs remotos configurados",
     "Click \"+ Add APs\" below to monitor external access points": "Haga clic en \"+ Agregar APs\" abajo para monitorear puntos de acceso externos",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitoree puntos de acceso externos en su red por direccion IP. Agregue APs conectados a su LAN/switch que desee rastrear."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitoree puntos de acceso externos en su red por direccion IP. Agregue APs conectados a su LAN/switch que desee rastrear.",
+
+    // Diagnostics dynamic strings
+    "total entries": "entradas totales",
+    "on disk": "en disco",
+    "Collector running": "Recolector ejecutándose",
+    "Collector stopped": "Recolector detenido",
+    "Collecting data...": "Recopilando datos...",
+    "No data available": "Sin datos disponibles",
+    "No IP": "Sin IP",
+    "Getting IP...": "Obteniendo IP...",
+    "Mbps": "Mbps"
 },
 "de": {
     // Navigation
@@ -1298,7 +1331,18 @@ window.JM_I18N = {
     "Remote APs": "Remote-APs",
     "No remote APs configured": "Keine Remote-APs konfiguriert",
     "Click \"+ Add APs\" below to monitor external access points": "Klicken Sie unten auf \"+ APs hinzufügen\", um externe Access Points zu überwachen",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Uberwachen Sie externe Access Points in Ihrem Netzwerk per IP-Adresse. Fugen Sie APs hinzu, die mit Ihrem LAN/Switch verbunden sind und die Sie verfolgen mochten."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Uberwachen Sie externe Access Points in Ihrem Netzwerk per IP-Adresse. Fugen Sie APs hinzu, die mit Ihrem LAN/Switch verbunden sind und die Sie verfolgen mochten.",
+
+    // Diagnostics dynamic strings
+    "total entries": "Einträge gesamt",
+    "on disk": "auf Festplatte",
+    "Collector running": "Sammler läuft",
+    "Collector stopped": "Sammler gestoppt",
+    "Collecting data...": "Daten werden gesammelt...",
+    "No data available": "Keine Daten verfügbar",
+    "No IP": "Keine IP",
+    "Getting IP...": "IP wird abgerufen...",
+    "Mbps": "Mbps"
 },
 "fr": {
     // Navigation
@@ -1614,7 +1658,18 @@ window.JM_I18N = {
     "Remote APs": "APs distants",
     "No remote APs configured": "Aucun AP distant configure",
     "Click \"+ Add APs\" below to monitor external access points": "Cliquez sur \"+ Ajouter des APs\" ci-dessous pour surveiller les points d'acces externes",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Surveillez les points d'acces externes sur votre reseau par adresse IP. Ajoutez les APs connectes a votre LAN/switch que vous souhaitez suivre."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Surveillez les points d'acces externes sur votre reseau par adresse IP. Ajoutez les APs connectes a votre LAN/switch que vous souhaitez suivre.",
+
+    // Diagnostics dynamic strings
+    "total entries": "entrées au total",
+    "on disk": "sur disque",
+    "Collector running": "Collecteur en cours",
+    "Collector stopped": "Collecteur arrêté",
+    "Collecting data...": "Collecte des données...",
+    "No data available": "Aucune donnée disponible",
+    "No IP": "Pas d'IP",
+    "Getting IP...": "Obtention de l'IP...",
+    "Mbps": "Mbps"
 },
 "pt-br": {
     "General": "Geral", "Overview": "Visão Geral", "WAN Policy": "Política WAN", "Interfaces": "Interfaces",
@@ -1816,7 +1871,18 @@ window.JM_I18N = {
     "Remote APs": "APs Remotos",
     "No remote APs configured": "Nenhum AP remoto configurado",
     "Click \"+ Add APs\" below to monitor external access points": "Clique em \"+ Adicionar APs\" abaixo para monitorar pontos de acesso externos",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitore pontos de acesso externos em sua rede por endereco IP. Adicione APs conectados ao seu LAN/switch que voce deseja rastrear."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Monitore pontos de acesso externos em sua rede por endereco IP. Adicione APs conectados ao seu LAN/switch que voce deseja rastrear.",
+
+    // Diagnostics dynamic strings
+    "total entries": "entradas no total",
+    "on disk": "em disco",
+    "Collector running": "Coletor em execução",
+    "Collector stopped": "Coletor parado",
+    "Collecting data...": "Coletando dados...",
+    "No data available": "Sem dados disponíveis",
+    "No IP": "Sem IP",
+    "Getting IP...": "Obtendo IP...",
+    "Mbps": "Mbps"
 },
 "ru": {
     "General": "Общее", "Overview": "Обзор", "WAN Policy": "Политика WAN", "Interfaces": "Интерфейсы",
@@ -2018,7 +2084,18 @@ window.JM_I18N = {
     "Remote APs": "Удаленные точки доступа",
     "No remote APs configured": "Удаленные точки доступа не настроены",
     "Click \"+ Add APs\" below to monitor external access points": "Нажмите \"+ Добавить ТД\" ниже для мониторинга внешних точек доступа",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Мониторинг внешних точек доступа в вашей сети по IP-адресу. Добавьте точки доступа, подключенные к вашей LAN/коммутатору, которые вы хотите отслеживать."
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "Мониторинг внешних точек доступа в вашей сети по IP-адресу. Добавьте точки доступа, подключенные к вашей LAN/коммутатору, которые вы хотите отслеживать.",
+
+    // Diagnostics dynamic strings
+    "total entries": "записей всего",
+    "on disk": "на диске",
+    "Collector running": "Сборщик работает",
+    "Collector stopped": "Сборщик остановлен",
+    "Collecting data...": "Сбор данных...",
+    "No data available": "Нет данных",
+    "No IP": "Нет IP",
+    "Getting IP...": "Получение IP...",
+    "Mbps": "Мбит/с"
 },
 "ja": {
     "General": "一般", "Overview": "概要", "WAN Policy": "WANポリシー", "Interfaces": "インターフェース",
@@ -2220,7 +2297,18 @@ window.JM_I18N = {
     "Remote APs": "リモートAP",
     "No remote APs configured": "リモートAPが設定されていません",
     "Click \"+ Add APs\" below to monitor external access points": "下の「+ APを追加」をクリックして外部アクセスポイントを監視",
-    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "IPアドレスでネットワーク上の外部アクセスポイントを監視します。追跡したいLAN/スイッチに接続されているAPを追加してください。"
+    "Monitor external access points on your network by IP address. Add APs connected to your LAN/switch that you want to track.": "IPアドレスでネットワーク上の外部アクセスポイントを監視します。追跡したいLAN/スイッチに接続されているAPを追加してください。",
+
+    // Diagnostics dynamic strings
+    "total entries": "エントリー合計",
+    "on disk": "ディスク上",
+    "Collector running": "コレクター実行中",
+    "Collector stopped": "コレクター停止",
+    "Collecting data...": "データ収集中...",
+    "No data available": "データがありません",
+    "No IP": "IPなし",
+    "Getting IP...": "IP取得中...",
+    "Mbps": "Mbps"
 },
 "it": {
     "General": "Generale", "Overview": "Panoramica", "WAN Policy": "Politica WAN", "Interfaces": "Interfacce",
@@ -2420,7 +2508,18 @@ window.JM_I18N = {
     "Calculating...": "Calcolo...",
     "Testing...": "Test in corso...",
     "Switching...": "Cambio...",
-    "Updating...": "Aggiornamento..."
+    "Updating...": "Aggiornamento...",
+
+    // Diagnostics dynamic strings
+    "total entries": "voci totali",
+    "on disk": "su disco",
+    "Collector running": "Raccoglitore in esecuzione",
+    "Collector stopped": "Raccoglitore fermo",
+    "Collecting data...": "Raccolta dati...",
+    "No data available": "Nessun dato disponibile",
+    "No IP": "Nessun IP",
+    "Getting IP...": "Ottenimento IP...",
+    "Mbps": "Mbps"
 },
 "nl": {
     "General": "Algemeen", "Overview": "Overzicht", "WAN Policy": "WAN Beleid", "Interfaces": "Interfaces",
@@ -2607,7 +2706,18 @@ window.JM_I18N = {
     "Calculating...": "Berekenen...",
     "Testing...": "Testen...",
     "Switching...": "Wisselen...",
-    "Updating...": "Updaten..."
+    "Updating...": "Updaten...",
+
+    // Diagnostics dynamic strings
+    "total entries": "totaal items",
+    "on disk": "op schijf",
+    "Collector running": "Verzamelaar actief",
+    "Collector stopped": "Verzamelaar gestopt",
+    "Collecting data...": "Data verzamelen...",
+    "No data available": "Geen data beschikbaar",
+    "No IP": "Geen IP",
+    "Getting IP...": "IP ophalen...",
+    "Mbps": "Mbps"
 },
 "pl": {
     "General": "Ogólne", "Overview": "Przegląd", "WAN Policy": "Polityka WAN", "Interfaces": "Interfejsy",
@@ -2643,12 +2753,27 @@ window.JM_I18N = {
     "Emergency Snapshot": "Zrzut Awaryjny",
     "Something just broke? Grab this now.": "Coś właśnie się zepsuło? Pobierz teraz.",
     "What's inside:": "Zawartość:",
+    "Live system logs (last ~15-30 min)": "Dzienniki systemowe na żywo (ostatnie ~15-30 min)",
+    "Current routing & interface state": "Aktualny stan routingu i interfejsów",
+    "VPN tunnel status & MPTCP info": "Status tunelu VPN i info MPTCP",
+    "Active connections & errors": "Aktywne połączenia i błędy",
+    "Full system configuration": "Pełna konfiguracja systemu",
+    "Time-sensitive:": "Wrażliwe czasowo:",
+    "Ring buffer overwrites every 15-30 min. Download immediately after issues occur.": "Bufor cykliczny nadpisuje się co 15-30 min. Pobierz natychmiast po wystąpieniu problemów.",
     "Download Emergency Snapshot": "Pobierz Zrzut Awaryjny",
     "Historical Analysis": "Analiza Historyczna",
     "Investigate trends over days or weeks.": "Badaj trendy przez dni lub tygodnie.",
+    "Ping latency history (1.1.1.1, 8.8.8.8)": "Historia opóźnienia ping (1.1.1.1, 8.8.8.8)",
+    "Interface up/down events": "Zdarzenia włączenia/wyłączenia interfejsu",
+    "CPU load, RAM, temperature": "Obciążenie CPU, RAM, temperatura",
+    "Network state snapshots": "Migawki stanu sieci",
+    "Stored on USB - persists across reboots": "Przechowywane na USB - przetrwa restart",
+    "Long-term storage:": "Przechowywanie długoterminowe:",
+    "Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.": "Dane zbierane co minutę, przechowywane na USB. Użyj do analizy wzorców i debugowania historycznego.",
     "Time range:": "Zakres czasowy:",
     "24h": "24h", "3 days": "3 dni", "7 days": "7 dni", "14 days": "14 dni", "30 days": "30 dni",
     "WAN Speed Test": "Test Prędkości WAN",
+    "Test individual WAN throughput (not bonded)": "Testuj przepustowość pojedynczego WAN (nie powiązany)",
     "Test size:": "Rozmiar testu:",
     "Quick 10MB": "Szybki 10MB", "Normal 25MB": "Normalny 25MB", "Heavy 100MB": "Ciężki 100MB",
     "Loading WAN interfaces...": "Ładowanie interfejsów WAN...",
@@ -2778,7 +2903,18 @@ window.JM_I18N = {
     "Calculating...": "Obliczanie...",
     "Testing...": "Testowanie...",
     "Switching...": "Przełączanie...",
-    "Updating...": "Aktualizowanie..."
+    "Updating...": "Aktualizowanie...",
+
+    // Diagnostics dynamic strings
+    "total entries": "wszystkich wpisów",
+    "on disk": "na dysku",
+    "Collector running": "Kolektor działa",
+    "Collector stopped": "Kolektor zatrzymany",
+    "Collecting data...": "Zbieranie danych...",
+    "No data available": "Brak dostępnych danych",
+    "No IP": "Brak IP",
+    "Getting IP...": "Pobieranie IP...",
+    "Mbps": "Mbps"
 },
 "ko": {
     "General": "일반", "Overview": "개요", "WAN Policy": "WAN 정책", "Interfaces": "인터페이스",
@@ -2943,7 +3079,36 @@ window.JM_I18N = {
     "Calculating...": "계산 중...",
     "Testing...": "테스트 중...",
     "Switching...": "전환 중...",
-    "Updating...": "업데이트 중..."
+    "Updating...": "업데이트 중...",
+
+    // Diagnostics dynamic strings
+    "total entries": "총 항목",
+    "on disk": "디스크에",
+    "Collector running": "수집기 실행 중",
+    "Collector stopped": "수집기 중지됨",
+    "Collecting data...": "데이터 수집 중...",
+    "No data available": "사용 가능한 데이터 없음",
+    "No IP": "IP 없음",
+    "Getting IP...": "IP 가져오는 중...",
+    "Mbps": "Mbps",
+
+    // Missing detailed Diagnostics content
+    "What's inside:": "포함 내용:",
+    "Live system logs (last ~15-30 min)": "실시간 시스템 로그 (최근 ~15-30분)",
+    "Current routing & interface state": "현재 라우팅 및 인터페이스 상태",
+    "VPN tunnel status & MPTCP info": "VPN 터널 상태 및 MPTCP 정보",
+    "Active connections & errors": "활성 연결 및 오류",
+    "Full system configuration": "전체 시스템 구성",
+    "Time-sensitive:": "시간 제한:",
+    "Ring buffer overwrites every 15-30 min. Download immediately after issues occur.": "링 버퍼가 15-30분마다 덮어씁니다. 문제 발생 후 즉시 다운로드하세요.",
+    "Ping latency history (1.1.1.1, 8.8.8.8)": "Ping 지연 기록 (1.1.1.1, 8.8.8.8)",
+    "Interface up/down events": "인터페이스 활성화/비활성화 이벤트",
+    "CPU load, RAM, temperature": "CPU 부하, RAM, 온도",
+    "Network state snapshots": "네트워크 상태 스냅샷",
+    "Stored on USB - persists across reboots": "USB에 저장 - 재부팅 후에도 유지",
+    "Long-term storage:": "장기 저장:",
+    "Data collected every minute, stored on USB. Use for pattern analysis & historical debugging.": "매분 데이터 수집, USB에 저장. 패턴 분석 및 기록 디버깅에 사용.",
+    "Test individual WAN throughput (not bonded)": "개별 WAN 처리량 테스트 (본딩 안됨)"
 },
 "tr": {
     "General": "Genel", "Overview": "Genel Bakış", "WAN Policy": "WAN Politikası", "Interfaces": "Arayüzler",

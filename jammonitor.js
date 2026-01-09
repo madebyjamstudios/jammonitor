@@ -3947,6 +3947,9 @@ var JamMonitor = (function() {
         }
         var estimatedSize = availableEntries * avgBytesPerEntry;
 
+        // Add overhead for syslog (~500KB avg) and current_state (~50KB)
+        estimatedSize += 550000;
+
         // Format size
         var sizeStr;
         if (estimatedSize < 1024) {
@@ -3964,7 +3967,7 @@ var JamMonitor = (function() {
             rangeNote = ' <span style="color:#f39c12;">(' + _('only') + ' ' + availableHours + 'h ' + _('available') + ')</span>';
         }
 
-        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' ' + _('entries') + ' &middot; ~' + sizeStr + ' <span style="color:#95a5a6;">(+ syslog)</span>' + rangeNote;
+        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' ' + _('entries') + ' &middot; ~' + sizeStr + rangeNote;
     }
 
     // Load storage status for diagnostics page

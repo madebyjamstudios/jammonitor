@@ -1057,7 +1057,7 @@ var JamMonitor = (function() {
                 // Tunnels report 'UNKNOWN' state, not 'UP' - also consider having an IP as "up"
                 var hasAddr = addrMap[iface] || addrMap[displayName];
                 var isUp = state.indexOf('UP') >= 0 || state.indexOf('UNKNOWN') >= 0 || !!hasAddr;
-                var addr = hasAddr || 'None';
+                var addr = hasAddr || _('None');
                 var stats = devStats[iface] || devStats[displayName] || { rxBytes: 0, txBytes: 0 };
 
                 var ifaceData = {
@@ -1139,7 +1139,7 @@ var JamMonitor = (function() {
                         displayName: radioInfo.name,
                         type: 'Radio',
                         isUp: !radioInfo.disabled,
-                        addr: radioInfo.disabled ? 'Disabled' : 'Enabled',
+                        addr: radioInfo.disabled ? _('Disabled') : _('Enabled'),
                         stats: { rxBytes: 0, txBytes: 0 }
                     });
                 }
@@ -1159,16 +1159,17 @@ var JamMonitor = (function() {
                 s += '<div class="jm-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px;">';
                 ifaces.forEach(function(iface) {
                     var indicatorClass = iface.isUp ? 'green' : 'red';
-                    var stateText = iface.isUp ? 'UP' : 'DOWN';
+                    var stateText = iface.isUp ? _('UP') : _('DOWN');
+                    var typeText = _(iface.type);
                     s += '<div class="jm-block-compact">';
                     s += '<div class="jm-block-header" style="margin-bottom:4px;padding-bottom:4px;">';
                     s += '<span class="jm-indicator ' + indicatorClass + '" style="width:8px;height:8px;"></span>';
                     s += '<span class="jm-block-title" style="font-size:12px;">' + escapeHtml(iface.name) + '</span>';
-                    s += '<span class="jm-block-status" style="font-size:9px;">' + iface.type + '</span>';
+                    s += '<span class="jm-block-status" style="font-size:9px;">' + typeText + '</span>';
                     s += '</div>';
                     s += '<div class="jm-big-value">' + stateText + '</div>';
-                    s += '<div class="jm-row"><span class="jm-label">IP</span><span class="jm-value" style="font-size:10px;">' + escapeHtml((iface.addr || '').split(' ')[0] || 'None') + '</span></div>';
-                    s += '<div class="jm-row"><span class="jm-label">RX/TX</span><span class="jm-value">' + formatBytesCompact(iface.stats.rxBytes) + '/' + formatBytesCompact(iface.stats.txBytes) + '</span></div>';
+                    s += '<div class="jm-row"><span class="jm-label">' + _('IP') + '</span><span class="jm-value" style="font-size:10px;">' + escapeHtml((iface.addr || '').split(' ')[0] || _('None')) + '</span></div>';
+                    s += '<div class="jm-row"><span class="jm-label">' + _('RX/TX') + '</span><span class="jm-value">' + formatBytesCompact(iface.stats.rxBytes) + '/' + formatBytesCompact(iface.stats.txBytes) + '</span></div>';
                     s += '</div>';
                 });
                 s += '</div></div>';
@@ -1176,13 +1177,13 @@ var JamMonitor = (function() {
             }
 
             // Order: WAN, LAN/Bridge, VPN/Tunnel, WiFi, Physical/Other
-            html += renderSection('WAN Interfaces (DHCP)', wans, '#e74c3c');
-            html += renderSection('LAN / Bridge', lans.concat(bridges), '#27ae60');
-            html += renderSection('VPN / Tunnel', vpns, '#9b59b6');
-            html += renderSection('WiFi / Radios', radios, '#f39c12');
-            if (physical.length > 0) html += renderSection('Physical / Other', physical, '#7f8c8d');
+            html += renderSection(_('WAN Interfaces (DHCP)'), wans, '#e74c3c');
+            html += renderSection(_('LAN / Bridge'), lans.concat(bridges), '#27ae60');
+            html += renderSection(_('VPN / Tunnel'), vpns, '#9b59b6');
+            html += renderSection(_('WiFi / Radios'), radios, '#f39c12');
+            if (physical.length > 0) html += renderSection(_('Physical / Other'), physical, '#7f8c8d');
 
-            grid.innerHTML = html || '<p style="color:#999;">No interfaces found</p>';
+            grid.innerHTML = html || '<p style="color:#999;">' + _('No interfaces found') + '</p>';
 
             // Routing table
             var routes = results[2].trim().split('\n');

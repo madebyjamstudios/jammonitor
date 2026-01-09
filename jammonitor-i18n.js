@@ -78,6 +78,27 @@ window.JM_I18N = {
     "Band": "Band",
     "Status": "Status",
 
+    // Interface section strings
+    "WAN Interfaces (DHCP)": "WAN Interfaces (DHCP)",
+    "LAN / Bridge": "LAN / Bridge",
+    "WiFi / Radios": "WiFi / Radios",
+    "Physical / Other": "Physical / Other",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Radio",
+    "Bridge": "Bridge",
+    "Physical": "Physical",
+    "Other": "Other",
+    "UP": "UP",
+    "DOWN": "DOWN",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "None",
+    "Enabled": "Enabled",
+    "No interfaces found": "No interfaces found",
+
     // Overview section labels
     "VPN / Tunnel": "VPN / Tunnel",
     "Tunnel IP": "Tunnel IP",
@@ -3115,7 +3136,29 @@ window.JM_I18N = {
     "Source": "Kaynak",
     "anomalies (24h)": "anomali (24s)",
     "only": "yalnızca",
-    "available": "mevcut"
+    "available": "mevcut",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "WAN Arayüzleri (DHCP)",
+    "LAN / Bridge": "LAN / Köprü",
+    "WiFi / Radios": "WiFi / Radyolar",
+    "Physical / Other": "Fiziksel / Diğer",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Radyo",
+    "Bridge": "Köprü",
+    "Physical": "Fiziksel",
+    "Other": "Diğer",
+    "UP": "AÇIK",
+    "DOWN": "KAPALI",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Yok",
+    "Enabled": "Etkin",
+    "No interfaces found": "Arayüz bulunamadı",
+    "Total": "Toplam"
 },
 "vi": {
     "General": "Chung", "Overview": "Tổng quan", "WAN Policy": "Chính sách WAN", "Interfaces": "Giao diện",
@@ -3309,7 +3352,29 @@ window.JM_I18N = {
     "Source": "Nguồn",
     "anomalies (24h)": "bất thường (24g)",
     "only": "chỉ",
-    "available": "có sẵn"
+    "available": "có sẵn",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "Giao diện WAN (DHCP)",
+    "LAN / Bridge": "LAN / Cầu nối",
+    "WiFi / Radios": "WiFi / Sóng vô tuyến",
+    "Physical / Other": "Vật lý / Khác",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Sóng vô tuyến",
+    "Bridge": "Cầu nối",
+    "Physical": "Vật lý",
+    "Other": "Khác",
+    "UP": "BẬT",
+    "DOWN": "TẮT",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Không có",
+    "Enabled": "Đã bật",
+    "No interfaces found": "Không tìm thấy giao diện",
+    "Total": "Tổng"
 },
 "ar": {
     "General": "عام", "Overview": "نظرة عامة", "WAN Policy": "سياسة WAN", "Interfaces": "الواجهات",
@@ -3504,7 +3569,29 @@ window.JM_I18N = {
     "Source": "المصدر",
     "anomalies (24h)": "حالات شاذة (24س)",
     "only": "فقط",
-    "available": "متاح"
+    "available": "متاح",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "واجهات WAN (DHCP)",
+    "LAN / Bridge": "LAN / جسر",
+    "WiFi / Radios": "WiFi / الراديو",
+    "Physical / Other": "فيزيائي / أخرى",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "راديو",
+    "Bridge": "جسر",
+    "Physical": "فيزيائي",
+    "Other": "أخرى",
+    "UP": "مفعّل",
+    "DOWN": "معطّل",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "لا يوجد",
+    "Enabled": "مفعّل",
+    "No interfaces found": "لم يتم العثور على واجهات",
+    "Total": "المجموع"
 },
 "th": {
     "General": "ทั่วไป", "Overview": "ภาพรวม", "WAN Policy": "นโยบาย WAN", "Interfaces": "อินเทอร์เฟซ",
@@ -3698,7 +3785,29 @@ window.JM_I18N = {
     "Source": "แหล่งที่มา",
     "anomalies (24h)": "ความผิดปกติ (24ชม)",
     "only": "เท่านั้น",
-    "available": "มีอยู่"
+    "available": "มีอยู่",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "อินเทอร์เฟซ WAN (DHCP)",
+    "LAN / Bridge": "LAN / บริดจ์",
+    "WiFi / Radios": "WiFi / วิทยุ",
+    "Physical / Other": "ทางกายภาพ / อื่นๆ",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "วิทยุ",
+    "Bridge": "บริดจ์",
+    "Physical": "ทางกายภาพ",
+    "Other": "อื่นๆ",
+    "UP": "เปิด",
+    "DOWN": "ปิด",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "ไม่มี",
+    "Enabled": "เปิดใช้งาน",
+    "No interfaces found": "ไม่พบอินเทอร์เฟซ",
+    "Total": "รวม"
 },
 "id": {
     "General": "Umum", "Overview": "Ikhtisar", "WAN Policy": "Kebijakan WAN", "Interfaces": "Antarmuka",
@@ -3892,7 +4001,29 @@ window.JM_I18N = {
     "Source": "Sumber",
     "anomalies (24h)": "anomali (24j)",
     "only": "hanya",
-    "available": "tersedia"
+    "available": "tersedia",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "Antarmuka WAN (DHCP)",
+    "LAN / Bridge": "LAN / Bridge",
+    "WiFi / Radios": "WiFi / Radio",
+    "Physical / Other": "Fisik / Lainnya",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Radio",
+    "Bridge": "Bridge",
+    "Physical": "Fisik",
+    "Other": "Lainnya",
+    "UP": "AKTIF",
+    "DOWN": "MATI",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Tidak ada",
+    "Enabled": "Diaktifkan",
+    "No interfaces found": "Antarmuka tidak ditemukan",
+    "Total": "Total"
 },
 "cs": {
     "General": "Obecné", "Overview": "Přehled", "WAN Policy": "Politika WAN", "Interfaces": "Rozhraní",
@@ -4086,7 +4217,29 @@ window.JM_I18N = {
     "Source": "Zdroj",
     "anomalies (24h)": "anomálií (24h)",
     "only": "pouze",
-    "available": "dostupné"
+    "available": "dostupné",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "WAN Rozhraní (DHCP)",
+    "LAN / Bridge": "LAN / Most",
+    "WiFi / Radios": "WiFi / Rádia",
+    "Physical / Other": "Fyzické / Ostatní",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Rádio",
+    "Bridge": "Most",
+    "Physical": "Fyzické",
+    "Other": "Ostatní",
+    "UP": "ZAPNUTO",
+    "DOWN": "VYPNUTO",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Žádné",
+    "Enabled": "Povoleno",
+    "No interfaces found": "Rozhraní nenalezena",
+    "Total": "Celkem"
 },
 "sv": {
     "General": "Allmänt", "Overview": "Översikt", "WAN Policy": "WAN-policy", "Interfaces": "Gränssnitt",
@@ -4280,7 +4433,29 @@ window.JM_I18N = {
     "Source": "Källa",
     "anomalies (24h)": "anomalier (24t)",
     "only": "endast",
-    "available": "tillgänglig"
+    "available": "tillgänglig",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "WAN-gränssnitt (DHCP)",
+    "LAN / Bridge": "LAN / Brygga",
+    "WiFi / Radios": "WiFi / Radio",
+    "Physical / Other": "Fysiskt / Övrigt",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Radio",
+    "Bridge": "Brygga",
+    "Physical": "Fysiskt",
+    "Other": "Övrigt",
+    "UP": "UPP",
+    "DOWN": "NER",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Ingen",
+    "Enabled": "Aktiverad",
+    "No interfaces found": "Inga gränssnitt hittades",
+    "Total": "Totalt"
 },
 "el": {
     "General": "Γενικά", "Overview": "Επισκόπηση", "WAN Policy": "Πολιτική WAN", "Interfaces": "Διεπαφές",
@@ -4474,7 +4649,29 @@ window.JM_I18N = {
     "Source": "Πηγή",
     "anomalies (24h)": "ανωμαλίες (24ω)",
     "only": "μόνο",
-    "available": "διαθέσιμο"
+    "available": "διαθέσιμο",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "Διεπαφές WAN (DHCP)",
+    "LAN / Bridge": "LAN / Γέφυρα",
+    "WiFi / Radios": "WiFi / Ραδιόφωνα",
+    "Physical / Other": "Φυσικά / Άλλα",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Ραδιόφωνο",
+    "Bridge": "Γέφυρα",
+    "Physical": "Φυσικό",
+    "Other": "Άλλο",
+    "UP": "ΕΝΕΡΓΟ",
+    "DOWN": "ΑΝΕΝΕΡΓΟ",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Κανένα",
+    "Enabled": "Ενεργοποιημένο",
+    "No interfaces found": "Δεν βρέθηκαν διεπαφές",
+    "Total": "Σύνολο"
 },
 "uk": {
     "General": "Загальне", "Overview": "Огляд", "WAN Policy": "Політика WAN", "Interfaces": "Інтерфейси",
@@ -4668,7 +4865,29 @@ window.JM_I18N = {
     "Source": "Джерело",
     "anomalies (24h)": "аномалій (24г)",
     "only": "лише",
-    "available": "доступно"
+    "available": "доступно",
+
+    // Interface section
+    "WAN Interfaces (DHCP)": "WAN Інтерфейси (DHCP)",
+    "LAN / Bridge": "LAN / Міст",
+    "WiFi / Radios": "WiFi / Радіо",
+    "Physical / Other": "Фізичні / Інші",
+    "WAN": "WAN",
+    "LAN": "LAN",
+    "VPN": "VPN",
+    "WiFi": "WiFi",
+    "Radio": "Радіо",
+    "Bridge": "Міст",
+    "Physical": "Фізичний",
+    "Other": "Інший",
+    "UP": "УВІМК",
+    "DOWN": "ВИМК",
+    "IP": "IP",
+    "RX/TX": "RX/TX",
+    "None": "Немає",
+    "Enabled": "Увімкнено",
+    "No interfaces found": "Інтерфейси не знайдено",
+    "Total": "Всього"
 }
 
 };

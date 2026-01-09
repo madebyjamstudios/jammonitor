@@ -3964,7 +3964,7 @@ var JamMonitor = (function() {
             rangeNote = ' <span style="color:#f39c12;">(' + _('only') + ' ' + availableHours + 'h ' + _('available') + ')</span>';
         }
 
-        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' ' + _('entries') + ' &middot; ~' + sizeStr + rangeNote;
+        estimateDiv.innerHTML = '~' + availableEntries.toLocaleString() + ' ' + _('entries') + ' &middot; ~' + sizeStr + ' <span style="color:#95a5a6;">(+ syslog)</span>' + rangeNote;
     }
 
     // Load storage status for diagnostics page

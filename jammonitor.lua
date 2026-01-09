@@ -2835,14 +2835,19 @@ function action_history()
         end
     end
 
-    -- Include syslog (last 50MB max, trimmed to time range if possible)
+    -- Include syslog as array of lines (last 2MB max)
     if fs.stat(log_path) then
         local log_content = fs.readfile(log_path) or ""
         -- Limit to last 2MB to keep bundle manageable
         if #log_content > 2097152 then
             log_content = log_content:sub(-2097152)
         end
-        bundle.syslog = log_content
+        -- Split into lines array (JSON encodes strings char-by-char otherwise)
+        local lines = {}
+        for line in log_content:gmatch("[^\r\n]+") do
+            lines[#lines + 1] = line
+        end
+        bundle.syslog = lines
     end
 
     -- Include current system state (like diagnostic bundle)

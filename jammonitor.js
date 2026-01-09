@@ -381,7 +381,7 @@ var JamMonitor = (function() {
         else if (view === 'clients') updateClients();
         else if (view === 'wifi-aps') updateWifiAps();
         else if (view === 'omr-status') loadOmrStatus();
-        else if (view === 'diagnostics') { loadStorageStatus(); populateSpeedTestWans(); }
+        else if (view === 'diagnostics') { checkStorageSetup(); loadStorageStatus(); populateSpeedTestWans(); }
         else if (view.startsWith('bw-')) updateBandwidth(view);
     }
 
@@ -4038,6 +4038,213 @@ var JamMonitor = (function() {
         });
     }
 
+    // Storage setup wizard state
+    var selectedStorageDevice = null;
+
+    // Check if storage setup is needed and show/hide banner
+    function checkStorageSetup() {
+        var banner = document.getElementById('storage-setup-banner');
+        if (!banner) return;
+
+        api('storage_status').then(function(data) {
+            if (data && data.mounted && data.database_exists) {
+                // Everything working - hide banner completely
+                banner.style.display = 'none';
+            } else {
+                // Setup needed - show banner
+                banner.style.display = 'block';
+                banner.className = 'storage-setup-banner needs-setup';
+                document.getElementById('storage-needs-setup').style.display = 'block';
+                document.getElementById('storage-wizard').style.display = 'none';
+                document.getElementById('storage-success').style.display = 'none';
+            }
+        });
+    }
+
+    // Show the storage setup wizard
+    function showStorageSetup() {
+        var banner = document.getElementById('storage-setup-banner');
+        banner.className = 'storage-setup-banner';
+        document.getElementById('storage-needs-setup').style.display = 'none';
+        document.getElementById('storage-wizard').style.display = 'block';
+        document.getElementById('storage-success').style.display = 'none';
+        storageStep(1);
+        loadStorageDevices();
+    }
+
+    // Hide the storage setup wizard
+    function hideStorageSetup() {
+        var banner = document.getElementById('storage-setup-banner');
+        banner.style.display = 'none';
+    }
+
+    // Navigate to a specific step in the wizard
+    function storageStep(step, keepSelection) {
+        if (!keepSelection) {
+            selectedStorageDevice = null;
+        }
+        for (var i = 1; i <= 3; i++) {
+            var stepEl = document.getElementById('storage-step-' + i);
+            var contentEl = document.getElementById('storage-content-' + i);
+            if (stepEl) stepEl.className = 'storage-step' + (i === step ? ' active' : '');
+            if (contentEl) contentEl.style.display = (i === step) ? 'block' : 'none';
+        }
+    }
+
+    // Load available USB devices from the API
+    function loadStorageDevices() {
+        var list = document.getElementById('storage-device-list');
+        if (!list) return;
+
+        list.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:20px;">Scanning for USB devices...</div>';
+
+        api('storage_devices').then(function(data) {
+            if (!data || !data.devices || data.devices.length === 0) {
+                list.innerHTML = '<div style="text-align:center;color:#e74c3c;padding:20px;">' +
+                    'No USB devices detected.<br><small style="color:#7f8c8d;">Insert a USB drive and click Refresh.</small></div>' +
+                    '<button onclick="JamMonitor.loadStorageDevices()" style="margin-top:10px;">Refresh</button>';
+                return;
+            }
+
+            var html = '';
+            data.devices.forEach(function(dev) {
+                var statusBadge = '';
+                if (dev.mounted) {
+                    statusBadge = '<span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:8px;">Mounted</span>';
+                }
+                if (dev.is_system) {
+                    statusBadge = '<span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:8px;">System</span>';
+                }
+
+                html += '<div class="storage-device-option" data-device="' + dev.partition + '" onclick="JamMonitor.selectStorageDevice(this)">' +
+                    '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+                    '<strong>' + dev.partition + '</strong>' + statusBadge +
+                    '</div>' +
+                    '<div style="color:#7f8c8d;font-size:13px;margin-top:4px;">' +
+                    dev.size_human + (dev.filesystem ? ' &middot; ' + dev.filesystem : ' &middot; Unformatted') +
+                    (dev.label ? ' &middot; ' + dev.label : '') +
+                    '</div></div>';
+            });
+
+            html += '<button onclick="JamMonitor.loadStorageDevices()" style="margin-top:10px;background:#ecf0f1;color:#2c3e50;">Refresh Device List</button>';
+            list.innerHTML = html;
+
+            // Update buttons state
+            updateStorageButtons();
+        }).catch(function(err) {
+            list.innerHTML = '<div style="text-align:center;color:#e74c3c;padding:20px;">Error loading devices</div>';
+        });
+    }
+
+    // Handle device selection
+    function selectStorageDevice(el) {
+        var device = el.getAttribute('data-device');
+
+        // Check if it's a system device
+        var statusText = el.querySelector('span');
+        if (statusText && statusText.textContent === 'System') {
+            return; // Don't allow selecting system device
+        }
+
+        // Remove selection from all options
+        var options = document.querySelectorAll('.storage-device-option');
+        for (var i = 0; i < options.length; i++) {
+            options[i].classList.remove('selected');
+        }
+
+        // Add selection to clicked option
+        el.classList.add('selected');
+        selectedStorageDevice = device;
+
+        updateStorageButtons();
+    }
+
+    // Update button states based on selection
+    function updateStorageButtons() {
+        var formatBtn = document.getElementById('storage-format-btn');
+        var useBtn = document.getElementById('storage-use-btn');
+
+        if (formatBtn) formatBtn.disabled = !selectedStorageDevice;
+        if (useBtn) useBtn.disabled = !selectedStorageDevice;
+    }
+
+    // Go to format step
+    function goToFormatStep() {
+        if (!selectedStorageDevice) return;
+        storageStep(2, true);
+        document.getElementById('storage-format-device').textContent = selectedStorageDevice;
+        document.getElementById('storage-format-confirm').value = '';
+        document.getElementById('storage-format-status').innerHTML = '';
+    }
+
+    // Format the selected device
+    function formatDevice() {
+        var confirmInput = document.getElementById('storage-format-confirm');
+        var statusDiv = document.getElementById('storage-format-status');
+
+        if (confirmInput.value !== 'FORMAT') {
+            statusDiv.innerHTML = '<span style="color:#e74c3c;">Please type FORMAT to confirm</span>';
+            return;
+        }
+
+        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Formatting ' + selectedStorageDevice + '... This may take a moment.</span>';
+
+        api('storage_format', { device: selectedStorageDevice }).then(function(data) {
+            if (data && data.success) {
+                statusDiv.innerHTML = '<span style="color:#27ae60;">Format complete!</span>';
+                setTimeout(function() {
+                    mountAndInit(selectedStorageDevice);
+                }, 1000);
+            } else {
+                statusDiv.innerHTML = '<span style="color:#e74c3c;">Format failed: ' + (data && data.error ? data.error : 'Unknown error') + '</span>';
+            }
+        }).catch(function(err) {
+            statusDiv.innerHTML = '<span style="color:#e74c3c;">Format failed: Network error</span>';
+        });
+    }
+
+    // Use selected device without formatting (for already formatted drives)
+    function useSelectedDevice() {
+        if (!selectedStorageDevice) return;
+        mountAndInit(selectedStorageDevice);
+    }
+
+    // Mount device and initialize database
+    function mountAndInit(device) {
+        storageStep(3, true);
+        var statusDiv = document.getElementById('storage-init-status');
+        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Mounting ' + device + '...</span>';
+
+        api('storage_mount', { device: device }).then(function(mountData) {
+            if (!mountData || !mountData.success) {
+                statusDiv.innerHTML = '<span style="color:#e74c3c;">Mount failed: ' + (mountData && mountData.error ? mountData.error : 'Unknown error') + '</span>';
+                return;
+            }
+
+            statusDiv.innerHTML = '<span style="color:#7f8c8d;">Initializing database...</span>';
+
+            api('storage_init').then(function(initData) {
+                if (!initData || !initData.success) {
+                    statusDiv.innerHTML = '<span style="color:#e74c3c;">Init failed: ' + (initData && initData.error ? initData.error : 'Unknown error') + '</span>';
+                    return;
+                }
+
+                // Success!
+                statusDiv.innerHTML = '<span style="color:#27ae60;">Setup complete!</span>';
+                document.getElementById('storage-wizard').style.display = 'none';
+                document.getElementById('storage-success').style.display = 'block';
+
+                // After a delay, hide the banner and refresh storage status
+                setTimeout(function() {
+                    hideStorageSetup();
+                    loadStorageStatus();
+                }, 3000);
+            });
+        }).catch(function(err) {
+            statusDiv.innerHTML = '<span style="color:#e74c3c;">Setup failed: Network error</span>';
+        });
+    }
+
     function downloadHistory() {
         var status = document.getElementById('history-status');
         var hours = document.getElementById('history-hours').value;
@@ -4526,6 +4733,14 @@ var JamMonitor = (function() {
         resetClientChanges: resetClientChanges,
         setSpeedTestSize: setSpeedTestSize,
         runSpeedTest: runSpeedTest,
-        closeBwBucketPopup: closeBwBucketPopup
+        closeBwBucketPopup: closeBwBucketPopup,
+        checkStorageSetup: checkStorageSetup,
+        showStorageSetup: showStorageSetup,
+        hideStorageSetup: hideStorageSetup,
+        loadStorageDevices: loadStorageDevices,
+        selectStorageDevice: selectStorageDevice,
+        goToFormatStep: goToFormatStep,
+        formatDevice: formatDevice,
+        useSelectedDevice: useSelectedDevice
     };
 })();

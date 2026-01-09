@@ -22,6 +22,11 @@ function index()
     entry({"admin", "status", "jammonitor", "history_clients"}, call("action_history_clients"), nil)
     entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
     entry({"admin", "status", "jammonitor", "storage_status"}, call("action_storage_status"), nil)
+    -- USB Storage setup endpoints
+    entry({"admin", "status", "jammonitor", "storage_devices"}, call("action_storage_devices"), nil)
+    entry({"admin", "status", "jammonitor", "storage_format"}, call("action_storage_format"), nil)
+    entry({"admin", "status", "jammonitor", "storage_mount"}, call("action_storage_mount"), nil)
+    entry({"admin", "status", "jammonitor", "storage_init"}, call("action_storage_init"), nil)
     -- Client metadata and DHCP reservations
     entry({"admin", "status", "jammonitor", "get_client_meta"}, call("action_get_client_meta"), nil)
     entry({"admin", "status", "jammonitor", "set_client_meta"}, call("action_set_client_meta"), nil)
@@ -606,6 +611,246 @@ function action_storage_status()
         local available = df:match("%s+%d+%s+%d+%s+(%d+)")
         result.free_space = tonumber(available)
     end
+
+    http.write(json.stringify(result))
+end
+
+-- Helper: Validate block device path (only allow /dev/sd[a-z] or /dev/sd[a-z][0-9])
+local function validate_device_path(path)
+    if not path or path == "" then return nil end
+    -- Only allow /dev/sd[a-z] or /dev/sd[a-z][0-9] patterns
+    if not path:match("^/dev/sd[a-z][0-9]?$") then return nil end
+    -- Verify device exists
+    local fs = require "nixio.fs"
+    if not fs.stat(path) then return nil end
+    return path
+end
+
+-- Helper: Check if device is system root
+local function is_system_device(device)
+    local fs = require "nixio.fs"
+    local mounts = fs.readfile("/proc/mounts") or ""
+    -- Find what device is mounted at /
+    local root_dev = mounts:match("(/dev/[%w]+)%s+/%s+")
+    if not root_dev then return false end
+    -- Extract base device (sda from sda1)
+    local device_base = device:match("^(/dev/sd[a-z])")
+    local root_base = root_dev:match("^(/dev/sd[a-z])")
+    return device_base == root_base
+end
+
+-- Helper: Format bytes to human readable
+local function format_bytes(bytes)
+    if not bytes or bytes == 0 then return "0 B" end
+    local units = {"B", "KB", "MB", "GB", "TB"}
+    local i = 1
+    while bytes >= 1024 and i < #units do
+        bytes = bytes / 1024
+        i = i + 1
+    end
+    return string.format("%.1f %s", bytes, units[i])
+end
+
+-- List available USB storage devices
+function action_storage_devices()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {
+        devices = {},
+        current_mount = nil
+    }
+
+    -- Find what's currently mounted at /mnt/data
+    local mounts = fs.readfile("/proc/mounts") or ""
+    local current = mounts:match("(/dev/sd[a-z][0-9]?)%s+/mnt/data")
+    result.current_mount = current
+
+    -- Read /proc/partitions to find block devices
+    local partitions = fs.readfile("/proc/partitions") or ""
+    local devices = {}
+
+    for line in partitions:gmatch("[^\n]+") do
+        -- Match sd* devices (USB drives)
+        local major, minor, blocks, name = line:match("%s*(%d+)%s+(%d+)%s+(%d+)%s+(sd[a-z][0-9]?)%s*$")
+        if name and blocks then
+            local dev_path = "/dev/" .. name
+            local is_partition = name:match("sd[a-z]%d")
+
+            -- Only process partitions (sda1, sdb1, etc.) not whole disks
+            if is_partition then
+                local partition_info = {
+                    partition = dev_path,
+                    size_bytes = tonumber(blocks) * 1024,
+                    size_human = format_bytes(tonumber(blocks) * 1024),
+                    filesystem = nil,
+                    label = nil,
+                    uuid = nil,
+                    mounted = false,
+                    mount_point = nil,
+                    is_system = is_system_device(dev_path)
+                }
+
+                -- Get filesystem info via blkid
+                local blkid = sys.exec("blkid " .. dev_path .. " 2>/dev/null") or ""
+                partition_info.filesystem = blkid:match('TYPE="([^"]+)"')
+                partition_info.label = blkid:match('LABEL="([^"]+)"')
+                partition_info.uuid = blkid:match('UUID="([^"]+)"')
+
+                -- Check mount status
+                local mount_point = mounts:match(dev_path:gsub("%-", "%%-") .. "%s+([^%s]+)")
+                if mount_point then
+                    partition_info.mounted = true
+                    partition_info.mount_point = mount_point
+                end
+
+                table.insert(result.devices, partition_info)
+            end
+        end
+    end
+
+    http.write(json.stringify(result))
+end
+
+-- Format a USB drive partition
+function action_storage_format()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    -- Parse POST body
+    local content = http.content()
+    local params = json.parse(content) or {}
+    local device = params.device
+    local label = params.label or "JAMMONITOR"
+
+    -- Validate device path
+    local safe_device = validate_device_path(device)
+    if not safe_device then
+        http.write(json.stringify({success = false, error = "Invalid device path"}))
+        return
+    end
+
+    -- Check if it's a system device
+    if is_system_device(safe_device) then
+        http.write(json.stringify({success = false, error = "Cannot format system device"}))
+        return
+    end
+
+    -- Unmount if currently mounted
+    local mounts = fs.readfile("/proc/mounts") or ""
+    if mounts:match(safe_device:gsub("%-", "%%-")) then
+        sys.exec("umount " .. safe_device .. " 2>/dev/null")
+        -- Wait briefly for unmount
+        os.execute("sleep 1")
+    end
+
+    -- Format with ext4
+    local format_cmd = string.format("mkfs.ext4 -F -L %s %s 2>&1", label, safe_device)
+    local result = sys.exec(format_cmd) or ""
+
+    -- Check if format succeeded by looking for successful completion
+    if result:match("Writing superblocks") or result:match("done") then
+        http.write(json.stringify({success = true}))
+    else
+        http.write(json.stringify({success = false, error = result}))
+    end
+end
+
+-- Mount a USB drive partition at /mnt/data
+function action_storage_mount()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    -- Parse POST body
+    local content = http.content()
+    local params = json.parse(content) or {}
+    local device = params.device
+
+    -- Validate device path
+    local safe_device = validate_device_path(device)
+    if not safe_device then
+        http.write(json.stringify({success = false, error = "Invalid device path"}))
+        return
+    end
+
+    -- Create mount point if needed
+    if not fs.stat("/mnt/data") then
+        sys.exec("mkdir -p /mnt/data")
+    end
+
+    -- Unmount anything currently at /mnt/data
+    local mounts = fs.readfile("/proc/mounts") or ""
+    if mounts:match("/mnt/data") then
+        sys.exec("umount /mnt/data 2>/dev/null")
+        os.execute("sleep 1")
+    end
+
+    -- Mount the device
+    local mount_result = sys.exec("mount " .. safe_device .. " /mnt/data 2>&1") or ""
+
+    -- Verify mount succeeded
+    mounts = fs.readfile("/proc/mounts") or ""
+    if mounts:match("/mnt/data") then
+        http.write(json.stringify({success = true, mount_point = "/mnt/data"}))
+    else
+        http.write(json.stringify({success = false, error = mount_result ~= "" and mount_result or "Mount failed"}))
+    end
+end
+
+-- Initialize JamMonitor database and start collector
+function action_storage_init()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {
+        success = false,
+        database_exists = false,
+        collector_running = false
+    }
+
+    -- Check if /mnt/data is mounted
+    local mounts = fs.readfile("/proc/mounts") or ""
+    if not mounts:match("/mnt/data") then
+        http.write(json.stringify({success = false, error = "USB not mounted"}))
+        return
+    end
+
+    -- Create jammonitor directory
+    sys.exec("mkdir -p /mnt/data/jammonitor")
+
+    -- Stop any existing collector
+    sys.exec("/etc/init.d/jammonitor-collect stop 2>/dev/null")
+    os.execute("sleep 1")
+
+    -- Start the collector (it will create the database)
+    sys.exec("/etc/init.d/jammonitor-collect start 2>/dev/null")
+    os.execute("sleep 2")
+
+    -- Check if database was created
+    local db_stat = fs.stat("/mnt/data/jammonitor/history.db")
+    result.database_exists = db_stat ~= nil
+
+    -- Check if collector is running
+    local pgrep = sys.exec("pgrep -f jammonitor-collect 2>/dev/null") or ""
+    result.collector_running = pgrep:match("%d+") ~= nil
+
+    result.success = result.database_exists or result.collector_running
 
     http.write(json.stringify(result))
 end

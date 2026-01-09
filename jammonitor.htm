@@ -526,6 +526,18 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 .wan-policy-disabled .wan-category-dropzone { background: #e0e0e0; }
 .wan-policy-disabled-overlay { background: rgba(255,255,255,0.7); padding: 20px; text-align: center; border-radius: 6px; margin-top: 10px; }
 .wan-policy-disabled-overlay p { color: #7f8c8d; margin: 0; font-size: 13px; }
+
+/* Storage Setup Wizard */
+.storage-setup-banner { background: linear-gradient(135deg, #f8f9fa 0%, #fff 100%); border: 2px solid #bdc3c7; border-radius: 12px; padding: 24px; margin-bottom: 24px; position: relative; }
+.storage-setup-banner.needs-setup { border-color: #f39c12; background: linear-gradient(135deg, #fffbf0 0%, #fff 100%); }
+.storage-step { color: #bdc3c7; font-size: 13px; padding-bottom: 8px; border-bottom: 2px solid #ecf0f1; }
+.storage-step.active { color: #3498db; border-color: #3498db; font-weight: 500; }
+.storage-device-option { padding: 16px; border: 2px solid #ecf0f1; border-radius: 8px; cursor: pointer; transition: all 0.2s; margin-bottom: 12px; }
+.storage-device-option:hover:not(.disabled) { border-color: #3498db; background: #f8f9fa; }
+.storage-device-option.selected { border-color: #3498db; background: #ebf5fb; }
+.storage-device-option.disabled { opacity: 0.5; cursor: not-allowed; }
+.storage-close-btn { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; color: #7f8c8d; cursor: pointer; line-height: 1; padding: 0; }
+.storage-close-btn:hover { color: #2c3e50; }
 </style>
 
 <div class="jm-container">
@@ -978,6 +990,77 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <!-- DIAGNOSTICS -->
         <div id="view-diagnostics" class="jm-view">
             <h2 style="margin-top:0;color:#2c3e50;" data-i18n="Diagnostics & Data Export">Diagnostics & Data Export</h2>
+
+            <!-- STORAGE SETUP BANNER - only shows when storage not configured -->
+            <div id="storage-setup-banner" class="storage-setup-banner needs-setup" style="display:none;">
+                <!-- Initial state: Setup needed -->
+                <div id="storage-needs-setup">
+                    <div style="display:flex;align-items:flex-start;gap:16px;">
+                        <span style="font-size:36px;">&#128190;</span>
+                        <div style="flex:1;">
+                            <h3 style="margin:0 0 8px 0;color:#e67e22;font-size:18px;" data-i18n="USB Storage Setup Required">USB Storage Setup Required</h3>
+                            <p style="margin:0 0 16px 0;color:#7f8c8d;font-size:14px;line-height:1.5;" data-i18n="Connect a USB drive to enable historical data collection. JamMonitor stores metrics every minute for trend analysis and debugging.">
+                                Connect a USB drive to enable historical data collection. JamMonitor stores metrics every minute for trend analysis and debugging.
+                            </p>
+                            <button class="jm-btn" onclick="JamMonitor.showStorageSetup()" style="background:#f39c12;border-color:#d68910;" data-i18n="Setup USB Storage">
+                                Setup USB Storage
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Setup wizard (expanded) -->
+                <div id="storage-wizard" style="display:none;">
+                    <button class="storage-close-btn" onclick="JamMonitor.hideStorageSetup()">&times;</button>
+                    <h3 style="margin:0 0 20px 0;color:#2c3e50;font-size:18px;" data-i18n="USB Storage Setup">USB Storage Setup</h3>
+
+                    <!-- Step indicators -->
+                    <div style="display:flex;gap:24px;margin-bottom:24px;">
+                        <div class="storage-step active" id="storage-step-1" data-i18n="1. Select Device">1. Select Device</div>
+                        <div class="storage-step" id="storage-step-2" data-i18n="2. Format">2. Format</div>
+                        <div class="storage-step" id="storage-step-3" data-i18n="3. Initialize">3. Initialize</div>
+                    </div>
+
+                    <!-- Step 1: Device Selection -->
+                    <div id="storage-content-1">
+                        <div id="storage-device-list">
+                            <p style="color:#7f8c8d;" data-i18n="Scanning for USB devices...">Scanning for USB devices...</p>
+                        </div>
+                        <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;">
+                            <button class="jm-btn" id="storage-use-btn" onclick="JamMonitor.useSelectedDevice()" style="background:#27ae60;border-color:#1e8449;" disabled data-i18n="Use Selected Device">Use Selected Device</button>
+                            <button class="jm-btn" id="storage-format-btn" onclick="JamMonitor.goToFormatStep()" style="background:#e74c3c;border-color:#c0392b;" disabled data-i18n="Format & Use">Format & Use</button>
+                            <button class="jm-btn" onclick="JamMonitor.loadStorageDevices()" style="background:#ecf0f1;border-color:#bdc3c7;color:#5a6c7d;" data-i18n="Refresh">Refresh</button>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Format Confirmation -->
+                    <div id="storage-content-2" style="display:none;">
+                        <div style="background:#fff5f5;border:1px solid #e74c3c;border-radius:8px;padding:16px;margin-bottom:16px;">
+                            <strong style="color:#c0392b;" data-i18n="Warning: Formatting will erase all data on">Warning: Formatting will erase all data on</strong> <strong id="storage-format-device"></strong>!
+                            <p style="margin:12px 0 0 0;color:#5a6c7d;" data-i18n="Type FORMAT to confirm:">Type <strong>FORMAT</strong> to confirm:</p>
+                            <input type="text" id="storage-format-confirm" placeholder="FORMAT" style="margin-top:8px;padding:8px 12px;border:2px solid #e74c3c;border-radius:6px;font-size:14px;width:120px;text-transform:uppercase;">
+                        </div>
+                        <div style="display:flex;gap:12px;">
+                            <button class="jm-btn" onclick="JamMonitor.formatDevice()" style="background:#e74c3c;border-color:#c0392b;" data-i18n="Format Drive">Format Drive</button>
+                            <button class="jm-btn" onclick="JamMonitor.showStorageSetup()" style="background:#ecf0f1;border-color:#bdc3c7;color:#5a6c7d;" data-i18n="Cancel">Cancel</button>
+                        </div>
+                        <div id="storage-format-status" style="margin-top:12px;"></div>
+                    </div>
+
+                    <!-- Step 3: Initialize -->
+                    <div id="storage-content-3" style="display:none;">
+                        <p style="color:#5a6c7d;" data-i18n="Mounting drive and starting data collection...">Mounting drive and starting data collection...</p>
+                        <div id="storage-init-status" style="margin-top:12px;"></div>
+                    </div>
+                </div>
+
+                <!-- Success state -->
+                <div id="storage-success" style="display:none;text-align:center;padding:20px;">
+                    <span style="font-size:48px;">&#9989;</span>
+                    <h3 style="margin:16px 0 8px 0;color:#27ae60;" data-i18n="USB Storage Ready!">USB Storage Ready!</h3>
+                    <p style="color:#7f8c8d;margin:0;" data-i18n="Data collection is now active.">Data collection is now active.</p>
+                </div>
+            </div>
 
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:24px;margin-top:10px;">
 

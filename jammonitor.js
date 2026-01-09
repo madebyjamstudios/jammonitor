@@ -733,10 +733,14 @@ var JamMonitor = (function() {
             targetEl.textContent = pingTargets[key];
         }
 
-        // Calculate loss percentage
+        // Calculate loss percentage using rolling window (last ~6 min)
         var loss = 0;
-        if (stats.sent > 0) {
-            loss = ((stats.sent - stats.received) / stats.sent * 100);
+        if (history.length > 0) {
+            var failures = 0;
+            for (var k = 0; k < history.length; k++) {
+                if (history[k].value === null) failures++;
+            }
+            loss = (failures / history.length) * 100;
         }
         lossEl.textContent = loss.toFixed(1) + '%';
 

@@ -3300,9 +3300,9 @@ function action_speedtest_start()
             upload = "https://speed.cloudflare.com/__up"
         },
         china = {
-            name = "China (Aliyun)",
-            -- Alibaba Cloud CDN test files - accessible in China
-            download = "http://aliyun-oss-speedtest.oss-cn-hangzhou.aliyuncs.com/speedtest/%dMB.bin",
+            name = "China (CacheFly)",
+            -- CacheFly CDN - has nodes in China, commonly used for speed tests
+            download = "http://cachefly.cachefly.net/%dmb.test",
             upload = nil  -- Upload not supported for this server
         },
         global = {

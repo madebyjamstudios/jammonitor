@@ -3420,7 +3420,7 @@ var JamMonitor = (function() {
             ctx.fillStyle = '#999';
             ctx.font = '14px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText(isRealtime ? 'Collecting data...' : 'No data available', w/2, h/2);
+            ctx.fillText(isRealtime ? _('Collecting data...') : _('No data available'), w/2, h/2);
             canvas.onmousemove = null;
             canvas.onmouseleave = null;
             canvas.onclick = null;

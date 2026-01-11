@@ -904,9 +904,9 @@ var JamMonitor = (function() {
 
         for (var j = 0; j < data.length; j++) {
             var v = data[j];
-            if (v === null) continue;
             var x = j * step;
-            var y = h - (v / max) * (h - 4) - 2;
+            // Null (timeout) drops to bottom of graph for visual impact
+            var y = (v === null) ? h - 2 : h - (v / max) * (h - 4) - 2;
             if (!started) { ctx.moveTo(x, y); started = true; }
             else ctx.lineTo(x, y);
         }

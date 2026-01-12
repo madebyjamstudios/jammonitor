@@ -93,20 +93,14 @@
 /* Settings button in sidebar */
 .jm-settings-btn {
     margin-top: auto;
-    padding: 12px 16px;
+    padding: 10px 20px;
     border-top: 1px solid #3d5a73;
-    display: flex;
-    align-items: center;
-    gap: 8px;
     cursor: pointer;
+    color: #95a5a6;
     position: relative;
-    transition: background 0.2s;
+    transition: all 0.15s;
 }
-.jm-settings-btn:hover { background: rgba(255,255,255,0.1); }
-.jm-settings-icon { font-size: 16px; color: #95a5a6; transition: color 0.2s; }
-.jm-settings-label { font-size: 14px; color: #95a5a6; transition: color 0.2s; transform: translateY(-1px); }
-.jm-settings-btn:hover .jm-settings-icon,
-.jm-settings-btn:hover .jm-settings-label { color: #ecf0f1; }
+.jm-settings-btn:hover { background: rgba(255,255,255,0.1); color: #ecf0f1; }
 .jm-settings-badge {
     position: absolute;
     top: 8px;
@@ -124,9 +118,16 @@
     50% { opacity: 0.7; transform: scale(0.9); }
 }
 @media (max-width: 900px) {
-    .jm-settings-btn { padding: 10px; justify-content: center; }
-    .jm-settings-icon { font-size: 18px; }
-    .jm-settings-label { display: none; }
+    .jm-settings-btn { padding: 12px 8px; font-size: 0; text-align: center; }
+    .jm-settings-btn::before { content: "⚙"; font-size: 16px; }
+}
+@media (max-width: 600px) {
+    .jm-settings-btn { padding: 10px 5px; }
+    .jm-settings-btn::before { font-size: 14px; }
+}
+@media (max-width: 450px) {
+    .jm-settings-btn { padding: 8px 4px; }
+    .jm-settings-btn::before { font-size: 12px; }
 }
 
 /* Settings popup overlay */
@@ -720,11 +721,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <div class="jm-sidebar-item" data-view="bw-hourly">Hourly</div>
         <div class="jm-sidebar-item" data-view="bw-daily">Daily</div>
         <div class="jm-sidebar-item" data-view="bw-monthly">Monthly</div>
-        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">
-            <span class="jm-settings-icon">&#9881;</span>
-            <span class="jm-settings-label">Settings</span>
-            <span class="jm-settings-badge" id="jm-settings-badge"></span>
-        </div>
+        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">⚙ Settings<span class="jm-settings-badge" id="jm-settings-badge"></span></div>
     </div>
 
     <div class="jm-main">

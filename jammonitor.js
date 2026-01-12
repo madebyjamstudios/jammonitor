@@ -898,8 +898,8 @@ var JamMonitor = (function() {
                 document.getElementById('sys-conntrack').textContent = data.conntrack_count + ' / ' + data.conntrack_max;
             }
 
-            // Uptime
-            if (data.uptime_secs) {
+            // Uptime & Boot time
+            if (data.uptime_secs !== undefined && data.uptime_secs > 0) {
                 document.getElementById('uptime-val').textContent = formatUptime(data.uptime_secs);
                 document.getElementById('uptime-tooltip').textContent = _('Since boot');
                 // Calculate boot time from current time minus uptime
@@ -908,12 +908,12 @@ var JamMonitor = (function() {
                 document.getElementById('boot-time').textContent = bootStr;
             }
 
-            // Date/Local time
+            // Local time - always update
+            var localTimeEl = document.getElementById('local-time');
             if (data.date) {
-                document.getElementById('local-time').textContent = data.date;
+                localTimeEl.textContent = data.date;
             } else {
-                // Fallback to JS local time
-                document.getElementById('local-time').textContent = new Date().toLocaleString();
+                localTimeEl.textContent = new Date().toLocaleString();
             }
         });
 

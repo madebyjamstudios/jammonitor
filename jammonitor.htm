@@ -120,7 +120,7 @@
 }
 @media (max-width: 900px) {
     .jm-settings-btn { padding: 12px 8px; font-size: 0; text-align: center; }
-    .jm-settings-btn::before { content: "🔧"; font-size: 16px; }
+    .jm-settings-btn::before { content: "⚙\FE0E"; font-size: 16px; }
 }
 @media (max-width: 600px) {
     .jm-settings-btn { padding: 10px 5px; }
@@ -200,12 +200,21 @@
     border: 1px solid #ddd;
     border-radius: 8px;
     font-size: 14px;
+    line-height: 1.4;
     background: #fff;
     cursor: pointer;
     transition: border-color 0.2s;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
 }
 .jm-settings-select:hover { border-color: #bbb; }
 .jm-settings-select:focus { outline: none; border-color: #3498db; }
+.jm-settings-select option { padding: 8px; line-height: 1.4; }
 
 /* Version card in settings */
 .jm-version-card {
@@ -722,7 +731,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <div class="jm-sidebar-item" data-view="bw-hourly">Hourly</div>
         <div class="jm-sidebar-item" data-view="bw-daily">Daily</div>
         <div class="jm-sidebar-item" data-view="bw-monthly">Monthly</div>
-        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">🔧 Settings<span class="jm-settings-badge" id="jm-settings-badge"></span></div>
+        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">⚙︎ Settings<span class="jm-settings-badge" id="jm-settings-badge"></span></div>
     </div>
 
     <div class="jm-main">

@@ -537,7 +537,7 @@ var JamMonitor = (function() {
         overlay.id = 'jm-settings-overlay';
         overlay.innerHTML = '<div class="jm-settings-popup">' +
             '<div class="jm-settings-header">' +
-                '<span class="jm-settings-header-icon">🔧</span>' +
+                '<span class="jm-settings-header-icon">⚙︎</span>' +
                 '<span class="jm-settings-header-title">' + _('Settings') + '</span>' +
                 '<button class="jm-settings-close" onclick="JamMonitor.closeSettingsPopup()">&times;</button>' +
             '</div>' +
@@ -626,19 +626,19 @@ var JamMonitor = (function() {
             iconClass = 'update-available';
             iconSymbol = '&#8593;';  // ↑
             mainText = _('Update available');
-            subText = 'v ' + data.local_version + ' → v ' + data.remote_version;
+            subText = (data.local_version || '?') + ' → ' + (data.remote_version || '?');
             showButton = true;
         } else if (data.remote_version) {
             // Up to date
             iconClass = 'up-to-date';
             iconSymbol = '&#10003;';  // ✓
             mainText = _('Up to date');
-            subText = 'v ' + data.local_version;
+            subText = data.local_version || '';
         } else {
             // Checking
             iconClass = 'checking';
             iconSymbol = '...';
-            mainText = data.local_version ? 'v ' + data.local_version : _('Checking...');
+            mainText = data.local_version ? data.local_version : _('Checking...');
             subText = '';
         }
 
@@ -902,11 +902,18 @@ var JamMonitor = (function() {
             if (data.uptime_secs) {
                 document.getElementById('uptime-val').textContent = formatUptime(data.uptime_secs);
                 document.getElementById('uptime-tooltip').textContent = _('Since boot');
+                // Calculate boot time from current time minus uptime
+                var bootDate = new Date(Date.now() - (data.uptime_secs * 1000));
+                var bootStr = bootDate.toLocaleDateString() + ' ' + bootDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                document.getElementById('boot-time').textContent = bootStr;
             }
 
-            // Date
+            // Date/Local time
             if (data.date) {
                 document.getElementById('local-time').textContent = data.date;
+            } else {
+                // Fallback to JS local time
+                document.getElementById('local-time').textContent = new Date().toLocaleString();
             }
         });
 

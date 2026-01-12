@@ -11,7 +11,7 @@
 
 /* Layout */
 .jm-container { display: flex; min-height: 700px; height: calc(100vh - 60px); }
-.jm-sidebar { width: 180px; background: #2c3e50; padding: 10px 0; flex-shrink: 0; transition: width 0.2s; display: flex; flex-direction: column; align-self: stretch; }
+.jm-sidebar { width: 180px; background: #2c3e50; padding-top: 10px; flex-shrink: 0; transition: width 0.2s; display: flex; flex-direction: column; align-self: stretch; }
 .jm-sidebar-section { padding: 12px 15px 6px; font-weight: bold; color: #7f8c8d; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .jm-sidebar-item { padding: 10px 20px; cursor: pointer; color: #ecf0f1; border-left: 3px solid transparent; transition: all 0.15s; white-space: nowrap; overflow: hidden; }
 .jm-sidebar-item:hover { background: #34495e; }
@@ -90,20 +90,16 @@
     .jm-health-tile .tile-label { font-size: 8px; }
 }
 
-/* Settings button in sidebar - fills to bottom */
+/* Settings button in sidebar - at bottom, hover extends to edge */
 .jm-settings-btn {
-    flex: 1;
-    display: flex;
-    align-items: flex-end;
-    padding: 12px 20px;
+    margin-top: auto;
+    padding: 12px 20px 14px 20px;
     border-top: 1px solid #3d5a73;
     cursor: pointer;
     color: #95a5a6;
     font-size: 15px;
     position: relative;
     transition: all 0.15s;
-    min-height: 44px;
-    box-sizing: border-box;
 }
 .jm-settings-btn:hover { background: rgba(255,255,255,0.1); color: #ecf0f1; }
 .jm-settings-badge {

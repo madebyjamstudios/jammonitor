@@ -128,6 +128,11 @@ mkdir -p /www/luci-static/resources
 wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/jammonitor.lua -O /usr/lib/lua/luci/controller/jammonitor.lua
 wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/jammonitor.htm -O /usr/lib/lua/luci/view/jammonitor.htm
 wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/jammonitor.js -O /www/luci-static/resources/jammonitor.js
+wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/jammonitor-i18n.js -O /www/luci-static/resources/jammonitor-i18n.js
+
+# Save version info for update checking
+JM_SHA=$(curl -s https://api.github.com/repos/madebyjamstudios/jammonitor/commits/main 2>/dev/null | grep '"sha"' | head -1 | cut -d'"' -f4)
+echo "${JM_SHA:0:7}" > /www/luci-static/resources/jammonitor.version
 
 # Clear LuCI cache and restart
 rm -rf /tmp/luci-*
@@ -139,9 +144,15 @@ rm -rf /tmp/luci-*
 From your local machine:
 
 ```bash
+# Create version file from local git
+echo $(git rev-parse --short HEAD) > jammonitor.version
+
+# Copy files to router
 scp -O jammonitor.lua root@<ROUTER_IP>:/usr/lib/lua/luci/controller/jammonitor.lua
 scp -O jammonitor.htm root@<ROUTER_IP>:/usr/lib/lua/luci/view/jammonitor.htm
 scp -O jammonitor.js root@<ROUTER_IP>:/www/luci-static/resources/jammonitor.js
+scp -O jammonitor-i18n.js root@<ROUTER_IP>:/www/luci-static/resources/jammonitor-i18n.js
+scp -O jammonitor.version root@<ROUTER_IP>:/www/luci-static/resources/jammonitor.version
 ```
 
 Then clear the cache:

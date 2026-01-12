@@ -257,6 +257,12 @@ window.JM_I18N = {
     "Download started. Check your downloads folder.": "Download started. Check your downloads folder.",
     "Download complete!": "Download complete!",
 
+    // Version check
+    "Version unknown": "Version unknown",
+    "Update available": "Update available",
+    "Up to date": "Up to date",
+    "Could not check for updates": "Could not check for updates",
+
     // Error messages
     "Failed to load interface data": "Failed to load interface data",
     "Failed to load clients": "Failed to load clients",
@@ -588,6 +594,12 @@ window.JM_I18N = {
     "Download started. Check your downloads folder.": "下载已开始。请检查您的下载文件夹。",
     "Download complete!": "下载完成！",
 
+    // Version check
+    "Version unknown": "版本未知",
+    "Update available": "有可用更新",
+    "Up to date": "已是最新版本",
+    "Could not check for updates": "无法检查更新",
+
     // Error messages
     "Failed to load interface data": "加载接口数据失败",
     "Failed to load clients": "加载客户端失败",
@@ -914,6 +926,12 @@ window.JM_I18N = {
     "Creating diagnostic bundle...": "Creando paquete de diagnóstico...",
     "Download started. Check your downloads folder.": "Descarga iniciada. Revise su carpeta de descargas.",
     "Download complete!": "¡Descarga completa!",
+
+    // Version check
+    "Version unknown": "Versión desconocida",
+    "Update available": "Actualización disponible",
+    "Up to date": "Actualizado",
+    "Could not check for updates": "No se pudo verificar actualizaciones",
 
     // Error messages
     "Failed to load interface data": "Error al cargar datos de interfaz",
@@ -1242,6 +1260,12 @@ window.JM_I18N = {
     "Download started. Check your downloads folder.": "Download gestartet. Überprüfen Sie Ihren Download-Ordner.",
     "Download complete!": "Download abgeschlossen!",
 
+    // Version check
+    "Version unknown": "Version unbekannt",
+    "Update available": "Update verfügbar",
+    "Up to date": "Aktuell",
+    "Could not check for updates": "Update-Prüfung fehlgeschlagen",
+
     // Error messages
     "Failed to load interface data": "Schnittstellendaten konnten nicht geladen werden",
     "Failed to load clients": "Clients konnten nicht geladen werden",
@@ -1569,6 +1593,12 @@ window.JM_I18N = {
     "Download started. Check your downloads folder.": "Téléchargement démarré. Vérifiez votre dossier de téléchargements.",
     "Download complete!": "Téléchargement terminé!",
 
+    // Version check
+    "Version unknown": "Version inconnue",
+    "Update available": "Mise à jour disponible",
+    "Up to date": "À jour",
+    "Could not check for updates": "Impossible de vérifier les mises à jour",
+
     // Error messages
     "Failed to load interface data": "Échec du chargement des données d'interface",
     "Failed to load clients": "Échec du chargement des clients",
@@ -1790,6 +1820,10 @@ window.JM_I18N = {
     "Creating diagnostic bundle...": "Criando pacote de diagnóstico...",
     "Download started. Check your downloads folder.": "Download iniciado. Verifique sua pasta de downloads.",
     "Download complete!": "Download concluído!",
+    "Version unknown": "Versão desconhecida",
+    "Update available": "Atualização disponível",
+    "Up to date": "Atualizado",
+    "Could not check for updates": "Não foi possível verificar atualizações",
     "Failed to load interface data": "Falha ao carregar dados da interface",
     "Failed to load clients": "Falha ao carregar clientes",
     "Failed to load WiFi status": "Falha ao carregar status Wi-Fi",
@@ -2003,6 +2037,10 @@ window.JM_I18N = {
     "Creating diagnostic bundle...": "Создание диагностического пакета...",
     "Download started. Check your downloads folder.": "Загрузка началась. Проверьте папку загрузок.",
     "Download complete!": "Загрузка завершена!",
+    "Version unknown": "Версия неизвестна",
+    "Update available": "Доступно обновление",
+    "Up to date": "Актуальная версия",
+    "Could not check for updates": "Не удалось проверить обновления",
     "Failed to load interface data": "Не удалось загрузить данные интерфейса",
     "Failed to load clients": "Не удалось загрузить клиентов",
     "Failed to load WiFi status": "Не удалось загрузить статус Wi-Fi",
@@ -2216,6 +2254,10 @@ window.JM_I18N = {
     "Creating diagnostic bundle...": "診断バンドルを作成中...",
     "Download started. Check your downloads folder.": "ダウンロード開始。ダウンロードフォルダを確認してください。",
     "Download complete!": "ダウンロード完了！",
+    "Version unknown": "バージョン不明",
+    "Update available": "アップデートあり",
+    "Up to date": "最新版",
+    "Could not check for updates": "更新を確認できませんでした",
     "Failed to load interface data": "インターフェースデータの読み込みに失敗",
     "Failed to load clients": "クライアントの読み込みに失敗",
     "Failed to load WiFi status": "Wi-Fiステータスの読み込みに失敗",
@@ -2390,6 +2432,10 @@ window.JM_I18N = {
     "Download Historical Data": "Scarica Dati Storici",
     "Expires in %s day(s)": "Scade tra %s giorno/i", "Expires in %s hour(s)": "Scade tra %s ora/e",
     "Expires in < 1 hour": "Scade tra < 1 ora",
+    "Version unknown": "Versione sconosciuta",
+    "Update available": "Aggiornamento disponibile",
+    "Up to date": "Aggiornato",
+    "Could not check for updates": "Impossibile verificare gli aggiornamenti",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Dettagli",
@@ -2587,6 +2633,10 @@ window.JM_I18N = {
     "Download Historical Data": "Download Historische Gegevens",
     "Expires in %s day(s)": "Verloopt over %s dag(en)", "Expires in %s hour(s)": "Verloopt over %s uur",
     "Expires in < 1 hour": "Verloopt over < 1 uur",
+    "Version unknown": "Versie onbekend",
+    "Update available": "Update beschikbaar",
+    "Up to date": "Bijgewerkt",
+    "Could not check for updates": "Kon niet controleren op updates",
 
     // Phase 2 i18n - Dynamic strings
     "Yesterday": "Gisteren",
@@ -2785,6 +2835,10 @@ window.JM_I18N = {
     "Download Historical Data": "Pobierz Dane Historyczne",
     "Expires in %s day(s)": "Wygasa za %s dni", "Expires in %s hour(s)": "Wygasa za %s godzin",
     "Expires in < 1 hour": "Wygasa za < 1 godzinę",
+    "Version unknown": "Wersja nieznana",
+    "Update available": "Dostępna aktualizacja",
+    "Up to date": "Aktualna",
+    "Could not check for updates": "Nie można sprawdzić aktualizacji",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Szczegóły",
@@ -2961,6 +3015,10 @@ window.JM_I18N = {
     "Download Historical Data": "기록 데이터 다운로드",
     "Expires in %s day(s)": "%s일 후 만료", "Expires in %s hour(s)": "%s시간 후 만료",
     "Expires in < 1 hour": "1시간 이내 만료",
+    "Version unknown": "버전 알 수 없음",
+    "Update available": "업데이트 가능",
+    "Up to date": "최신 상태",
+    "Could not check for updates": "업데이트 확인 불가",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "상세정보",
@@ -3155,6 +3213,10 @@ window.JM_I18N = {
     "Download Historical Data": "Tarihsel Verileri İndir",
     "Expires in %s day(s)": "%s gün içinde sona erer", "Expires in %s hour(s)": "%s saat içinde sona erer",
     "Expires in < 1 hour": "< 1 saat içinde sona erer",
+    "Version unknown": "Sürüm bilinmiyor",
+    "Update available": "Güncelleme mevcut",
+    "Up to date": "Güncel",
+    "Could not check for updates": "Güncellemeler kontrol edilemedi",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Detaylar",
@@ -3374,6 +3436,10 @@ window.JM_I18N = {
     "Download Historical Data": "Tải dữ liệu lịch sử",
     "Expires in %s day(s)": "Hết hạn sau %s ngày", "Expires in %s hour(s)": "Hết hạn sau %s giờ",
     "Expires in < 1 hour": "Hết hạn trong < 1 giờ",
+    "Version unknown": "Phiên bản không xác định",
+    "Update available": "Có bản cập nhật",
+    "Up to date": "Đã cập nhật",
+    "Could not check for updates": "Không thể kiểm tra cập nhật",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Chi tiết",
@@ -3592,6 +3658,10 @@ window.JM_I18N = {
     "Download Historical Data": "تحميل البيانات التاريخية",
     "Expires in %s day(s)": "ينتهي خلال %s يوم", "Expires in %s hour(s)": "ينتهي خلال %s ساعة",
     "Expires in < 1 hour": "ينتهي خلال أقل من ساعة",
+    "Version unknown": "إصدار غير معروف",
+    "Update available": "تحديث متاح",
+    "Up to date": "محدث",
+    "Could not check for updates": "تعذر التحقق من التحديثات",
 
     // Phase 2 i18n - Dynamic strings
     "Yesterday": "أمس",
@@ -3811,6 +3881,10 @@ window.JM_I18N = {
     "Download Historical Data": "ดาวน์โหลดข้อมูลประวัติ",
     "Expires in %s day(s)": "หมดอายุใน %s วัน", "Expires in %s hour(s)": "หมดอายุใน %s ชั่วโมง",
     "Expires in < 1 hour": "หมดอายุใน < 1 ชั่วโมง",
+    "Version unknown": "ไม่ทราบเวอร์ชัน",
+    "Update available": "มีอัปเดต",
+    "Up to date": "เป็นเวอร์ชันล่าสุด",
+    "Could not check for updates": "ไม่สามารถตรวจสอบอัปเดตได้",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "รายละเอียด",
@@ -4029,6 +4103,10 @@ window.JM_I18N = {
     "Download Historical Data": "Unduh Data Historis",
     "Expires in %s day(s)": "Kedaluwarsa dalam %s hari", "Expires in %s hour(s)": "Kedaluwarsa dalam %s jam",
     "Expires in < 1 hour": "Kedaluwarsa dalam < 1 jam",
+    "Version unknown": "Versi tidak diketahui",
+    "Update available": "Pembaruan tersedia",
+    "Up to date": "Terbaru",
+    "Could not check for updates": "Tidak dapat memeriksa pembaruan",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Detail",
@@ -4247,6 +4325,10 @@ window.JM_I18N = {
     "Download Historical Data": "Stáhnout Historická Data",
     "Expires in %s day(s)": "Vyprší za %s dní", "Expires in %s hour(s)": "Vyprší za %s hodin",
     "Expires in < 1 hour": "Vyprší za < 1 hodinu",
+    "Version unknown": "Neznámá verze",
+    "Update available": "K dispozici aktualizace",
+    "Up to date": "Aktuální",
+    "Could not check for updates": "Nelze zkontrolovat aktualizace",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Podrobnosti",
@@ -4465,6 +4547,10 @@ window.JM_I18N = {
     "Download Historical Data": "Ladda ner Historisk Data",
     "Expires in %s day(s)": "Går ut om %s dag(ar)", "Expires in %s hour(s)": "Går ut om %s timme(ar)",
     "Expires in < 1 hour": "Går ut om < 1 timme",
+    "Version unknown": "Version okänd",
+    "Update available": "Uppdatering tillgänglig",
+    "Up to date": "Uppdaterad",
+    "Could not check for updates": "Kunde inte söka efter uppdateringar",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Detaljer",
@@ -4683,6 +4769,10 @@ window.JM_I18N = {
     "Download Historical Data": "Λήψη Ιστορικών Δεδομένων",
     "Expires in %s day(s)": "Λήγει σε %s ημέρα(ες)", "Expires in %s hour(s)": "Λήγει σε %s ώρα(ες)",
     "Expires in < 1 hour": "Λήγει σε < 1 ώρα",
+    "Version unknown": "Άγνωστη έκδοση",
+    "Update available": "Διαθέσιμη ενημέρωση",
+    "Up to date": "Ενημερωμένο",
+    "Could not check for updates": "Αδύνατος έλεγχος ενημερώσεων",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Λεπτομέρειες",
@@ -4901,6 +4991,10 @@ window.JM_I18N = {
     "Download Historical Data": "Завантажити Історичні Дані",
     "Expires in %s day(s)": "Закінчується через %s день(днів)", "Expires in %s hour(s)": "Закінчується через %s годин(у)",
     "Expires in < 1 hour": "Закінчується менше ніж за 1 годину",
+    "Version unknown": "Версія невідома",
+    "Update available": "Доступне оновлення",
+    "Up to date": "Актуально",
+    "Could not check for updates": "Не вдалося перевірити оновлення",
 
     // Phase 2 i18n - Dynamic strings
     "Details": "Деталі",

@@ -36,6 +36,8 @@ function index()
     -- Speed test endpoints
     entry({"admin", "status", "jammonitor", "speedtest_start"}, call("action_speedtest_start"), nil)
     entry({"admin", "status", "jammonitor", "speedtest_status"}, call("action_speedtest_status"), nil)
+    -- Version check endpoint
+    entry({"admin", "status", "jammonitor", "version_check"}, call("action_version_check"), nil)
 end
 
 -- Helper: Validate interface name (alphanumeric, dash, underscore only)
@@ -520,6 +522,57 @@ function action_public_ip()
         ip = valid and ip or nil,
         success = valid
     }))
+end
+
+-- Version check: Compare local version with GitHub latest
+function action_version_check()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local result = {
+        local_version = nil,
+        remote_version = nil,
+        update_available = false,
+        error = nil
+    }
+
+    -- Read local version file
+    local version_file = "/www/luci-static/resources/jammonitor.version"
+    local local_ver = fs.readfile(version_file)
+    if local_ver then
+        result.local_version = local_ver:gsub("%s+$", ""):sub(1, 7)
+    end
+
+    -- Check if we should fetch remote (passed as param to avoid unnecessary calls)
+    local check_remote = http.formvalue("check_remote")
+    if check_remote == "1" then
+        -- Fetch latest commit SHA from GitHub API
+        local github_resp = sys.exec(
+            "curl -s --max-time 5 -H 'Accept: application/vnd.github.v3+json' " ..
+            "'https://api.github.com/repos/madebyjamstudios/jammonitor/commits/main' 2>/dev/null"
+        )
+
+        if github_resp and github_resp ~= "" then
+            local github_data = json.parse(github_resp)
+            if github_data and github_data.sha then
+                result.remote_version = github_data.sha:sub(1, 7)
+                -- Compare versions
+                if result.local_version and result.remote_version then
+                    result.update_available = (result.local_version ~= result.remote_version)
+                end
+            else
+                result.error = "github_parse_error"
+            end
+        else
+            result.error = "github_unreachable"
+        end
+    end
+
+    http.write(json.stringify(result))
 end
 
 -- vnstat stats

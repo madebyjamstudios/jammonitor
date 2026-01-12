@@ -189,6 +189,10 @@ var JamMonitor = (function() {
     var speedTestResults = {};       // {wan1: {download: {...}, upload: {...}}, ...}
     var speedTestRunning = {};       // {wan1_download: job_id, ...}
 
+    // Version check state (cached for session)
+    var versionCheckResult = null;
+    var versionCheckFetched = false;
+
     // Auto-detect best speed test server based on browser language
     function detectSpeedTestServer() {
         var lang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
@@ -225,6 +229,9 @@ var JamMonitor = (function() {
                 location.reload();
             });
         }
+
+        // Check for version updates
+        checkVersion();
 
         document.querySelectorAll('.jm-sidebar-item').forEach(function(item) {
             item.addEventListener('click', function() {
@@ -445,6 +452,69 @@ var JamMonitor = (function() {
 
     function apiPing(host) {
         return api('ping', { host: host });
+    }
+
+    // === VERSION CHECK ===
+    // Check for updates (called once on page load)
+    function checkVersion() {
+        // Only fetch once per session
+        if (versionCheckFetched) {
+            updateVersionUI(versionCheckResult);
+            return;
+        }
+
+        // First, get local version (fast, no network)
+        api('version_check').then(function(data) {
+            if (!data) {
+                updateVersionUI({ error: 'api_error' });
+                return;
+            }
+
+            // Update UI with local version immediately
+            updateVersionUI(data);
+
+            // Now check remote (may be slow or fail)
+            api('version_check', { check_remote: '1' }).then(function(remoteData) {
+                versionCheckFetched = true;
+                versionCheckResult = remoteData || data;
+                updateVersionUI(versionCheckResult);
+            });
+        });
+    }
+
+    function updateVersionUI(data) {
+        var versionEl = document.getElementById('jm-version-info');
+        if (!versionEl) return;
+
+        var statusEl = versionEl.querySelector('.jm-version-status');
+        var textEl = versionEl.querySelector('.jm-version-text');
+        if (!statusEl || !textEl) return;
+
+        if (!data || data.error) {
+            // Error or offline - show local version only
+            textEl.textContent = data && data.local_version
+                ? 'v' + data.local_version
+                : _('Version unknown');
+            statusEl.className = 'jm-version-status gray';
+            statusEl.title = _('Could not check for updates');
+            return;
+        }
+
+        if (data.local_version) {
+            textEl.textContent = 'v' + data.local_version;
+        }
+
+        if (data.update_available) {
+            statusEl.className = 'jm-version-status update-available';
+            statusEl.title = _('Update available') + ': v' + data.remote_version;
+            versionEl.classList.add('has-update');
+        } else if (data.remote_version) {
+            statusEl.className = 'jm-version-status up-to-date';
+            statusEl.title = _('Up to date');
+        } else {
+            statusEl.className = 'jm-version-status gray';
+            statusEl.title = _('Could not check for updates');
+        }
     }
 
     // Cache for CPU calculation (need two samples)
@@ -4793,6 +4863,7 @@ var JamMonitor = (function() {
         selectStorageDevice: selectStorageDevice,
         goToFormatStep: goToFormatStep,
         formatDevice: formatDevice,
-        useSelectedDevice: useSelectedDevice
+        useSelectedDevice: useSelectedDevice,
+        checkVersion: checkVersion
     };
 })();

@@ -121,6 +121,42 @@
     .jm-lang-selector label { font-size: 14px; }
 }
 
+/* Version indicator */
+.jm-version-info {
+    padding: 8px 16px;
+    border-top: 1px solid #3d5a73;
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: #7f8c8d;
+}
+.jm-version-info a {
+    color: #7f8c8d;
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.jm-version-info a:hover { color: #ecf0f1; }
+.jm-version-info.has-update a { color: #f39c12; }
+.jm-version-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.jm-version-status.gray { background: #7f8c8d; }
+.jm-version-status.up-to-date { background: #27ae60; }
+.jm-version-status.update-available { background: #f39c12; animation: pulse-version 2s infinite; }
+@keyframes pulse-version {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+@media (max-width: 900px) {
+    .jm-version-info { padding: 6px 8px; justify-content: center; }
+    .jm-version-text { display: none; }
+}
+
 /* Collapsible sections */
 .jm-collapsible-header { padding: 10px 15px; background: #f8f9fa; border-radius: 8px; cursor: pointer; user-select: none; }
 .jm-collapsible-header:hover { background: #ecf0f1; }
@@ -581,6 +617,12 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                 <option value="el">Ελληνικά</option>
                 <option value="uk">Українська</option>
             </select>
+        </div>
+        <div class="jm-version-info" id="jm-version-info">
+            <a href="https://github.com/madebyjamstudios/jammonitor" target="_blank" rel="noopener">
+                <span class="jm-version-status gray" title="Checking..."></span>
+                <span class="jm-version-text">...</span>
+            </a>
         </div>
     </div>
 

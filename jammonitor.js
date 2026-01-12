@@ -4946,13 +4946,24 @@ var JamMonitor = (function() {
             e.stopPropagation();
         };
 
-        // Fetch data
-        api('history_clients', { range: range, start: startTs }).then(function(data) {
+        // Fetch data - clients and unattributed traffic in parallel
+        var clientsPromise = api('history_clients', { range: range, start: startTs });
+        var summaryPromise = api('traffic_summary', { range: range, start: startTs });
+
+        Promise.all([clientsPromise, summaryPromise]).then(function(results) {
+            var data = results[0];
+            var summary = results[1];
             var body = popup.querySelector('.jm-popup-body');
 
             if (!data || !data.ok || !data.devices || data.devices.length === 0) {
                 body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">' + _('No device data for this period.') + '<br><small style="color:#bdc3c7;">' + _('Data collection started recently or no traffic recorded.') + '</small></div>';
                 return;
+            }
+
+            // Get unattributed traffic from summary
+            var unattributed = { rx: 0, tx: 0 };
+            if (summary && summary.ok && summary.data && summary.data.unattributed) {
+                unattributed = summary.data.unattributed;
             }
 
             // Prepare devices with computed fields
@@ -5051,6 +5062,19 @@ var JamMonitor = (function() {
                     html += '<td style="font-weight:600;">' + formatBytesCompact(dev.total) + '</td>';
                     html += '</tr>';
                 });
+
+                // Add unattributed traffic row if present
+                var unattribTotal = unattributed.rx + unattributed.tx;
+                if (unattribTotal > 0) {
+                    html += '<tr style="background:#fff3cd;border-top:2px solid #f39c12;">';
+                    html += '<td style="font-style:italic;color:#856404;">Tunnel/Router</td>';
+                    html += '<td style="color:#856404;">—</td>';
+                    html += '<td style="color:#856404;">🔒 ' + _('Unattributed') + '</td>';
+                    html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.rx) + '</td>';
+                    html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.tx) + '</td>';
+                    html += '<td style="font-weight:600;color:#856404;">' + formatBytesCompact(unattribTotal) + '</td>';
+                    html += '</tr>';
+                }
 
                 html += '</tbody></table>';
                 body.innerHTML = html;

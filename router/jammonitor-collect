@@ -90,10 +90,18 @@ init_db() {
             tx_bytes INTEGER,
             PRIMARY KEY (hour_ts, ip)
         );
+        CREATE TABLE IF NOT EXISTS interface_traffic (
+            ts INTEGER,
+            iface TEXT,
+            rx_bytes INTEGER,
+            tx_bytes INTEGER,
+            PRIMARY KEY (ts, iface)
+        );
         CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
         CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
         CREATE INDEX IF NOT EXISTS idx_client_ts ON client_traffic(ts);
         CREATE INDEX IF NOT EXISTS idx_client_hourly_ts ON client_traffic_hourly(hour_ts);
+        CREATE INDEX IF NOT EXISTS idx_iface_ts ON interface_traffic(ts);
     "
 }
 
@@ -201,8 +209,9 @@ collect_client_traffic() {
         [ -z "$src" ] && continue
 
         # Skip non-local IPs (external sources)
+        # Include: RFC1918 private ranges + Tailscale (100.x.x.x)
         case "$src" in
-            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) ;;
+            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.*) ;;
             *) continue ;;
         esac
 
@@ -275,6 +284,52 @@ collect_client_traffic() {
     # Save current as last for next iteration
     mv "$AGGREGATED_FILE" "$LAST_FILE" 2>/dev/null
     rm -f "$CURRENT_FILE" 2>/dev/null
+}
+
+# Collect interface-level traffic totals (every minute)
+# Used to calculate unattributed traffic (total - client sum)
+collect_interface_traffic() {
+    TS=$(date +%s)
+    IFACE_SNAPSHOT="${DATA_DIR}/iface_snapshot"
+    CURRENT_IFACE="${IFACE_SNAPSHOT}.current"
+    LAST_IFACE="${IFACE_SNAPSHOT}.last"
+
+    # Collect current interface byte counters
+    > "$CURRENT_IFACE"
+    for iface in $(ls /sys/class/net/ 2>/dev/null); do
+        # Skip loopback and virtual interfaces we don't care about
+        case "$iface" in
+            lo|docker*|veth*|br-*) continue ;;
+        esac
+        RX=$(cat /sys/class/net/$iface/statistics/rx_bytes 2>/dev/null || echo 0)
+        TX=$(cat /sys/class/net/$iface/statistics/tx_bytes 2>/dev/null || echo 0)
+        echo "$iface $RX $TX" >> "$CURRENT_IFACE"
+    done
+
+    # If we have a previous snapshot, calculate deltas
+    if [ -f "$LAST_IFACE" ]; then
+        while read -r iface curr_rx curr_tx; do
+            # Find this interface in last snapshot
+            last_line=$(grep "^$iface " "$LAST_IFACE" 2>/dev/null)
+            if [ -n "$last_line" ]; then
+                last_rx=$(echo "$last_line" | awk '{print $2}')
+                last_tx=$(echo "$last_line" | awk '{print $3}')
+
+                # Calculate delta (handle counter wrap)
+                delta_rx=$((curr_rx - last_rx))
+                delta_tx=$((curr_tx - last_tx))
+                [ "$delta_rx" -lt 0 ] && delta_rx=0
+                [ "$delta_tx" -lt 0 ] && delta_tx=0
+
+                # Store if non-zero
+                if [ "$delta_rx" -gt 0 ] || [ "$delta_tx" -gt 0 ]; then
+                    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO interface_traffic (ts, iface, rx_bytes, tx_bytes) VALUES ($TS, '$iface', $delta_rx, $delta_tx);" 2>/dev/null
+                fi
+            fi
+        done < "$CURRENT_IFACE"
+    fi
+
+    mv "$CURRENT_IFACE" "$LAST_IFACE" 2>/dev/null
 }
 
 # Stream syslog (continuous append with rotation)
@@ -365,10 +420,11 @@ init_db
 COUNTER=0
 
 while true; do
-    # Collect metrics, snapshots, and per-client traffic every minute
+    # Collect metrics, snapshots, per-client and per-interface traffic every minute
     collect_metrics
     collect_slow
     collect_client_traffic
+    collect_interface_traffic
     stream_syslog
 
     COUNTER=$((COUNTER + 1))

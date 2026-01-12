@@ -20,6 +20,7 @@ function index()
     entry({"admin", "status", "jammonitor", "wan_ifaces"}, call("action_wan_ifaces"), nil)
     entry({"admin", "status", "jammonitor", "history"}, call("action_history"), nil)
     entry({"admin", "status", "jammonitor", "history_clients"}, call("action_history_clients"), nil)
+    entry({"admin", "status", "jammonitor", "traffic_summary"}, call("action_traffic_summary"), nil)
     entry({"admin", "status", "jammonitor", "bypass"}, call("action_bypass"), nil)
     entry({"admin", "status", "jammonitor", "storage_status"}, call("action_storage_status"), nil)
     -- USB Storage setup endpoints
@@ -3158,6 +3159,99 @@ function action_history_clients()
         start = start_ts,
         ["end"] = end_ts,
         devices = devices
+    }))
+end
+
+-- Traffic summary with unattributed calculation
+-- Returns interface totals, client totals, and unattributed delta
+function action_traffic_summary()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    local range = http.formvalue("range") or "hourly"
+    local start_ts = tonumber(http.formvalue("start")) or 0
+
+    -- Calculate time range based on bucket type
+    local end_ts
+    if range == "hourly" then
+        end_ts = start_ts + 3600
+    elseif range == "daily" then
+        end_ts = start_ts + 86400
+    else
+        end_ts = start_ts + 31 * 86400
+    end
+
+    local db_path = "/mnt/data/jammonitor/history.db"
+    local result = {
+        interfaces = {},
+        client_total = { rx = 0, tx = 0 },
+        unattributed = { rx = 0, tx = 0 }
+    }
+
+    if fs.stat(db_path) then
+        -- Get interface totals for time range
+        local iface_query = string.format([[
+            SELECT iface, SUM(rx_bytes) as rx, SUM(tx_bytes) as tx
+            FROM interface_traffic
+            WHERE ts >= %d AND ts < %d
+            GROUP BY iface
+        ]], start_ts, end_ts)
+        iface_query = iface_query:gsub("\n", " ")
+
+        local iface_result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. iface_query .. "\" 2>/dev/null")
+        local total_iface_rx = 0
+        local total_iface_tx = 0
+
+        if iface_result and iface_result ~= "" then
+            for line in iface_result:gmatch("[^\n]+") do
+                local iface, rx, tx = line:match("^([^|]+)|([^|]+)|([^|]+)")
+                if iface then
+                    rx = tonumber(rx) or 0
+                    tx = tonumber(tx) or 0
+                    result.interfaces[iface] = { rx = rx, tx = tx }
+                    -- Only count WAN/tunnel interfaces for unattributed calc
+                    if iface:match("^wan") or iface:match("^eth") or iface:match("^tun") or iface:match("^wg") then
+                        total_iface_rx = total_iface_rx + rx
+                        total_iface_tx = total_iface_tx + tx
+                    end
+                end
+            end
+        end
+
+        -- Get client traffic totals for same time range
+        local client_query = string.format([[
+            SELECT SUM(rx_bytes) as rx, SUM(tx_bytes) as tx
+            FROM (
+                SELECT rx_bytes, tx_bytes FROM client_traffic
+                WHERE ts >= %d AND ts < %d
+                UNION ALL
+                SELECT rx_bytes, tx_bytes FROM client_traffic_hourly
+                WHERE hour_ts >= %d AND hour_ts < %d
+            )
+        ]], start_ts, end_ts, start_ts, end_ts)
+        client_query = client_query:gsub("\n", " ")
+
+        local client_result = sys.exec("sqlite3 '" .. db_path .. "' \"" .. client_query .. "\" 2>/dev/null")
+        if client_result and client_result ~= "" then
+            local rx, tx = client_result:match("^([^|]*)|([^|]*)")
+            result.client_total.rx = tonumber(rx) or 0
+            result.client_total.tx = tonumber(tx) or 0
+        end
+
+        -- Calculate unattributed (interface total - client total)
+        result.unattributed.rx = math.max(0, total_iface_rx - result.client_total.rx)
+        result.unattributed.tx = math.max(0, total_iface_tx - result.client_total.tx)
+    end
+
+    http.prepare_content("application/json")
+    http.write(json.stringify({
+        ok = true,
+        range = range,
+        start = start_ts,
+        ["end"] = end_ts,
+        data = result
     }))
 end
 

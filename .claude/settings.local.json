@@ -6,15 +6,11 @@
       "WebSearch",
       "Bash(wc:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nImplement true VPS bypass by stopping OpenVPN and Shadowsocks\n\nThe previous bypass only set multipath=off, but traffic still routed\nthrough VPS because:\n- OpenVPN manages tun0 and re-adds routes\n- Shadowsocks transparent proxy redirects all TCP to port 1100\n- nftables rule: meta l4proto tcp redirect to :1100\n\nNow the bypass properly:\n- Stops OpenVPN daemon and kills processes\n- Stops Shadowsocks daemon and kills sslocal processes\n- Brings down tun0 interface\n- Waits 3 seconds for services to stop cleanly\n\nRestore now properly:\n- Starts Shadowsocks daemon\n- Starts OpenVPN daemon\n- Reloads firewall to restore nftables rules\n- Reloads network\n- Waits 5 seconds for VPN to reconnect\n\nAlso updated frontend with:\n- Better confirmation dialogs explaining what will happen\n- Longer status messages during switching \\(~10 seconds\\)\n- Warning about connection interruption times\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git push:*)",
       "Bash(git commit:*)",
       "WebFetch(domain:github.com)",
       "Bash(luac:*)",
       "Bash(git log:*)",
-      "Bash(for hash in e5b2cf7 baf6658 dfbc2ab)",
-      "Bash(do echo \"=== $hash ===\")",
-      "Bash(done)",
       "Bash(python3:*)",
       "Bash(cat:*)",
       "Bash(git restore:*)",
@@ -29,8 +25,8 @@
       "Bash(node -c:*)",
       "Bash(gh issue list:*)",
       "Bash(gh issue view:*)",
-      "Bash(gh issue close 2 --comment \"$\\(cat <<''EOF''\nGreat news! Multilingual support has been implemented! 🎉\n\n**Features:**\n- **21 languages** supported: English, Chinese \\(简体中文\\), Spanish, German, French, Portuguese, Russian, Japanese, Italian, Dutch, Polish, Korean, Turkish, Vietnamese, Arabic, Thai, Indonesian, Czech, Swedish, Greek, and Ukrainian\n- **Auto-detection** - JamMonitor automatically detects your browser/system language and switches to it\n- **Full coverage** - All UI elements are translated including navigation, status messages, buttons, tooltips, and dynamic content\n\n**How it works:**\nThe system reads your browser''s language preference \\(`navigator.language`\\) and automatically displays the interface in your language. No manual configuration needed!\n\n**Implementation commits:**\n- Initial i18n system: 296c9cc\n- Phase 2 dynamic strings: d40e80d  \n- Latest translation fixes: f7ad9f6\n\nIf you find any missing or incorrect translations, feel free to open a new issue. Thanks for the suggestion!\nEOF\n\\)\")",
-      "Bash(gh issue close:*)"
+      "Bash(gh issue close:*)",
+      "Bash(grep:*)"
     ]
   }
 }

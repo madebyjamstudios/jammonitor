@@ -97,18 +97,20 @@
     border-top: 1px solid #3d5a73;
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 8px;
     cursor: pointer;
     position: relative;
     transition: background 0.2s;
 }
 .jm-settings-btn:hover { background: rgba(255,255,255,0.1); }
-.jm-settings-icon { font-size: 20px; color: #95a5a6; transition: color 0.2s; }
-.jm-settings-btn:hover .jm-settings-icon { color: #ecf0f1; }
+.jm-settings-icon { font-size: 18px; color: #95a5a6; transition: color 0.2s; }
+.jm-settings-label { font-size: 14px; color: #95a5a6; transition: color 0.2s; }
+.jm-settings-btn:hover .jm-settings-icon,
+.jm-settings-btn:hover .jm-settings-label { color: #ecf0f1; }
 .jm-settings-badge {
     position: absolute;
     top: 8px;
-    right: calc(50% - 18px);
+    right: 12px;
     width: 10px;
     height: 10px;
     border-radius: 50%;
@@ -122,8 +124,9 @@
     50% { opacity: 0.7; transform: scale(0.9); }
 }
 @media (max-width: 900px) {
-    .jm-settings-btn { padding: 10px; }
+    .jm-settings-btn { padding: 10px; justify-content: center; }
     .jm-settings-icon { font-size: 18px; }
+    .jm-settings-label { display: none; }
 }
 
 /* Settings popup overlay */
@@ -719,6 +722,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <div class="jm-sidebar-item" data-view="bw-monthly">Monthly</div>
         <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">
             <span class="jm-settings-icon">&#9881;</span>
+            <span class="jm-settings-label">Settings</span>
             <span class="jm-settings-badge" id="jm-settings-badge"></span>
         </div>
     </div>

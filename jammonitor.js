@@ -537,7 +537,7 @@ var JamMonitor = (function() {
         overlay.id = 'jm-settings-overlay';
         overlay.innerHTML = '<div class="jm-settings-popup">' +
             '<div class="jm-settings-header">' +
-                '<span class="jm-settings-header-icon">&#9881;</span>' +
+                '<span class="jm-settings-header-icon">🔧</span>' +
                 '<span class="jm-settings-header-title">' + _('Settings') + '</span>' +
                 '<button class="jm-settings-close" onclick="JamMonitor.closeSettingsPopup()">&times;</button>' +
             '</div>' +

@@ -93,17 +93,18 @@
 /* Settings button in sidebar */
 .jm-settings-btn {
     margin-top: auto;
-    padding: 10px 20px;
+    padding: 12px 20px;
     border-top: 1px solid #3d5a73;
     cursor: pointer;
     color: #95a5a6;
+    font-size: 15px;
     position: relative;
     transition: all 0.15s;
 }
 .jm-settings-btn:hover { background: rgba(255,255,255,0.1); color: #ecf0f1; }
 .jm-settings-badge {
     position: absolute;
-    top: 8px;
+    top: 10px;
     right: 12px;
     width: 10px;
     height: 10px;
@@ -119,7 +120,7 @@
 }
 @media (max-width: 900px) {
     .jm-settings-btn { padding: 12px 8px; font-size: 0; text-align: center; }
-    .jm-settings-btn::before { content: "⚙"; font-size: 16px; }
+    .jm-settings-btn::before { content: "🔧"; font-size: 16px; }
 }
 @media (max-width: 600px) {
     .jm-settings-btn { padding: 10px 5px; }
@@ -721,7 +722,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <div class="jm-sidebar-item" data-view="bw-hourly">Hourly</div>
         <div class="jm-sidebar-item" data-view="bw-daily">Daily</div>
         <div class="jm-sidebar-item" data-view="bw-monthly">Monthly</div>
-        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">⚙ Settings<span class="jm-settings-badge" id="jm-settings-badge"></span></div>
+        <div class="jm-settings-btn" id="jm-settings-btn" onclick="JamMonitor.showSettingsPopup()">🔧 Settings<span class="jm-settings-badge" id="jm-settings-badge"></span></div>
     </div>
 
     <div class="jm-main">

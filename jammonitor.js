@@ -858,11 +858,7 @@ var JamMonitor = (function() {
     function updateOverview() {
         // Use system_stats API for all system metrics
         api('system_stats').then(function(data) {
-            console.log('[JM] system_stats:', data);
-            if (!data) {
-                console.error('[JM] system_stats returned null');
-                return;
-            }
+            if (!data) return;
 
             // Load average
             if (data.load && data.load.length >= 3) {
@@ -904,18 +900,17 @@ var JamMonitor = (function() {
 
             // Uptime & Boot time - use parseFloat to handle float values
             var uptimeSecs = parseFloat(data.uptime_secs);
-            console.log('[JM] uptime_secs raw:', data.uptime_secs, 'parsed:', uptimeSecs);
             if (!isNaN(uptimeSecs) && uptimeSecs > 0) {
-                document.getElementById('uptime-val').textContent = formatUptime(uptimeSecs);
-                document.getElementById('uptime-tooltip').textContent = _('Since boot');
-                // Calculate boot time from current time minus uptime
-                var bootDate = new Date(Date.now() - (uptimeSecs * 1000));
-                var bootStr = bootDate.toLocaleDateString() + ' ' + bootDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-                document.getElementById('boot-time').textContent = bootStr;
+                var uptimeEl = document.getElementById('uptime-val');
+                var bootTimeEl = document.getElementById('boot-time');
+                if (uptimeEl) uptimeEl.textContent = formatUptime(uptimeSecs);
+                if (bootTimeEl) {
+                    var bootDate = new Date(Date.now() - (uptimeSecs * 1000));
+                    bootTimeEl.textContent = bootDate.toLocaleDateString() + ' ' + bootDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                }
             }
 
             // Local time - always update
-            console.log('[JM] date:', data.date);
             var localTimeEl = document.getElementById('local-time');
             if (localTimeEl) {
                 localTimeEl.textContent = data.date || new Date().toLocaleString();

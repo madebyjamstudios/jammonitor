@@ -539,7 +539,7 @@ var JamMonitor = (function() {
             '<div class="jm-settings-header">' +
                 '<span class="jm-settings-header-icon">⚙︎</span>' +
                 '<span class="jm-settings-header-title">' + _('Settings') + '</span>' +
-                '<button class="jm-settings-close" onclick="JamMonitor.closeSettingsPopup()">&times;</button>' +
+                '<button class="jm-close-btn" onclick="JamMonitor.closeSettingsPopup()"></button>' +
             '</div>' +
             '<div class="jm-settings-body">' +
                 '<div class="jm-settings-section">' +
@@ -2754,7 +2754,7 @@ var JamMonitor = (function() {
 
         popup.innerHTML = '<div class="wan-ip-popup-header">' +
             '<span>' + escapeHtml(iface.name) + ' ' + _('Details') + '</span>' +
-            '<span class="wan-ip-popup-close" onclick="JamMonitor.closeWanIpPopup()">×</span>' +
+            '<button class="jm-close-btn jm-close-btn-sm" onclick="JamMonitor.closeWanIpPopup()"></button>' +
             '</div>' +
             '<div class="wan-ip-popup-body">' +
             '<div class="wan-ip-popup-row"><span class="wan-ip-popup-label">' + _('Connection Type') + '</span><span class="wan-ip-popup-value">' + escapeHtml(iface.proto || '—') + '</span></div>' +
@@ -2864,9 +2864,9 @@ var JamMonitor = (function() {
         var sError = 'color:#e74c3c;font-size:11px;margin-top:6px;display:none;';
         var sInputSmall = 'width:70px;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;text-align:center;';
 
-        popup.innerHTML = '<div style="' + sHeader + '">' +
+        popup.innerHTML = '<div class="wan-edit-popup-header" style="' + sHeader + '">' +
             '<span>' + _('Edit') + ' ' + escapeHtml(iface.name) + '</span>' +
-            '<span style="' + sClose + '" onclick="JamMonitor.closeWanEditPopup()">×</span>' +
+            '<button class="jm-close-btn jm-close-btn-sm" onclick="JamMonitor.closeWanEditPopup()"></button>' +
             '</div>' +
             '<div style="' + sBody + '">' +
             // Priority & Protocol row
@@ -4924,7 +4924,7 @@ var JamMonitor = (function() {
         popup.className = 'jm-popup bw-bucket-popup';
         popup.innerHTML = '<div class="jm-popup-header">' +
             '<span>' + _('Device Breakdown') + ' - ' + escapeHtml(labelText) + '</span>' +
-            '<button class="jm-popup-close" onclick="JamMonitor.closeBwBucketPopup()">&times;</button>' +
+            '<button class="jm-close-btn" onclick="JamMonitor.closeBwBucketPopup()"></button>' +
             '</div>' +
             '<div class="jm-popup-body">' +
             '<div class="bw-bucket-loading"><div class="chart-spinner"></div><div>' + _('Loading device data...') + '</div></div>' +

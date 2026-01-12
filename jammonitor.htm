@@ -169,21 +169,37 @@
 }
 .jm-settings-header-icon { font-size: 18px; margin-right: 10px; }
 .jm-settings-header-title { font-weight: 600; font-size: 16px; color: #2c3e50; flex: 1; }
-.jm-settings-close {
+/* Universal close button - CSS X icon */
+.jm-close-btn {
     width: 28px;
     height: 28px;
     border: none;
     background: #f5f5f5;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 16px;
-    color: #666;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: relative;
     transition: background 0.2s;
 }
-.jm-settings-close:hover { background: #e0e0e0; }
+.jm-close-btn:hover { background: #e0e0e0; }
+.jm-close-btn::before,
+.jm-close-btn::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 14px;
+    height: 2px;
+    background: #666;
+    border-radius: 1px;
+}
+.jm-close-btn::before { transform: translate(-50%, -50%) rotate(45deg); }
+.jm-close-btn::after { transform: translate(-50%, -50%) rotate(-45deg); }
+.jm-close-btn:hover::before,
+.jm-close-btn:hover::after { background: #333; }
+/* Small variant for compact popups */
+.jm-close-btn-sm { width: 22px; height: 22px; }
+.jm-close-btn-sm::before,
+.jm-close-btn-sm::after { width: 10px; }
 .jm-settings-body { padding: 20px; overflow: visible; }
 .jm-settings-section { margin-bottom: 20px; overflow: visible; }
 .jm-settings-section:last-child { margin-bottom: 0; }
@@ -428,8 +444,6 @@ table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 /* Bandwidth bucket popup */
 .jm-popup-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
 .jm-popup-header span { font-size: 16px; font-weight: 600; color: #2c3e50; }
-.jm-popup-close { background: none; border: none; font-size: 24px; color: #7f8c8d; cursor: pointer; padding: 0; line-height: 1; }
-.jm-popup-close:hover { color: #2c3e50; }
 .jm-popup-body { max-height: 400px; overflow-y: auto; }
 .jm-popup-footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee; text-align: right; }
 .bw-bucket-popup { min-width: 700px; max-width: 90vw; }
@@ -591,8 +605,10 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 .wan-policy-ip.no-ip { color: #95a5a6; cursor: default; text-decoration: none; }
 .wan-ip-popup { position: fixed; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); padding: 0; z-index: 1000; min-width: 280px; font-size: 12px; }
 .wan-ip-popup-header { background: #2c3e50; color: #fff; padding: 10px 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; border-radius: 5px 5px 0 0; }
-.wan-ip-popup-close { cursor: pointer; font-size: 18px; line-height: 1; opacity: 0.8; }
-.wan-ip-popup-close:hover { opacity: 1; }
+.wan-ip-popup-header .jm-close-btn-sm { background: rgba(255,255,255,0.15); }
+.wan-ip-popup-header .jm-close-btn-sm:hover { background: rgba(255,255,255,0.25); }
+.wan-ip-popup-header .jm-close-btn-sm::before,
+.wan-ip-popup-header .jm-close-btn-sm::after { background: #fff; }
 .wan-ip-popup-body { padding: 12px; }
 .wan-ip-popup-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
 .wan-ip-popup-row:last-child { border-bottom: none; }
@@ -602,8 +618,10 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 /* WAN Edit Popup */
 .wan-edit-popup { position: fixed; background: #fff; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); z-index: 1001; min-width: 420px; max-width: 500px; font-size: 13px; }
 .wan-edit-popup-header { background: #2c3e50; color: #fff; padding: 12px 15px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; border-radius: 7px 7px 0 0; }
-.wan-edit-popup-close { cursor: pointer; font-size: 20px; line-height: 1; opacity: 0.8; }
-.wan-edit-popup-close:hover { opacity: 1; }
+.wan-edit-popup-header .jm-close-btn-sm { background: rgba(255,255,255,0.15); }
+.wan-edit-popup-header .jm-close-btn-sm:hover { background: rgba(255,255,255,0.25); }
+.wan-edit-popup-header .jm-close-btn-sm::before,
+.wan-edit-popup-header .jm-close-btn-sm::after { background: #fff; }
 .wan-edit-popup-body { padding: 15px; max-height: 70vh; overflow-y: auto; }
 .wan-edit-section { margin-bottom: 18px; }
 .wan-edit-section:last-child { margin-bottom: 0; }
@@ -713,8 +731,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 .storage-device-option:hover:not(.disabled) { border-color: #3498db; background: #f8f9fa; }
 .storage-device-option.selected { border-color: #3498db; background: #ebf5fb; }
 .storage-device-option.disabled { opacity: 0.5; cursor: not-allowed; }
-.storage-close-btn { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; color: #7f8c8d; cursor: pointer; line-height: 1; padding: 0; }
-.storage-close-btn:hover { color: #2c3e50; }
+#storage-wizard > .jm-close-btn { position: absolute; top: 16px; right: 16px; }
 </style>
 
 <div class="jm-container">
@@ -1162,7 +1179,7 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
 
                 <!-- Setup wizard (expanded) -->
                 <div id="storage-wizard" style="display:none;">
-                    <button class="storage-close-btn" onclick="JamMonitor.hideStorageSetup()">&times;</button>
+                    <button class="jm-close-btn" onclick="JamMonitor.hideStorageSetup()"></button>
                     <h3 style="margin:0 0 20px 0;color:#2c3e50;font-size:18px;" data-i18n="USB Storage Setup">USB Storage Setup</h3>
 
                     <!-- Step indicators -->

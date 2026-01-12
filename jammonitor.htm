@@ -90,9 +90,11 @@
     .jm-health-tile .tile-label { font-size: 8px; }
 }
 
-/* Settings button in sidebar */
+/* Settings button in sidebar - fills to bottom */
 .jm-settings-btn {
-    margin-top: auto;
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
     padding: 12px 20px;
     border-top: 1px solid #3d5a73;
     cursor: pointer;
@@ -100,6 +102,8 @@
     font-size: 15px;
     position: relative;
     transition: all 0.15s;
+    min-height: 44px;
+    box-sizing: border-box;
 }
 .jm-settings-btn:hover { background: rgba(255,255,255,0.1); color: #ecf0f1; }
 .jm-settings-badge {
@@ -158,6 +162,7 @@
     box-shadow: 0 8px 32px rgba(0,0,0,0.3);
     transform: translateY(-20px);
     transition: transform 0.2s;
+    overflow: visible;
 }
 .jm-settings-overlay.show .jm-settings-popup { transform: translateY(0); }
 .jm-settings-header {
@@ -183,8 +188,8 @@
     transition: background 0.2s;
 }
 .jm-settings-close:hover { background: #e0e0e0; }
-.jm-settings-body { padding: 20px; }
-.jm-settings-section { margin-bottom: 20px; }
+.jm-settings-body { padding: 20px; overflow: visible; }
+.jm-settings-section { margin-bottom: 20px; overflow: visible; }
 .jm-settings-section:last-child { margin-bottom: 0; }
 .jm-settings-label {
     font-size: 11px;
@@ -196,25 +201,22 @@
 }
 .jm-settings-select {
     width: 100%;
-    padding: 10px 12px;
+    padding: 12px 14px;
     border: 1px solid #ddd;
     border-radius: 8px;
     font-size: 14px;
-    line-height: 1.4;
+    line-height: 1.5;
+    height: auto;
     background: #fff;
     cursor: pointer;
     transition: border-color 0.2s;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 12px center;
-    padding-right: 32px;
+    padding-right: 36px;
 }
 .jm-settings-select:hover { border-color: #bbb; }
 .jm-settings-select:focus { outline: none; border-color: #3498db; }
-.jm-settings-select option { padding: 8px; line-height: 1.4; }
 
 /* Version card in settings */
 .jm-version-card {

@@ -189,9 +189,17 @@ var JamMonitor = (function() {
     var speedTestResults = {};       // {wan1: {download: {...}, upload: {...}}, ...}
     var speedTestRunning = {};       // {wan1_download: job_id, ...}
 
-    // Version check state (cached for session)
+    // Version check and update state
     var versionCheckResult = null;
     var versionCheckFetched = false;
+    var updateState = {
+        updating: false,
+        jobId: null,
+        progress: 0,
+        currentFile: null,
+        error: null,
+        startTime: null
+    };
 
     // Auto-detect best speed test server based on browser language
     function detectSpeedTestServer() {
@@ -217,20 +225,7 @@ var JamMonitor = (function() {
     function init() {
         loadState();
 
-        // Language selector handler
-        var langSelect = document.getElementById('jm-lang-select');
-        if (langSelect) {
-            // Set current value from localStorage
-            var savedLang = localStorage.getItem('jammonitor_lang') || 'auto';
-            langSelect.value = savedLang;
-            // Handle change
-            langSelect.addEventListener('change', function() {
-                localStorage.setItem('jammonitor_lang', this.value);
-                location.reload();
-            });
-        }
-
-        // Check for version updates
+        // Check for version updates (updates settings badge)
         checkVersion();
 
         document.querySelectorAll('.jm-sidebar-item').forEach(function(item) {
@@ -454,67 +449,326 @@ var JamMonitor = (function() {
         return api('ping', { host: host });
     }
 
-    // === VERSION CHECK ===
+    // === VERSION CHECK & SETTINGS ===
     // Check for updates (called once on page load)
     function checkVersion() {
         // Only fetch once per session
         if (versionCheckFetched) {
-            updateVersionUI(versionCheckResult);
+            updateSettingsBadge(versionCheckResult);
             return;
         }
 
         // First, get local version (fast, no network)
         api('version_check').then(function(data) {
             if (!data) {
-                updateVersionUI({ error: 'api_error' });
+                versionCheckResult = { error: 'api_error' };
                 return;
             }
 
-            // Update UI with local version immediately
-            updateVersionUI(data);
+            versionCheckResult = data;
 
             // Now check remote (may be slow or fail)
             api('version_check', { check_remote: '1' }).then(function(remoteData) {
                 versionCheckFetched = true;
                 versionCheckResult = remoteData || data;
-                updateVersionUI(versionCheckResult);
+                updateSettingsBadge(versionCheckResult);
             });
         });
     }
 
-    function updateVersionUI(data) {
-        var versionEl = document.getElementById('jm-version-info');
-        if (!versionEl) return;
+    // Update settings badge (orange dot when update available)
+    function updateSettingsBadge(data) {
+        var badge = document.getElementById('jm-settings-badge');
+        if (!badge) return;
 
-        var statusEl = versionEl.querySelector('.jm-version-status');
-        var textEl = versionEl.querySelector('.jm-version-text');
-        if (!statusEl || !textEl) return;
+        if (data && data.update_available) {
+            badge.classList.add('show');
+        } else {
+            badge.classList.remove('show');
+        }
+    }
 
-        if (!data || data.error) {
-            // Error or offline - show local version only
-            textEl.textContent = data && data.local_version
-                ? 'v' + data.local_version
-                : _('Version unknown');
-            statusEl.className = 'jm-version-status gray';
-            statusEl.title = _('Could not check for updates');
+    // Language options for settings popup
+    var languageOptions = [
+        { value: 'auto', label: 'Auto' },
+        { value: 'en', label: 'English' },
+        { value: 'zh-cn', label: '中文' },
+        { value: 'es', label: 'Español' },
+        { value: 'de', label: 'Deutsch' },
+        { value: 'fr', label: 'Français' },
+        { value: 'pt-br', label: 'Português' },
+        { value: 'ru', label: 'Русский' },
+        { value: 'ja', label: '日本語' },
+        { value: 'it', label: 'Italiano' },
+        { value: 'nl', label: 'Nederlands' },
+        { value: 'pl', label: 'Polski' },
+        { value: 'ko', label: '한국어' },
+        { value: 'tr', label: 'Türkçe' },
+        { value: 'vi', label: 'Tiếng Việt' },
+        { value: 'ar', label: 'العربية' },
+        { value: 'th', label: 'ไทย' },
+        { value: 'id', label: 'Indonesia' },
+        { value: 'cs', label: 'Čeština' },
+        { value: 'sv', label: 'Svenska' },
+        { value: 'el', label: 'Ελληνικά' },
+        { value: 'uk', label: 'Українська' }
+    ];
+
+    // Show settings popup
+    function showSettingsPopup() {
+        // Remove existing popup if any
+        closeSettingsPopup();
+
+        var savedLang = localStorage.getItem('jammonitor_lang') || 'auto';
+        var data = versionCheckResult || {};
+
+        // Build language options HTML
+        var langOptionsHtml = languageOptions.map(function(opt) {
+            var selected = opt.value === savedLang ? ' selected' : '';
+            return '<option value="' + opt.value + '"' + selected + '>' + opt.label + '</option>';
+        }).join('');
+
+        // Build version status HTML
+        var versionHtml = buildVersionStatusHtml(data);
+
+        // Create overlay
+        var overlay = document.createElement('div');
+        overlay.className = 'jm-settings-overlay';
+        overlay.id = 'jm-settings-overlay';
+        overlay.innerHTML = '<div class="jm-settings-popup">' +
+            '<div class="jm-settings-header">' +
+                '<span class="jm-settings-header-icon">&#9881;</span>' +
+                '<span class="jm-settings-header-title">' + _('Settings') + '</span>' +
+                '<button class="jm-settings-close" onclick="JamMonitor.closeSettingsPopup()">&times;</button>' +
+            '</div>' +
+            '<div class="jm-settings-body">' +
+                '<div class="jm-settings-section">' +
+                    '<div class="jm-settings-label">' + _('Language') + '</div>' +
+                    '<select class="jm-settings-select" id="jm-settings-lang">' + langOptionsHtml + '</select>' +
+                '</div>' +
+                '<div class="jm-settings-section">' +
+                    '<div class="jm-settings-label">' + _('Version') + '</div>' +
+                    '<div class="jm-version-card" id="jm-version-card">' + versionHtml + '</div>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+
+        document.body.appendChild(overlay);
+
+        // Language change handler
+        var langSelect = document.getElementById('jm-settings-lang');
+        if (langSelect) {
+            langSelect.addEventListener('change', function() {
+                localStorage.setItem('jammonitor_lang', this.value);
+                location.reload();
+            });
+        }
+
+        // Click outside to close
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) {
+                closeSettingsPopup();
+            }
+        });
+
+        // Escape key to close
+        document.addEventListener('keydown', handleSettingsEscape);
+
+        // Animate in
+        setTimeout(function() {
+            overlay.classList.add('show');
+        }, 10);
+    }
+
+    function handleSettingsEscape(e) {
+        if (e.key === 'Escape') {
+            closeSettingsPopup();
+        }
+    }
+
+    function closeSettingsPopup() {
+        var overlay = document.getElementById('jm-settings-overlay');
+        if (overlay) {
+            overlay.classList.remove('show');
+            setTimeout(function() {
+                overlay.remove();
+            }, 200);
+        }
+        document.removeEventListener('keydown', handleSettingsEscape);
+    }
+
+    // Build version status HTML based on current state
+    function buildVersionStatusHtml(data) {
+        var iconClass, iconSymbol, mainText, subText, showButton = false, showProgress = false;
+
+        if (updateState.updating) {
+            // Currently updating
+            iconClass = 'updating';
+            iconSymbol = '&#8635;';  // ↻
+            mainText = _('Installing...');
+            subText = updateState.currentFile ? _('Downloading %s...').replace('%s', updateState.currentFile) : '';
+            showProgress = true;
+        } else if (updateState.error) {
+            // Update failed
+            iconClass = 'error';
+            iconSymbol = '&#10060;';  // ❌
+            mainText = _('Update failed');
+            subText = updateState.error;
+            showButton = data && data.update_available;
+        } else if (!data || data.error) {
+            // Error checking version
+            iconClass = 'error';
+            iconSymbol = '?';
+            mainText = data && data.local_version ? 'v ' + data.local_version : _('Version unknown');
+            subText = _('Could not check for updates');
+        } else if (data.update_available) {
+            // Update available
+            iconClass = 'update-available';
+            iconSymbol = '&#8593;';  // ↑
+            mainText = _('Update available');
+            subText = 'v ' + data.local_version + ' → v ' + data.remote_version;
+            showButton = true;
+        } else if (data.remote_version) {
+            // Up to date
+            iconClass = 'up-to-date';
+            iconSymbol = '&#10003;';  // ✓
+            mainText = _('Up to date');
+            subText = 'v ' + data.local_version;
+        } else {
+            // Checking
+            iconClass = 'checking';
+            iconSymbol = '...';
+            mainText = data.local_version ? 'v ' + data.local_version : _('Checking...');
+            subText = '';
+        }
+
+        var html = '<div class="jm-version-status-row">' +
+            '<div class="jm-version-status-icon ' + iconClass + '">' + iconSymbol + '</div>' +
+            '<div class="jm-version-status-text">' +
+                '<div class="jm-version-status-main">' + mainText + '</div>' +
+                (subText ? '<div class="jm-version-status-sub">' + subText + '</div>' : '') +
+            '</div>' +
+        '</div>';
+
+        if (showButton) {
+            html += '<button class="jm-update-btn" onclick="JamMonitor.startUpdate()">' + _('Install Update') + '</button>';
+        }
+
+        if (showProgress) {
+            var progress = updateState.progress || 0;
+            var eta = calculateETA();
+            html += '<div class="jm-update-progress show">' +
+                '<div class="jm-progress-label">' +
+                    '<span>' + (updateState.currentFile || _('Installing...')) + '</span>' +
+                    '<span>' + progress + '%</span>' +
+                '</div>' +
+                '<div class="jm-progress-bar"><div class="jm-progress-fill" style="width:' + progress + '%"></div></div>' +
+                (eta ? '<div class="jm-progress-eta">' + _('ETA: %s').replace('%s', eta) + '</div>' : '') +
+            '</div>';
+        }
+
+        return html;
+    }
+
+    // Calculate ETA based on progress and elapsed time
+    function calculateETA() {
+        if (!updateState.startTime || updateState.progress <= 0) return '';
+        var elapsed = (Date.now() - updateState.startTime) / 1000;
+        var remaining = (elapsed / updateState.progress) * (100 - updateState.progress);
+        if (remaining < 1) return '';
+        if (remaining < 60) return Math.round(remaining) + 's';
+        return Math.round(remaining / 60) + 'm';
+    }
+
+    // Update the version card in the popup
+    function updateVersionCard() {
+        var card = document.getElementById('jm-version-card');
+        if (card) {
+            card.innerHTML = buildVersionStatusHtml(versionCheckResult || {});
+        }
+    }
+
+    // Start the auto-update process
+    function startUpdate() {
+        if (updateState.updating) return;
+        if (!versionCheckResult || !versionCheckResult.remote_version) {
+            console.error('No remote version available');
             return;
         }
 
-        if (data.local_version) {
-            textEl.textContent = 'v' + data.local_version;
-        }
+        updateState.updating = true;
+        updateState.progress = 0;
+        updateState.currentFile = 'jammonitor.lua';
+        updateState.error = null;
+        updateState.startTime = Date.now();
 
-        if (data.update_available) {
-            statusEl.className = 'jm-version-status update-available';
-            statusEl.title = _('Update available') + ': v' + data.remote_version;
-            versionEl.classList.add('has-update');
-        } else if (data.remote_version) {
-            statusEl.className = 'jm-version-status up-to-date';
-            statusEl.title = _('Up to date');
-        } else {
-            statusEl.className = 'jm-version-status gray';
-            statusEl.title = _('Could not check for updates');
-        }
+        updateVersionCard();
+
+        // Start the update on the backend
+        api('update_start', { target_version: versionCheckResult.remote_version }).then(function(data) {
+            if (!data || !data.ok) {
+                updateState.updating = false;
+                updateState.error = (data && data.error) || _('Failed to start update');
+                updateVersionCard();
+                return;
+            }
+
+            updateState.jobId = data.job_id;
+            pollUpdateStatus();
+        });
+    }
+
+    // Poll update status
+    function pollUpdateStatus() {
+        if (!updateState.jobId) return;
+
+        api('update_status', { job_id: updateState.jobId }).then(function(data) {
+            if (!data) {
+                // Network error - keep polling
+                setTimeout(pollUpdateStatus, 1000);
+                return;
+            }
+
+            if (data.state === 'downloading') {
+                updateState.progress = data.progress || 0;
+                updateState.currentFile = data.file || '';
+                updateVersionCard();
+                setTimeout(pollUpdateStatus, 500);
+            } else if (data.state === 'installing') {
+                updateState.progress = data.progress || 90;
+                updateState.currentFile = null;
+                updateVersionCard();
+                setTimeout(pollUpdateStatus, 500);
+            } else if (data.state === 'done') {
+                updateState.progress = 100;
+                updateState.currentFile = null;
+                updateState.updating = false;
+                // Show success message briefly, then reload
+                var card = document.getElementById('jm-version-card');
+                if (card) {
+                    card.innerHTML = '<div class="jm-version-status-row">' +
+                        '<div class="jm-version-status-icon up-to-date">&#10003;</div>' +
+                        '<div class="jm-version-status-text">' +
+                            '<div class="jm-version-status-main">' + _('Update complete!') + '</div>' +
+                            '<div class="jm-version-status-sub">' + _('Reloading...') + '</div>' +
+                        '</div>' +
+                    '</div>';
+                }
+                // Hide the badge
+                updateSettingsBadge({ update_available: false });
+                // Reload after 2 seconds
+                setTimeout(function() {
+                    location.reload();
+                }, 2000);
+            } else if (data.state === 'error') {
+                updateState.updating = false;
+                updateState.error = data.error || _('Update failed');
+                updateVersionCard();
+            } else if (data.state === 'pending') {
+                // Job not started yet, keep polling
+                setTimeout(pollUpdateStatus, 500);
+            }
+        });
     }
 
     // Cache for CPU calculation (need two samples)
@@ -4864,6 +5118,9 @@ var JamMonitor = (function() {
         goToFormatStep: goToFormatStep,
         formatDevice: formatDevice,
         useSelectedDevice: useSelectedDevice,
-        checkVersion: checkVersion
+        checkVersion: checkVersion,
+        showSettingsPopup: showSettingsPopup,
+        closeSettingsPopup: closeSettingsPopup,
+        startUpdate: startUpdate
     };
 })();

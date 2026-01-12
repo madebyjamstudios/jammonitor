@@ -38,6 +38,9 @@ function index()
     entry({"admin", "status", "jammonitor", "speedtest_status"}, call("action_speedtest_status"), nil)
     -- Version check endpoint
     entry({"admin", "status", "jammonitor", "version_check"}, call("action_version_check"), nil)
+    -- Auto-update endpoints
+    entry({"admin", "status", "jammonitor", "update_start"}, call("action_update_start"), nil)
+    entry({"admin", "status", "jammonitor", "update_status"}, call("action_update_status"), nil)
 end
 
 -- Helper: Validate interface name (alphanumeric, dash, underscore only)
@@ -573,6 +576,138 @@ function action_version_check()
     end
 
     http.write(json.stringify(result))
+end
+
+-- Auto-update: Start update process
+function action_update_start()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    -- Check if curl exists
+    local curl_check = sys.exec("command -v curl 2>/dev/null")
+    if not curl_check or curl_check:match("^%s*$") then
+        http.write(json.stringify({
+            ok = false,
+            error = "curl not installed"
+        }))
+        return
+    end
+
+    -- Get target version from request (should be passed by JS after version_check)
+    local target_version = http.formvalue("target_version")
+    if not target_version or not target_version:match("^[a-f0-9]+$") then
+        http.write(json.stringify({ok = false, error = "Invalid target version"}))
+        return
+    end
+
+    -- Generate job ID
+    local job_id = "update_" .. os.time()
+    local job_file = "/tmp/jammonitor_" .. job_id .. ".json"
+
+    -- Base URL for raw files
+    local base_url = "https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main"
+
+    -- File destinations
+    local files = {
+        { name = "jammonitor.lua", url = base_url .. "/jammonitor.lua", dest = "/usr/lib/lua/luci/controller/jammonitor.lua", progress = 25 },
+        { name = "jammonitor.htm", url = base_url .. "/jammonitor.htm", dest = "/usr/lib/lua/luci/view/jammonitor.htm", progress = 50 },
+        { name = "jammonitor.js", url = base_url .. "/jammonitor.js", dest = "/www/luci-static/resources/jammonitor.js", progress = 75 },
+        { name = "jammonitor-i18n.js", url = base_url .. "/jammonitor-i18n.js", dest = "/www/luci-static/resources/jammonitor-i18n.js", progress = 90 }
+    }
+
+    -- Build the update script
+    local script_parts = {
+        string.format([[echo '{"state":"downloading","file":"jammonitor.lua","progress":0}' > %s]], job_file)
+    }
+
+    for _, file in ipairs(files) do
+        local tmp_file = "/tmp/jm_" .. file.name:gsub("%.", "_") .. ".tmp"
+        table.insert(script_parts, string.format(
+            [[if ! curl -f -s -L --max-time 30 -o '%s' '%s' 2>/dev/null; then echo '{"state":"error","error":"Failed to download %s"}' > %s; exit 1; fi]],
+            tmp_file, file.url, file.name, job_file
+        ))
+        -- Update progress after each download
+        local next_file = files[_ + 1]
+        if next_file then
+            table.insert(script_parts, string.format(
+                [[echo '{"state":"downloading","file":"%s","progress":%d}' > %s]],
+                next_file.name, file.progress, job_file
+            ))
+        end
+    end
+
+    -- Installing phase
+    table.insert(script_parts, string.format(
+        [[echo '{"state":"installing","progress":90}' > %s]], job_file
+    ))
+
+    -- Move files atomically
+    for _, file in ipairs(files) do
+        local tmp_file = "/tmp/jm_" .. file.name:gsub("%.", "_") .. ".tmp"
+        table.insert(script_parts, string.format(
+            [[mv '%s' '%s']], tmp_file, file.dest
+        ))
+    end
+
+    -- Update version file
+    table.insert(script_parts, string.format(
+        [[echo '%s' > /www/luci-static/resources/jammonitor.version]],
+        target_version:sub(1, 7)
+    ))
+
+    -- Clear LuCI cache
+    table.insert(script_parts, [[rm -rf /tmp/luci-*]])
+
+    -- Done
+    table.insert(script_parts, string.format(
+        [[echo '{"state":"done","progress":100}' > %s]], job_file
+    ))
+
+    -- Join script parts
+    local wrapper = table.concat(script_parts, "\n")
+
+    -- Run in background
+    sys.exec("(" .. wrapper .. ") >/dev/null 2>&1 &")
+
+    http.write(json.stringify({
+        ok = true,
+        job_id = job_id
+    }))
+end
+
+-- Auto-update: Check status of update job
+function action_update_status()
+    local http = require "luci.http"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local job_id = http.formvalue("job_id")
+    if not job_id or not job_id:match("^update_[0-9]+$") then
+        http.write(json.stringify({ok = false, error = "Invalid job_id"}))
+        return
+    end
+
+    local job_file = "/tmp/jammonitor_" .. job_id .. ".json"
+    local content = fs.readfile(job_file)
+
+    if not content or content == "" then
+        http.write(json.stringify({ok = false, error = "Job not found", state = "pending"}))
+        return
+    end
+
+    local data = json.parse(content)
+    if data then
+        data.ok = true
+        http.write(json.stringify(data))
+    else
+        http.write(json.stringify({ok = false, error = "Invalid job data"}))
+    end
 end
 
 -- vnstat stats

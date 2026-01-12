@@ -858,7 +858,11 @@ var JamMonitor = (function() {
     function updateOverview() {
         // Use system_stats API for all system metrics
         api('system_stats').then(function(data) {
-            if (!data) return;
+            console.log('[JM] system_stats:', data);
+            if (!data) {
+                console.error('[JM] system_stats returned null');
+                return;
+            }
 
             // Load average
             if (data.load && data.load.length >= 3) {
@@ -898,22 +902,23 @@ var JamMonitor = (function() {
                 document.getElementById('sys-conntrack').textContent = data.conntrack_count + ' / ' + data.conntrack_max;
             }
 
-            // Uptime & Boot time
-            if (data.uptime_secs !== undefined && data.uptime_secs > 0) {
-                document.getElementById('uptime-val').textContent = formatUptime(data.uptime_secs);
+            // Uptime & Boot time - use parseFloat to handle float values
+            var uptimeSecs = parseFloat(data.uptime_secs);
+            console.log('[JM] uptime_secs raw:', data.uptime_secs, 'parsed:', uptimeSecs);
+            if (!isNaN(uptimeSecs) && uptimeSecs > 0) {
+                document.getElementById('uptime-val').textContent = formatUptime(uptimeSecs);
                 document.getElementById('uptime-tooltip').textContent = _('Since boot');
                 // Calculate boot time from current time minus uptime
-                var bootDate = new Date(Date.now() - (data.uptime_secs * 1000));
+                var bootDate = new Date(Date.now() - (uptimeSecs * 1000));
                 var bootStr = bootDate.toLocaleDateString() + ' ' + bootDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
                 document.getElementById('boot-time').textContent = bootStr;
             }
 
             // Local time - always update
+            console.log('[JM] date:', data.date);
             var localTimeEl = document.getElementById('local-time');
-            if (data.date) {
-                localTimeEl.textContent = data.date;
-            } else {
-                localTimeEl.textContent = new Date().toLocaleString();
+            if (localTimeEl) {
+                localTimeEl.textContent = data.date || new Date().toLocaleString();
             }
         });
 

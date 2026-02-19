@@ -98,7 +98,7 @@ Comprehensive device tracking and management for all connected clients:
 
 ### Wi-Fi APs
 
-<img width="2036" height="1228" alt="image" src="https://github.com/user-attachments/assets/caf2fa35-d875-4276-9112-d2cd0871cfeb" />
+<img width="2016" height="1282" alt="image" src="https://github.com/user-attachments/assets/3714eb5a-8af1-4d5a-b5bd-8a9ae4f75bc8" />
 
 
 Monitor wireless networks and access points:

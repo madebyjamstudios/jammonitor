@@ -3664,7 +3664,8 @@ function action_speedtest_start()
         cloudflare = {
             name = "Cloudflare (Global)",
             download = "https://speed.cloudflare.com/__down?bytes=%d",
-            upload = "https://speed.cloudflare.com/__up"
+            upload = "https://speed.cloudflare.com/__up",
+            referer = "https://speed.cloudflare.com/"
         },
         china = {
             name = "China (CacheFly)",
@@ -3743,9 +3744,10 @@ function action_speedtest_start()
             -- Other servers use MB-based files
             url = string.format(srv.download, size_mb)
         end
+        local referer_flag = srv.referer and string.format([[-e "%s" ]], srv.referer) or ""
         curl_cmd = string.format(
-            [[curl -4 -L --max-time %d --interface '%s' -o /dev/null -s -w '{"speed":%%{speed_download},"time":%%{time_total},"size":%%{size_download}}' '%s']],
-            timeout_s, bind_arg, url
+            [[curl -4 -L --max-time %d --interface '%s' %s-o /dev/null -s -w '{"speed":%%{speed_download},"time":%%{time_total},"size":%%{size_download}}' '%s']],
+            timeout_s, bind_arg, referer_flag, url
         )
     else
         -- Upload test - only supported on Cloudflare

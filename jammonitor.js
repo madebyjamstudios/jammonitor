@@ -5010,12 +5010,16 @@ var JamMonitor = (function() {
             var devices = data.devices.map(function(dev) {
                 var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
                 var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
+                var macLower = dev.mac ? dev.mac.toLowerCase() : '';
+                var meta = clientMeta[macLower] || {};
+                var resolvedName = meta.alias || hostname || '';
                 var deviceType = detectDeviceType(hostname);
                 var typeDisplay = deviceType !== 'unknown'
                     ? getDeviceIcon(deviceType) + ' ' + deviceType.charAt(0).toUpperCase() + deviceType.slice(1)
                     : '—';
                 return {
                     ip: dev.ip,
+                    name: resolvedName,
                     mac: mac,
                     type: deviceType,
                     typeDisplay: typeDisplay,
@@ -5048,7 +5052,7 @@ var JamMonitor = (function() {
                     if (col === 'ip') {
                         valA = ipToNumber(a.ip);
                         valB = ipToNumber(b.ip);
-                    } else if (col === 'mac' || col === 'type') {
+                    } else if (col === 'name' || col === 'mac' || col === 'type') {
                         valA = (a[col] || '').toLowerCase();
                         valB = (b[col] || '').toLowerCase();
                     } else {
@@ -5070,6 +5074,7 @@ var JamMonitor = (function() {
                 // Column definitions
                 var columns = [
                     { key: 'ip', label: _('IP Address'), sortable: true },
+                    { key: 'name', label: _('Name'), sortable: true },
                     { key: 'mac', label: _('MAC Address'), sortable: true },
                     { key: 'type', label: _('Type'), sortable: false },
                     { key: 'rx', label: _('Download'), sortable: true },
@@ -5095,6 +5100,7 @@ var JamMonitor = (function() {
                 sorted.forEach(function(dev) {
                     html += '<tr>';
                     html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
+                    html += '<td>' + escapeHtml(dev.name || '—') + '</td>';
                     html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(dev.mac) + '</td>';
                     html += '<td>' + dev.typeDisplay + '</td>';
                     html += '<td>' + formatBytesCompact(dev.rx) + '</td>';
@@ -5108,6 +5114,7 @@ var JamMonitor = (function() {
                 if (unattribTotal > 0) {
                     html += '<tr style="background:#fff3cd;border-top:2px solid #f39c12;">';
                     html += '<td style="font-style:italic;color:#856404;">Tunnel/Router</td>';
+                    html += '<td style="color:#856404;">—</td>';
                     html += '<td style="color:#856404;">—</td>';
                     html += '<td style="color:#856404;">🔒 ' + _('Unattributed') + '</td>';
                     html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.rx) + '</td>';
@@ -5127,7 +5134,7 @@ var JamMonitor = (function() {
                             sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
                         } else {
                             sortColumn = col;
-                            sortDirection = (col === 'mac' || col === 'type' || col === 'ip') ? 'asc' : 'desc';
+                            sortDirection = (col === 'name' || col === 'mac' || col === 'type' || col === 'ip') ? 'asc' : 'desc';
                         }
                         renderTable();
                     };

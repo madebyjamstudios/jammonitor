@@ -277,8 +277,11 @@ function action_vpn_status()
         result.wireguard.endpoint = ep_match
 
         if wg_iface then
-            local wg_addr = sys.exec("ip addr show dev " .. validate_iface(wg_iface) .. " 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2") or ""
-            result.wireguard.ip = wg_addr:gsub("%s+$", "")
+            local safe_wg = validate_iface(wg_iface)
+            if safe_wg then
+                local wg_addr = sys.exec("ip addr show dev " .. safe_wg .. " 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2") or ""
+                result.wireguard.ip = wg_addr:gsub("%s+$", "")
+            end
         end
     end
 
@@ -2785,6 +2788,7 @@ function action_wan_advanced()
     local sys = require "luci.sys"
     local json = require "luci.jsonc"
     local uci = require "luci.model.uci".cursor()
+    local fs = require "nixio.fs"
 
     http.prepare_content("application/json")
 

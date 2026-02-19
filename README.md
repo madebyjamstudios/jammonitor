@@ -155,7 +155,7 @@ Test WAN speeds directly from the dashboard with multiple server options.
 - **Multi-Server Selection** — Cloudflare, CacheFly CDN
 - **Per-WAN Interface Testing** — Test individual connections
 - **Download and Upload Tests** — Upload via Cloudflare
-- **Configurable Test Sizes** — 10/25/50 MB options
+- **Configurable Test Sizes** — 10/25/100 MB options
 - **Real-Time Progress Tracking** — Speed results displayed in Mbps
 - **Regional Server Auto-Detection**
 

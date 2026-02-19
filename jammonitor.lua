@@ -607,7 +607,10 @@ function action_version_check()
             if github_data and github_data.sha then
                 result.remote_version = github_data.sha:sub(1, 7)
                 -- Compare versions
-                if result.local_version and result.remote_version then
+                if not result.local_version then
+                    -- No version file means unknown install — treat as needing update
+                    result.update_available = true
+                else
                     result.update_available = (result.local_version ~= result.remote_version)
                 end
             else

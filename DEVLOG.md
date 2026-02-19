@@ -1,8 +1,23 @@
 # DEVLOG — JamMonitor Build Journal
 
-> A narrative record of how JamMonitor was built, reconstructed from 222 git commits across 9 development days. Each entry tells the real story of what happened — the decisions, the rabbit holes, the iteration cycles, and the midnight pivots.
+> A narrative record of how JamMonitor was built, reconstructed from 242 git commits across 10 development days. Each entry tells the real story of what happened — the decisions, the rabbit holes, the iteration cycles, and the midnight pivots.
 >
 > Entries are in reverse chronological order. The current day is never included.
+
+### Before GitHub
+
+JamMonitor was developed locally before the repository existed. The first 48 commits on Day 1 were batch-imported with identical timestamps — the git history starts on January 3rd, but the actual development began earlier, built on a local machine without version control. By the time it hit GitHub, the project already had:
+
+- A full **LuCI controller** (`jammonitor.lua`) with API endpoints for system data
+- An **HTM template** (`jammonitor.htm`) with a tab-based dashboard layout
+- A **JavaScript engine** (`jammonitor.js`) handling polling, rendering, and UI logic
+- **WAN Policy** tab with drag-and-drop interface reordering
+- **WiFi APs** tab with client monitoring and bandwidth tracking
+- **OMR Status** iframe embedding OpenMPTCProuter's own status page
+- **Advanced Settings** panel for failover and MPTCP tuning
+- **WAN Interface Selector** with filters and safety checks
+
+Everything after Day 1's batch import is real-time git history — commits with actual timestamps showing exactly when each change was made.
 
 ---
 
@@ -602,4 +617,4 @@ The 48 batch-imported commits represent the "dark matter" of JamMonitor's develo
 
 ---
 
-*Total: 222 commits across 9 days (Jan 3–12, 2026)*
+*Total: 242 commits across 10 days (Jan 3–12 + Feb 19, 2026)*

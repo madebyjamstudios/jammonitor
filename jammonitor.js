@@ -152,6 +152,9 @@ var JamMonitor = (function() {
     var throughputHistory = [];
     var maxBwHistory = 120;
 
+    // Bandwidth bucket popup retry context
+    var lastBwBucketArgs = null;
+
     // Storage status cache for diagnostics
     var storageStatusCache = null;
 
@@ -5041,155 +5044,188 @@ var JamMonitor = (function() {
             e.stopPropagation();
         };
 
-        // Fetch data - clients and unattributed traffic in parallel
-        var clientsPromise = api('history_clients', { range: range, start: startTs });
-        var summaryPromise = api('traffic_summary', { range: range, start: startTs });
+        // Store args for manual retry
+        lastBwBucketArgs = { range: range, start: startTs, label: labelText };
 
-        Promise.all([clientsPromise, summaryPromise]).then(function(results) {
-            var data = results[0];
-            var summary = results[1];
-            var body = popup.querySelector('.jm-popup-body');
+        // Fetch data with auto-retry on API failure
+        function fetchAndRender(attempt) {
+            var clientsPromise = api('history_clients', { range: range, start: startTs });
+            var summaryPromise = api('traffic_summary', { range: range, start: startTs });
 
-            if (!data || !data.ok || !data.devices || data.devices.length === 0) {
-                body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">' + _('No device data for this period.') + '<br><small style="color:#bdc3c7;">' + _('Data collection started recently or no traffic recorded.') + '</small></div>';
-                return;
-            }
+            Promise.all([clientsPromise, summaryPromise]).then(function(results) {
+                var data = results[0];
+                var summary = results[1];
+                var body = popup.querySelector('.jm-popup-body');
+                if (!body || !document.getElementById('bw-bucket-popup-overlay')) return; // popup closed
 
-            // Get unattributed traffic from summary
-            var unattributed = { rx: 0, tx: 0 };
-            if (summary && summary.ok && summary.data && summary.data.unattributed) {
-                unattributed = summary.data.unattributed;
-            }
-
-            // Prepare devices with computed fields
-            var devices = data.devices.map(function(dev) {
-                var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
-                var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
-                var macLower = dev.mac ? dev.mac.toLowerCase() : '';
-                var meta = clientMeta[macLower] || {};
-                var resolvedName = meta.alias || hostname || '';
-                var deviceType = detectDeviceType(hostname);
-                var typeDisplay = deviceType !== 'unknown'
-                    ? getDeviceIcon(deviceType) + ' ' + deviceType.charAt(0).toUpperCase() + deviceType.slice(1)
-                    : '—';
-                return {
-                    ip: dev.ip,
-                    name: resolvedName,
-                    mac: mac,
-                    type: deviceType,
-                    typeDisplay: typeDisplay,
-                    rx: dev.rx || 0,
-                    tx: dev.tx || 0,
-                    total: (dev.rx || 0) + (dev.tx || 0)
-                };
-            });
-
-            // Sort state - null means no sorting initially
-            var sortColumn = null;
-            var sortDirection = 'desc';
-
-            // Sort function - returns unsorted if col is null
-            function sortDevices(col, dir) {
-                if (!col) return devices.slice();
-                return devices.slice().sort(function(a, b) {
-                    var valA, valB;
-                    if (col === 'ip') {
-                        valA = ipToNumberClient(a.ip);
-                        valB = ipToNumberClient(b.ip);
-                    } else if (col === 'name' || col === 'mac' || col === 'type') {
-                        valA = (a[col] || '').toLowerCase();
-                        valB = (b[col] || '').toLowerCase();
-                    } else {
-                        valA = a[col] || 0;
-                        valB = b[col] || 0;
+                // API error (null from catch) — retry once
+                if (!data || !data.ok) {
+                    if (attempt < 2) {
+                        setTimeout(function() { fetchAndRender(attempt + 1); }, 1000);
+                        return;
                     }
-                    if (valA === valB) return 0;
-                    if (dir === 'asc') return valA > valB ? 1 : -1;
-                    return valA < valB ? 1 : -1;
-                });
-            }
-
-            // Render table
-            function renderTable() {
-                var sorted = sortDevices(sortColumn, sortDirection);
-                var html = '<table class="bw-bucket-table">';
-                html += '<thead><tr>';
-
-                // Column definitions
-                var columns = [
-                    { key: 'ip', label: _('IP Address'), sortable: true },
-                    { key: 'name', label: _('Name'), sortable: true },
-                    { key: 'mac', label: _('MAC Address'), sortable: true },
-                    { key: 'type', label: _('Type'), sortable: false },
-                    { key: 'rx', label: _('Download'), sortable: true },
-                    { key: 'tx', label: _('Upload'), sortable: true },
-                    { key: 'total', label: _('Total'), sortable: true }
-                ];
-
-                columns.forEach(function(col) {
-                    if (col.sortable) {
-                        var isActive = sortColumn === col.key;
-                        // Always show arrow placeholder to prevent column shifting
-                        var arrowStyle = isActive ? '' : 'visibility:hidden;';
-                        var arrowClass = isActive ? (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') : 'sort-asc';
-                        var arrowHtml = '<span class="sort-icon ' + arrowClass + '" style="' + arrowStyle + '"></span>';
-                        html += '<th class="sortable" data-sort="' + col.key + '" style="white-space:nowrap;">' + col.label + arrowHtml + '</th>';
-                    } else {
-                        html += '<th>' + col.label + '</th>';
-                    }
-                });
-
-                html += '</tr></thead><tbody>';
-
-                sorted.forEach(function(dev) {
-                    html += '<tr>';
-                    html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
-                    html += '<td title="' + escapeHtml(dev.name || '—') + '">' + escapeHtml(dev.name || '—') + '</td>';
-                    html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(dev.mac) + '</td>';
-                    html += '<td>' + dev.typeDisplay + '</td>';
-                    html += '<td>' + formatBytesCompact(dev.rx) + '</td>';
-                    html += '<td>' + formatBytesCompact(dev.tx) + '</td>';
-                    html += '<td style="font-weight:600;">' + formatBytesCompact(dev.total) + '</td>';
-                    html += '</tr>';
-                });
-
-                // Add unattributed traffic row if present
-                var unattribTotal = unattributed.rx + unattributed.tx;
-                if (unattribTotal > 0) {
-                    html += '<tr style="background:#fff3cd;border-top:2px solid #f39c12;">';
-                    html += '<td style="font-style:italic;color:#856404;">Tunnel/Router</td>';
-                    html += '<td title="—" style="color:#856404;">—</td>';
-                    html += '<td style="color:#856404;">—</td>';
-                    html += '<td style="color:#856404;">🔒 ' + _('Unattributed') + '</td>';
-                    html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.rx) + '</td>';
-                    html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.tx) + '</td>';
-                    html += '<td style="font-weight:600;color:#856404;">' + formatBytesCompact(unattribTotal) + '</td>';
-                    html += '</tr>';
+                    // Retries exhausted — show error with manual retry button
+                    body.innerHTML = '<div style="text-align:center;color:#e74c3c;padding:40px;">' +
+                        _('Failed to load device data.') +
+                        '<br><button class="jm-btn" style="margin-top:12px;" onclick="JamMonitor.retryBwBucket()">' + _('Retry') + '</button></div>';
+                    return;
                 }
 
-                html += '</tbody></table>';
-                body.innerHTML = html;
+                // API succeeded but genuinely no devices
+                if (!data.devices || data.devices.length === 0) {
+                    body.innerHTML = '<div style="text-align:center;color:#7f8c8d;padding:40px;">' +
+                        _('No device data for this period.') +
+                        '<br><small style="color:#bdc3c7;">' +
+                        _('Data collection started recently or no traffic recorded.') +
+                        '</small></div>';
+                    return;
+                }
 
-                // Add click handlers for sorting
-                body.querySelectorAll('th.sortable').forEach(function(th) {
-                    th.onclick = function() {
-                        var col = th.dataset.sort;
-                        if (sortColumn === col) {
-                            sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-                        } else {
-                            sortColumn = col;
-                            sortDirection = (col === 'name' || col === 'mac' || col === 'type' || col === 'ip') ? 'asc' : 'desc';
-                        }
-                        renderTable();
+                // Get unattributed traffic from summary
+                var unattributed = { rx: 0, tx: 0 };
+                if (summary && summary.ok && summary.data && summary.data.unattributed) {
+                    unattributed = summary.data.unattributed;
+                }
+
+                // Prepare devices with computed fields
+                var devices = data.devices.map(function(dev) {
+                    var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
+                    var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
+                    var macLower = dev.mac ? dev.mac.toLowerCase() : '';
+                    var meta = clientMeta[macLower] || {};
+                    var resolvedName = meta.alias || hostname || '';
+                    var deviceType = detectDeviceType(hostname);
+                    var typeDisplay = deviceType !== 'unknown'
+                        ? getDeviceIcon(deviceType) + ' ' + deviceType.charAt(0).toUpperCase() + deviceType.slice(1)
+                        : '—';
+                    return {
+                        ip: dev.ip,
+                        name: resolvedName,
+                        mac: mac,
+                        type: deviceType,
+                        typeDisplay: typeDisplay,
+                        rx: dev.rx || 0,
+                        tx: dev.tx || 0,
+                        total: (dev.rx || 0) + (dev.tx || 0)
                     };
                 });
-            }
 
-            renderTable();
-        }).catch(function(err) {
-            var body = popup.querySelector('.jm-popup-body');
-            body.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:40px;">Error loading device data</div>';
-        });
+                // Sort state - null means no sorting initially
+                var sortColumn = null;
+                var sortDirection = 'desc';
+
+                // Sort function - returns unsorted if col is null
+                function sortDevices(col, dir) {
+                    if (!col) return devices.slice();
+                    return devices.slice().sort(function(a, b) {
+                        var valA, valB;
+                        if (col === 'ip') {
+                            valA = ipToNumberClient(a.ip);
+                            valB = ipToNumberClient(b.ip);
+                        } else if (col === 'name' || col === 'mac' || col === 'type') {
+                            valA = (a[col] || '').toLowerCase();
+                            valB = (b[col] || '').toLowerCase();
+                        } else {
+                            valA = a[col] || 0;
+                            valB = b[col] || 0;
+                        }
+                        if (valA === valB) return 0;
+                        if (dir === 'asc') return valA > valB ? 1 : -1;
+                        return valA < valB ? 1 : -1;
+                    });
+                }
+
+                // Render table
+                function renderTable() {
+                    var sorted = sortDevices(sortColumn, sortDirection);
+                    var html = '<table class="bw-bucket-table">';
+                    html += '<thead><tr>';
+
+                    // Column definitions
+                    var columns = [
+                        { key: 'ip', label: _('IP Address'), sortable: true },
+                        { key: 'name', label: _('Name'), sortable: true },
+                        { key: 'mac', label: _('MAC Address'), sortable: true },
+                        { key: 'type', label: _('Type'), sortable: false },
+                        { key: 'rx', label: _('Download'), sortable: true },
+                        { key: 'tx', label: _('Upload'), sortable: true },
+                        { key: 'total', label: _('Total'), sortable: true }
+                    ];
+
+                    columns.forEach(function(col) {
+                        if (col.sortable) {
+                            var isActive = sortColumn === col.key;
+                            // Always show arrow placeholder to prevent column shifting
+                            var arrowStyle = isActive ? '' : 'visibility:hidden;';
+                            var arrowClass = isActive ? (sortDirection === 'asc' ? 'sort-asc' : 'sort-desc') : 'sort-asc';
+                            var arrowHtml = '<span class="sort-icon ' + arrowClass + '" style="' + arrowStyle + '"></span>';
+                            html += '<th class="sortable" data-sort="' + col.key + '" style="white-space:nowrap;">' + col.label + arrowHtml + '</th>';
+                        } else {
+                            html += '<th>' + col.label + '</th>';
+                        }
+                    });
+
+                    html += '</tr></thead><tbody>';
+
+                    sorted.forEach(function(dev) {
+                        html += '<tr>';
+                        html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
+                        html += '<td title="' + escapeHtml(dev.name || '—') + '">' + escapeHtml(dev.name || '—') + '</td>';
+                        html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(dev.mac) + '</td>';
+                        html += '<td>' + dev.typeDisplay + '</td>';
+                        html += '<td>' + formatBytesCompact(dev.rx) + '</td>';
+                        html += '<td>' + formatBytesCompact(dev.tx) + '</td>';
+                        html += '<td style="font-weight:600;">' + formatBytesCompact(dev.total) + '</td>';
+                        html += '</tr>';
+                    });
+
+                    // Add unattributed traffic row if present
+                    var unattribTotal = unattributed.rx + unattributed.tx;
+                    if (unattribTotal > 0) {
+                        html += '<tr style="background:#fff3cd;border-top:2px solid #f39c12;">';
+                        html += '<td style="font-style:italic;color:#856404;">Tunnel/Router</td>';
+                        html += '<td title="—" style="color:#856404;">—</td>';
+                        html += '<td style="color:#856404;">—</td>';
+                        html += '<td style="color:#856404;">🔒 ' + _('Unattributed') + '</td>';
+                        html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.rx) + '</td>';
+                        html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.tx) + '</td>';
+                        html += '<td style="font-weight:600;color:#856404;">' + formatBytesCompact(unattribTotal) + '</td>';
+                        html += '</tr>';
+                    }
+
+                    html += '</tbody></table>';
+                    body.innerHTML = html;
+
+                    // Add click handlers for sorting
+                    body.querySelectorAll('th.sortable').forEach(function(th) {
+                        th.onclick = function() {
+                            var col = th.dataset.sort;
+                            if (sortColumn === col) {
+                                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                            } else {
+                                sortColumn = col;
+                                sortDirection = (col === 'name' || col === 'mac' || col === 'type' || col === 'ip') ? 'asc' : 'desc';
+                            }
+                            renderTable();
+                        };
+                    });
+                }
+
+                renderTable();
+            }).catch(function(err) {
+                var body = popup.querySelector('.jm-popup-body');
+                if (!body || !document.getElementById('bw-bucket-popup-overlay')) return;
+                if (attempt < 2) {
+                    setTimeout(function() { fetchAndRender(attempt + 1); }, 1000);
+                    return;
+                }
+                body.innerHTML = '<div style="text-align:center;color:#e74c3c;padding:40px;">' +
+                    _('Failed to load device data.') +
+                    '<br><button class="jm-btn" style="margin-top:12px;" onclick="JamMonitor.retryBwBucket()">' + _('Retry') + '</button></div>';
+            });
+        }
+
+        fetchAndRender(1);
     }
 
     function closeBwBucketPopup() {
@@ -5232,6 +5268,11 @@ var JamMonitor = (function() {
         setSpeedTestServer: setSpeedTestServer,
         runSpeedTest: runSpeedTest,
         closeBwBucketPopup: closeBwBucketPopup,
+        retryBwBucket: function() {
+            if (lastBwBucketArgs) {
+                showBandwidthBucketPopup(lastBwBucketArgs.range, lastBwBucketArgs.start, lastBwBucketArgs.label);
+            }
+        },
         checkStorageSetup: checkStorageSetup,
         showStorageSetup: showStorageSetup,
         hideStorageSetup: hideStorageSetup,

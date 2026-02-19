@@ -224,6 +224,7 @@ var JamMonitor = (function() {
 
     function init() {
         loadState();
+        loadHistoricalPings();  // Fill in ping gaps from server data
 
         // Check for version updates (updates settings badge)
         checkVersion();
@@ -352,6 +353,44 @@ var JamMonitor = (function() {
                 }
             }
         } catch (e) { console.error('Failed to load state:', e); }
+    }
+
+    // Load historical ping data from server (fills in gaps when browser was closed)
+    function loadHistoricalPings() {
+        api('ping_history', { minutes: 10 }).then(function(data) {
+            if (!data || !data.ok || !data.pings || !data.pings.length) return;
+
+            // Get earliest browser timestamp we have
+            var earliestBrowser = Infinity;
+            if (pingHistory.inet.length > 0) {
+                earliestBrowser = pingHistory.inet[0].time;
+            }
+
+            // Add server data points that are older than our browser data
+            var serverPoints = [];
+            data.pings.forEach(function(p) {
+                if (p.ts < earliestBrowser) {
+                    try {
+                        var pingData = JSON.parse(p.data);
+                        // Use 1.1.1.1 as the inet ping (what the collector tracks)
+                        var latency = pingData['1.1.1.1'];
+                        serverPoints.push({
+                            time: p.ts,
+                            value: latency === null ? null : latency
+                        });
+                    } catch (e) {}
+                }
+            });
+
+            // Prepend server data to browser data
+            if (serverPoints.length > 0) {
+                pingHistory.inet = serverPoints.concat(pingHistory.inet);
+                // Trim to max
+                if (pingHistory.inet.length > maxPingHistory) {
+                    pingHistory.inet = pingHistory.inet.slice(-maxPingHistory);
+                }
+            }
+        });
     }
 
     function saveState() {
@@ -2201,6 +2240,7 @@ var JamMonitor = (function() {
                             var peer = ts.Peer[key];
                             var hostname = peer.HostName || peer.DNSName || 'Unknown';
                             var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
+                            var t = traffic[ip] || { rx: 0, tx: 0 };
                             var deviceType = detectDeviceType(hostname);
 
                             clients.push({
@@ -2209,8 +2249,8 @@ var JamMonitor = (function() {
                                 hostname: hostname,
                                 name: hostname,
                                 type: deviceType,
-                                download: 0,
-                                upload: 0,
+                                download: t.rx,
+                                upload: t.tx,
                                 source: 'Tailscale',
                                 expiry: null,
                                 offline: !peer.Online,

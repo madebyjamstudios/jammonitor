@@ -26,7 +26,10 @@
       "Bash(gh issue list:*)",
       "Bash(gh issue view:*)",
       "Bash(gh issue close:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh issue delete:*)"
     ]
   }
 }

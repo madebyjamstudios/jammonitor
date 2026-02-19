@@ -8,6 +8,7 @@ function index()
     entry({"admin", "status", "jammonitor", "mptcp_status"}, call("action_mptcp_status"), nil)
     entry({"admin", "status", "jammonitor", "vpn_status"}, call("action_vpn_status"), nil)
     entry({"admin", "status", "jammonitor", "ping"}, call("action_ping"), nil)
+    entry({"admin", "status", "jammonitor", "ping_history"}, call("action_ping_history"), nil)
     entry({"admin", "status", "jammonitor", "clients"}, call("action_clients"), nil)
     entry({"admin", "status", "jammonitor", "public_ip"}, call("action_public_ip"), nil)
     entry({"admin", "status", "jammonitor", "vnstat"}, call("action_vnstat"), nil)
@@ -308,6 +309,47 @@ function action_ping()
         latency = latency,
         success = latency ~= nil
     }))
+end
+
+-- Historical ping data from metrics table (for graph on page load)
+function action_ping_history()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local json = require "luci.jsonc"
+    local fs = require "nixio.fs"
+
+    http.prepare_content("application/json")
+
+    local db_path = "/mnt/data/jammonitor/history.db"
+    local minutes = tonumber(http.formvalue("minutes")) or 10
+
+    -- Limit to reasonable range
+    if minutes < 1 then minutes = 1 end
+    if minutes > 60 then minutes = 60 end
+
+    local cutoff = os.time() - (minutes * 60)
+    local result = { ok = true, pings = {} }
+
+    if fs.stat(db_path) then
+        local query = string.format(
+            "SELECT ts, wan_pings FROM metrics WHERE ts > %d ORDER BY ts",
+            cutoff
+        )
+        local output = sys.exec("sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+        if output and output ~= "" then
+            for line in output:gmatch("[^\n]+") do
+                local ts, pings_json = line:match("([^|]+)|(.+)")
+                if ts and pings_json then
+                    table.insert(result.pings, {
+                        ts = tonumber(ts) * 1000,  -- Convert to JS milliseconds
+                        data = pings_json
+                    })
+                end
+            end
+        end
+    end
+
+    http.write(json.stringify(result))
 end
 
 -- Clients: DHCP leases, ARP, conntrack

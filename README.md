@@ -114,7 +114,7 @@ Monitor wireless networks and connected clients:
 
 ### Speed Testing
 
-<!-- screenshot -->
+<img width="2000" height="848" alt="image" src="https://github.com/user-attachments/assets/36652612-12f0-48f2-8e76-7907bf0b281a" />
 
 Test WAN speeds directly from the dashboard with multiple server options.
 
@@ -129,7 +129,7 @@ Test WAN speeds directly from the dashboard with multiple server options.
 
 ### VPS Bypass Mode
 
-<!-- screenshot -->
+<img width="2000" height="1476" alt="image" src="https://github.com/user-attachments/assets/8b33b970-90cc-409a-8e82-94a30e463b76" />
 
 Temporarily bypass the VPN tunnel for direct internet routing.
 
@@ -144,7 +144,7 @@ Temporarily bypass the VPN tunnel for direct internet routing.
 
 ### USB Storage & History Persistence
 
-<!-- screenshot -->
+<img width="2016" height="1312" alt="image" src="https://github.com/user-attachments/assets/6cb6021b-936b-4217-ad8a-62b64f9b0904" />
 
 Store long-term metrics on USB storage with automatic collection.
 
@@ -160,7 +160,7 @@ Store long-term metrics on USB storage with automatic collection.
 
 ### Auto-Update System
 
-<!-- screenshot -->
+<img width="664" height="524" alt="image" src="https://github.com/user-attachments/assets/32905692-cd45-49cc-af6a-5faf9bc80991" />
 
 Keep JamMonitor current with built-in update detection and one-click install.
 
@@ -174,7 +174,8 @@ Keep JamMonitor current with built-in update detection and one-click install.
 
 ### Multi-Language Support (i18n)
 
-<!-- screenshot -->
+<img width="664" height="536" alt="image" src="https://github.com/user-attachments/assets/7f362c51-82c3-4210-9d38-3539aaf6e4db" />
+<img width="604" height="1034" alt="image" src="https://github.com/user-attachments/assets/30c7b3a0-e028-45b2-aa78-dabf7e5b5d00" />
 
 Full interface translation with 22 languages.
 
@@ -187,7 +188,7 @@ Full interface translation with 22 languages.
 
 ### Advanced Client Management
 
-<!-- screenshot -->
+<img width="2012" height="1092" alt="image" src="https://github.com/user-attachments/assets/5575b418-2ed4-4b88-943e-f5b6f3e8c0d5" />
 
 Enhanced device tracking beyond basic client listing.
 

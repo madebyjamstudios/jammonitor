@@ -12,6 +12,12 @@ A comprehensive WAN bonding dashboard for OpenMPTCProuter, designed for the Bana
 - **Client Monitoring** - View all connected devices with traffic statistics
 - **WiFi AP Management** - Monitor local radios and remote access points
 - **Diagnostic Tools** - Export comprehensive diagnostic bundles for troubleshooting
+- **Speed Testing** — Run download/upload speed tests per WAN interface
+- **VPS Bypass Mode** — One-click toggle to route traffic directly without VPN
+- **USB Storage & History** — Persistent metrics and ping history on USB storage with SQLite
+- **Auto-Update System** — One-click updates with GitHub version checking
+- **Multi-Language Support** — 22 languages with automatic browser detection
+- **DHCP Reservations** — Create static IP assignments for connected devices
 
 ---
 
@@ -106,6 +112,97 @@ Monitor wireless networks and connected clients:
 
 ---
 
+### Speed Testing
+
+<!-- screenshot -->
+
+Test WAN speeds directly from the dashboard with multiple server options.
+
+- **Multi-Server Selection** — Cloudflare, CacheFly CDN
+- **Per-WAN Interface Testing** — Test individual connections
+- **Download and Upload Tests** — Upload via Cloudflare
+- **Configurable Test Sizes** — 10/25/50 MB options
+- **Real-Time Progress Tracking** — Speed results displayed in Mbps
+- **Regional Server Auto-Detection**
+
+---
+
+### VPS Bypass Mode
+
+<!-- screenshot -->
+
+Temporarily bypass the VPN tunnel for direct internet routing.
+
+- **One-Click Toggle** — Activate from the Overview tab
+- **Confirmation Dialog** — Service impact warning before activation
+- **Active WAN Indicator** — Shows which connection is in use
+- **Persistent Status Banner** — Visible while bypass is active
+- **Automatic Service Management** — Stops/starts OpenVPN and Shadowsocks services
+- **WAN Policy Lock** — Policy controls locked during bypass for safety
+
+---
+
+### USB Storage & History Persistence
+
+<!-- screenshot -->
+
+Store long-term metrics on USB storage with automatic collection.
+
+- **USB Device Detection** — Shows capacity info
+- **One-Click ext4 Formatting**
+- **Mount/Unmount Management** — Mounts to `/mnt/data`
+- **SQLite Database** — Stores bandwidth, ping, and client traffic history
+- **Background Collector Process** — Writes every 60s with start/stop controls
+- **Storage Dashboard** — DB size, entry count, date range, and free space
+- **Automatic Data Retention** — 30-day default cleanup
+
+---
+
+### Auto-Update System
+
+<!-- screenshot -->
+
+Keep JamMonitor current with built-in update detection and one-click install.
+
+- **Version Comparison** — Compares local SHA against latest GitHub commit
+- **Update Badge** — Orange indicator on settings gear when update available
+- **One-Click Install** — Downloads and atomically installs all 4 components
+- **Progress Indicator** — Visual feedback during download/install
+- **Automatic Reload** — Page refreshes after successful update
+
+---
+
+### Multi-Language Support (i18n)
+
+<!-- screenshot -->
+
+Full interface translation with 22 languages.
+
+- **Languages** — English, Chinese (Simplified/Traditional), Spanish, German, French, Portuguese, Russian, Japanese, Italian, Dutch, Polish, Korean, Turkish, Vietnamese, Arabic, Thai, Indonesian, Czech, Swedish, Greek, Ukrainian
+- **Automatic Browser Detection** — Detects preferred language from browser settings
+- **Manual Override** — Language selector in settings popup
+- **Persistent Selection** — Saved to localStorage
+
+---
+
+### Advanced Client Management
+
+<!-- screenshot -->
+
+Enhanced device tracking beyond basic client listing.
+
+- **Device Type Detection** — Automatic identification (phone, tablet, laptop, desktop, TV, IoT, camera, wearable, etc.)
+- **Custom Device Names** — Inline editing for friendly names
+- **Manual Type Override** — Change detected device type
+- **DHCP Reservations** — Create static IP assignments for connected devices
+- **Tailscale Integration** — Tailscale peers shown alongside LAN clients
+- **Subnet Grouping** — Clients grouped by subnet with collapsible sections
+- **Sortable Columns** — Sort by IP, name, download, upload, MAC
+- **Per-Client Traffic** — Traffic metrics via conntrack
+- **Persistent Metadata** — Client data saved to `/etc/jammonitor_clients.json`
+
+---
+
 ## Installation
 
 ### Prerequisites
@@ -139,6 +236,17 @@ rm -rf /tmp/luci-*
 /etc/init.d/uhttpd restart
 ```
 
+### Optional: Enable History Persistence
+
+Install the collector scripts for USB storage persistence:
+
+```bash
+# Install history collector for USB storage persistence
+wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/router/jammonitor-collect -O /usr/bin/jammonitor-collect
+wget https://raw.githubusercontent.com/madebyjamstudios/jammonitor/main/router/jammonitor-history.init -O /etc/init.d/jammonitor-collect
+chmod +x /usr/bin/jammonitor-collect /etc/init.d/jammonitor-collect
+```
+
 ### Manual Install (via SCP)
 
 From your local machine:
@@ -153,6 +261,10 @@ scp -O jammonitor.htm root@<ROUTER_IP>:/usr/lib/lua/luci/view/jammonitor.htm
 scp -O jammonitor.js root@<ROUTER_IP>:/www/luci-static/resources/jammonitor.js
 scp -O jammonitor-i18n.js root@<ROUTER_IP>:/www/luci-static/resources/jammonitor-i18n.js
 scp -O jammonitor.version root@<ROUTER_IP>:/www/luci-static/resources/jammonitor.version
+
+# (Optional) History collector for USB storage persistence
+scp -O router/jammonitor-collect root@<ROUTER_IP>:/usr/bin/jammonitor-collect
+scp -O router/jammonitor-history.init root@<ROUTER_IP>:/etc/init.d/jammonitor-collect
 ```
 
 Then clear the cache:
@@ -167,9 +279,13 @@ ssh root@<ROUTER_IP> "rm -rf /tmp/luci-* && /etc/init.d/uhttpd restart"
 
 ```
 jammonitor/
-├── jammonitor.lua    # LuCI controller - backend API endpoints & menu registration
-├── jammonitor.htm    # LuCI view template - HTML structure & CSS styling
-├── jammonitor.js     # Frontend JavaScript - UI logic, charts, drag-and-drop
+├── jammonitor.lua           # LuCI controller — backend API endpoints & menu registration
+├── jammonitor.htm           # LuCI view template — HTML structure & CSS styling
+├── jammonitor.js            # Frontend JavaScript — UI logic, charts, drag-and-drop
+├── jammonitor-i18n.js       # Internationalization — translation strings for 22 languages
+├── router/
+│   ├── jammonitor-collect   # Metrics collector daemon — writes to SQLite every 60s
+│   └── jammonitor-history.init  # OpenWrt init script — manages collector as a procd service
 └── README.md
 ```
 
@@ -221,12 +337,16 @@ In the WiFi APs tab, click "Edit AP List" to add remote access points:
 The Diagnostics tab generates a comprehensive bundle including:
 
 - System logs (syslog, dmesg)
-- Network state (interfaces, routing, ARP)
-- VPN status (WireGuard, GlorryTun, OpenVPN)
-- MPTCP information
+- Network state (interfaces, routing, ARP, IPv6)
+- VPN status (WireGuard, Glorytun, OpenVPN, MLVPN)
+- MPTCP information (endpoints, limits, sysctl)
 - OpenMPTCProuter configuration
+- DNS configuration (per-interface DNS, resolution tests)
+- Thermal monitoring (CPU temperature, frequency, throttling)
 - Connectivity test results
-- Error summaries
+- Firewall rules (nftables/iptables export)
+- Error and warning summaries
+- Automatic secret redaction (tokens, passwords, keys stripped from output)
 
 ---
 

@@ -12,7 +12,6 @@ A comprehensive WAN bonding dashboard for OpenMPTCProuter, designed for the Bana
 - **DHCP Reservations** — Create static IP assignments for connected devices
 - **Tailscale Integration** — Tailscale peers shown alongside LAN clients
 - **WiFi AP Management** - Monitor local radios and remote access points
-- **OMR Status** — Embedded OpenMPTCProuter status page
 - **Diagnostic Tools** - Export comprehensive diagnostic bundles for troubleshooting
 - **USB Storage & History** — Persistent metrics and ping history on USB storage with SQLite
 - **Bandwidth Analytics** - Track usage by hour, day, and month with visual charts
@@ -108,18 +107,6 @@ Monitor wireless networks and access points:
 - **Remote AP Monitoring** — Latency tracking for remote access points
 - **Configurable AP List** — Multi-AP deployments with editable configuration
 - **Online/Offline Status Badges** — Real-time AP availability
-
----
-
-### OMR Status
-
-<!-- screenshot -->
-
-Embedded OpenMPTCProuter status page directly within JamMonitor:
-
-- **Connection Overview** — View MPTCP and VPN tunnel status at a glance
-- **Server Status** — VPS health, services, and connectivity information
-- **No Tab Switching** — Access OMR status without leaving the JamMonitor interface
 
 ---
 

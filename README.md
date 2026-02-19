@@ -8,16 +8,18 @@ A comprehensive WAN bonding dashboard for OpenMPTCProuter, designed for the Bana
 - **Drag-and-Drop WAN Management** - Easily reorder and prioritize WAN connections
 - **Multi-WAN Bonding** - Aggregate bandwidth across multiple internet connections
 - **Failover Configuration** - Set up automatic failover with standby connections
-- **Bandwidth Analytics** - Track usage by hour, day, and month with visual charts
 - **Client Monitoring** - View all connected devices with traffic statistics
+- **DHCP Reservations** — Create static IP assignments for connected devices
+- **Tailscale Integration** — Tailscale peers shown alongside LAN clients
 - **WiFi AP Management** - Monitor local radios and remote access points
+- **OMR Status** — Embedded OpenMPTCProuter status page
 - **Diagnostic Tools** - Export comprehensive diagnostic bundles for troubleshooting
+- **USB Storage & History** — Persistent metrics and ping history on USB storage with SQLite
+- **Bandwidth Analytics** - Track usage by hour, day, and month with visual charts
 - **Speed Testing** — Run download/upload speed tests per WAN interface
 - **VPS Bypass Mode** — One-click toggle to route traffic directly without VPN
-- **USB Storage & History** — Persistent metrics and ping history on USB storage with SQLite
 - **Auto-Update System** — One-click updates with GitHub version checking
 - **Multi-Language Support** — 22 languages with automatic browser detection
-- **DHCP Reservations** — Create static IP assignments for connected devices
 
 ---
 
@@ -59,23 +61,6 @@ The WAN Policy tab is the heart of JamMonitor's connection management:
 
 ---
 
-### Bandwidth Analytics
-
-<img width="2030" height="1498" alt="image" src="https://github.com/user-attachments/assets/a9d23577-9517-4b35-a771-71369677ff44" />
-
-
-Comprehensive bandwidth tracking across multiple timeframes:
-
-- **Realtime** - Live throughput graph updated every 3 seconds
-- **Hourly** - Last 24 hours of usage broken down by hour
-- **Daily** - Last 30 days of bandwidth consumption
-- **Monthly** - Long-term usage trends by month
-- **Per-Interface Filtering** - View bandwidth for specific WANs or all combined
-- **Stacked Bar Charts** - Visual breakdown of download vs upload traffic
-- **Data Tables** - Detailed numeric values alongside graphs
-
----
-
 ### Interfaces & Routing
 
 <img width="2040" height="1240" alt="image" src="https://github.com/user-attachments/assets/954698f2-1a4f-4618-b05e-ac58c1986401" />
@@ -92,23 +77,85 @@ Complete visibility into your network interfaces:
 
 ---
 
-### WiFi & Client Management
+### Client List
+
+<img width="2012" height="1092" alt="image" src="https://github.com/user-attachments/assets/5575b418-2ed4-4b88-943e-f5b6f3e8c0d5" />
+
+
+Comprehensive device tracking and management for all connected clients:
+
+- **All Connected Devices** — Hostname, IP, and MAC for every client
+- **Per-Client Traffic** — Download/upload metrics via conntrack
+- **Device Type Detection** — Automatic identification (phone, tablet, laptop, desktop, TV, IoT, camera, wearable, etc.)
+- **Custom Device Names** — Inline editing for friendly names
+- **Manual Type Override** — Change detected device type
+- **DHCP Reservations** — Create static IP assignments for connected devices
+- **Tailscale Integration** — Tailscale peers shown alongside LAN clients
+- **Subnet Grouping** — Clients grouped by subnet with collapsible sections
+- **Sortable Columns** — Sort by IP, name, download, upload, MAC
+- **Persistent Metadata** — Client data saved to `/etc/jammonitor_clients.json`
+
+---
+
+### Wi-Fi APs
 
 <img width="2036" height="1228" alt="image" src="https://github.com/user-attachments/assets/caf2fa35-d875-4276-9112-d2cd0871cfeb" />
 
 
-Monitor wireless networks and connected clients:
+Monitor wireless networks and access points:
 
-**WiFi APs Tab:**
-- Local radio status (channel, TX power, client count)
-- Remote AP monitoring with latency tracking
-- Configurable AP list for multi-AP deployments
-- Online/Offline status badges
+- **Local Radio Status** — Channel, TX power, and client count
+- **Remote AP Monitoring** — Latency tracking for remote access points
+- **Configurable AP List** — Multi-AP deployments with editable configuration
+- **Online/Offline Status Badges** — Real-time AP availability
 
-**Client List Tab:**
-- All connected devices with hostname, IP, and MAC
-- Per-client download/upload traffic
-- Automatic DHCP lease and ARP table parsing
+---
+
+### OMR Status
+
+<!-- screenshot -->
+
+Embedded OpenMPTCProuter status page directly within JamMonitor:
+
+- **Connection Overview** — View MPTCP and VPN tunnel status at a glance
+- **Server Status** — VPS health, services, and connectivity information
+- **No Tab Switching** — Access OMR status without leaving the JamMonitor interface
+
+---
+
+### Diagnostics & Data Export
+
+<img width="2016" height="1312" alt="image" src="https://github.com/user-attachments/assets/6cb6021b-936b-4217-ad8a-62b64f9b0904" />
+
+
+Diagnostic tools and persistent data storage on the Diagnostics tab:
+
+- **Diagnostic Bundle Export** — Generate comprehensive bundles including system logs, network state, VPN status, MPTCP info, firewall rules, and more
+- **Automatic Secret Redaction** — Tokens, passwords, and keys stripped from output
+- **USB Device Detection** — Shows capacity info
+- **One-Click ext4 Formatting**
+- **Mount/Unmount Management** — Mounts to `/mnt/data`
+- **SQLite Database** — Stores bandwidth, ping, and client traffic history
+- **Background Collector Process** — Writes every 60s with start/stop controls
+- **Storage Dashboard** — DB size, entry count, date range, and free space
+- **Automatic Data Retention** — 30-day default cleanup
+
+---
+
+### Bandwidth Analytics
+
+<img width="2030" height="1498" alt="image" src="https://github.com/user-attachments/assets/a9d23577-9517-4b35-a771-71369677ff44" />
+
+
+Comprehensive bandwidth tracking across multiple timeframes:
+
+- **Realtime** - Live throughput graph updated every 3 seconds
+- **Hourly** - Last 24 hours of usage broken down by hour
+- **Daily** - Last 30 days of bandwidth consumption
+- **Monthly** - Long-term usage trends by month
+- **Per-Interface Filtering** - View bandwidth for specific WANs or all combined
+- **Stacked Bar Charts** - Visual breakdown of download vs upload traffic
+- **Data Tables** - Detailed numeric values alongside graphs
 
 ---
 
@@ -142,22 +189,6 @@ Temporarily bypass the VPN tunnel for direct internet routing.
 
 ---
 
-### USB Storage & History Persistence
-
-<img width="2016" height="1312" alt="image" src="https://github.com/user-attachments/assets/6cb6021b-936b-4217-ad8a-62b64f9b0904" />
-
-Store long-term metrics on USB storage with automatic collection.
-
-- **USB Device Detection** — Shows capacity info
-- **One-Click ext4 Formatting**
-- **Mount/Unmount Management** — Mounts to `/mnt/data`
-- **SQLite Database** — Stores bandwidth, ping, and client traffic history
-- **Background Collector Process** — Writes every 60s with start/stop controls
-- **Storage Dashboard** — DB size, entry count, date range, and free space
-- **Automatic Data Retention** — 30-day default cleanup
-
----
-
 ### Auto-Update System
 
 <img width="664" height="524" alt="image" src="https://github.com/user-attachments/assets/32905692-cd45-49cc-af6a-5faf9bc80991" />
@@ -183,24 +214,6 @@ Full interface translation with 22 languages.
 - **Automatic Browser Detection** — Detects preferred language from browser settings
 - **Manual Override** — Language selector in settings popup
 - **Persistent Selection** — Saved to localStorage
-
----
-
-### Advanced Client Management
-
-<img width="2012" height="1092" alt="image" src="https://github.com/user-attachments/assets/5575b418-2ed4-4b88-943e-f5b6f3e8c0d5" />
-
-Enhanced device tracking beyond basic client listing.
-
-- **Device Type Detection** — Automatic identification (phone, tablet, laptop, desktop, TV, IoT, camera, wearable, etc.)
-- **Custom Device Names** — Inline editing for friendly names
-- **Manual Type Override** — Change detected device type
-- **DHCP Reservations** — Create static IP assignments for connected devices
-- **Tailscale Integration** — Tailscale peers shown alongside LAN clients
-- **Subnet Grouping** — Clients grouped by subnet with collapsible sections
-- **Sortable Columns** — Sort by IP, name, download, upload, MAC
-- **Per-Client Traffic** — Traffic metrics via conntrack
-- **Persistent Metadata** — Client data saved to `/etc/jammonitor_clients.json`
 
 ---
 

@@ -4718,6 +4718,7 @@ var JamMonitor = (function() {
     // === SPEED TEST FUNCTIONS ===
 
     function setSpeedTestSize(size, btn) {
+        if (btn.disabled) return;
         speedTestSize = size;
         // Update button states within the speed test card
         var card = btn.closest('div[style*="border:2px solid #27ae60"]');
@@ -4742,17 +4743,36 @@ var JamMonitor = (function() {
                 btn.title = '';
             }
         });
+        // CacheFly and Tele2 only have 10MB and 100MB files - grey out 25MB
+        var no25 = (server !== 'cloudflare');
+        var btn25 = document.querySelector('.jm-quick-range[data-size="25"]');
+        if (btn25) {
+            btn25.disabled = no25;
+            btn25.title = no25 ? _('Not available on this server') : '';
+            btn25.style.opacity = no25 ? '0.4' : '';
+            btn25.style.cursor = no25 ? 'not-allowed' : '';
+            // If 25MB was selected, fall back to 10MB
+            if (no25 && speedTestSize === 25) {
+                var btn10 = document.querySelector('.jm-quick-range[data-size="10"]');
+                if (btn10) {
+                    btn25.classList.remove('active');
+                    btn10.classList.add('active');
+                    speedTestSize = 10;
+                }
+            }
+        }
     }
 
     function populateSpeedTestWans() {
         var container = document.getElementById('speedtest-wans');
         if (!container) return;
 
-        // Set server dropdown to auto-detected value
+        // Set server dropdown to auto-detected value and update button states
         var serverDropdown = document.getElementById('speedtest-server');
         if (serverDropdown) {
             serverDropdown.value = speedTestServer;
         }
+        setSpeedTestServer(speedTestServer);
 
         // Get WAN list from wan_policy endpoint
         api('wan_policy').then(function(data) {

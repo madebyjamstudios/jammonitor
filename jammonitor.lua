@@ -3671,15 +3671,13 @@ function action_speedtest_start()
             name = "China (CacheFly)",
             -- CacheFly CDN - has nodes in China, commonly used for speed tests
             download = "http://cachefly.cachefly.net/%dmb.test",
-            upload = nil,  -- Upload not supported for this server
-            size_map = {[10]=10, [25]=10, [100]=100}
+            upload = nil  -- Upload not supported for this server
         },
         global = {
             name = "Global Fallback",
             -- Tele2 speed test - works globally including China
             download = "http://speedtest.tele2.net/%dMB.zip",
-            upload = nil,  -- Upload not supported for this server
-            size_map = {[10]=10, [25]=10, [100]=100}
+            upload = nil  -- Upload not supported for this server
         }
     }
 
@@ -3743,9 +3741,8 @@ function action_speedtest_start()
         if server == "cloudflare" then
             url = string.format(srv.download, bytes)
         else
-            -- Other servers use MB-based files; snap to nearest available size
-            local actual_mb = srv.size_map and srv.size_map[size_mb] or size_mb
-            url = string.format(srv.download, actual_mb)
+            -- Other servers use MB-based files
+            url = string.format(srv.download, size_mb)
         end
         local referer_flag = srv.referer and string.format([[-e "%s" ]], srv.referer) or ""
         curl_cmd = string.format(

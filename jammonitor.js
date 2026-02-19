@@ -4585,7 +4585,7 @@ var JamMonitor = (function() {
                     mountAndInit(selectedStorageDevice);
                 }, 1000);
             } else {
-                statusDiv.innerHTML = '<span style="color:#e74c3c;">Format failed: ' + (data && data.error ? data.error : 'Unknown error') + '</span>';
+                statusDiv.innerHTML = '<span style="color:#e74c3c;">Format failed: ' + escapeHtml(data && data.error ? data.error : 'Unknown error') + '</span>';
             }
         }).catch(function(err) {
             statusDiv.innerHTML = '<span style="color:#e74c3c;">Format failed: Network error</span>';
@@ -4606,7 +4606,7 @@ var JamMonitor = (function() {
 
         api('storage_mount', { device: device }).then(function(mountData) {
             if (!mountData || !mountData.success) {
-                statusDiv.innerHTML = '<span style="color:#e74c3c;">Mount failed: ' + (mountData && mountData.error ? mountData.error : 'Unknown error') + '</span>';
+                statusDiv.innerHTML = '<span style="color:#e74c3c;">Mount failed: ' + escapeHtml(mountData && mountData.error ? mountData.error : 'Unknown error') + '</span>';
                 return;
             }
 
@@ -4614,7 +4614,7 @@ var JamMonitor = (function() {
 
             api('storage_init').then(function(initData) {
                 if (!initData || !initData.success) {
-                    statusDiv.innerHTML = '<span style="color:#e74c3c;">Init failed: ' + (initData && initData.error ? initData.error : 'Unknown error') + '</span>';
+                    statusDiv.innerHTML = '<span style="color:#e74c3c;">Init failed: ' + escapeHtml(initData && initData.error ? initData.error : 'Unknown error') + '</span>';
                     return;
                 }
 
@@ -4674,7 +4674,7 @@ var JamMonitor = (function() {
                 })
                 .catch(function(err) {
                     console.error('History download error:', err);
-                    status.innerHTML = '<span style="color:#e74c3c;">Download failed: ' + err.message + '</span>';
+                    status.innerHTML = '<span style="color:#e74c3c;">Download failed: ' + escapeHtml(err.message) + '</span>';
                 });
         });
     }
@@ -4764,7 +4764,7 @@ var JamMonitor = (function() {
             container.innerHTML = html || '<div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;">No WAN interfaces found</div>';
         }).catch(function(err) {
             console.error('populateSpeedTestWans error:', err);
-            container.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:20px;">Error loading WANs: ' + err.message + '</div>';
+            container.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:20px;">Error loading WANs: ' + escapeHtml(err.message) + '</div>';
         });
     }
 
@@ -5099,7 +5099,7 @@ var JamMonitor = (function() {
                 sorted.forEach(function(dev) {
                     html += '<tr>';
                     html += '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(dev.ip) + '</td>';
-                    html += '<td>' + escapeHtml(dev.name || '—') + '</td>';
+                    html += '<td title="' + escapeHtml(dev.name || '—') + '">' + escapeHtml(dev.name || '—') + '</td>';
                     html += '<td style="font-family:monospace;font-size:11px;">' + escapeHtml(dev.mac) + '</td>';
                     html += '<td>' + dev.typeDisplay + '</td>';
                     html += '<td>' + formatBytesCompact(dev.rx) + '</td>';
@@ -5113,7 +5113,7 @@ var JamMonitor = (function() {
                 if (unattribTotal > 0) {
                     html += '<tr style="background:#fff3cd;border-top:2px solid #f39c12;">';
                     html += '<td style="font-style:italic;color:#856404;">Tunnel/Router</td>';
-                    html += '<td style="color:#856404;">—</td>';
+                    html += '<td title="—" style="color:#856404;">—</td>';
                     html += '<td style="color:#856404;">—</td>';
                     html += '<td style="color:#856404;">🔒 ' + _('Unattributed') + '</td>';
                     html += '<td style="color:#856404;">' + formatBytesCompact(unattributed.rx) + '</td>';

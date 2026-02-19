@@ -127,6 +127,7 @@ var JamMonitor = (function() {
     var STORAGE_KEY = 'jammonitor';
     var currentView = 'overview';
     var updateTimer = null;
+    var bgTimer = null;
     var scale = 'mb'; // mb or gb
     var selectedIface = 'all';
 
@@ -147,13 +148,15 @@ var JamMonitor = (function() {
     var maxPingHistory = 120; // ~6 min at 3s interval
 
     // Bandwidth data
-    var bwHistory = [];
-    var maxBwHistory = 120;
     var lastBwBytes = {};
     var throughputHistory = [];
+    var maxBwHistory = 120;
 
     // Storage status cache for diagnostics
     var storageStatusCache = null;
+
+    // Cached network_info response (shared between collectBackgroundData and updateOverview)
+    var networkInfoCache = { data: null, ts: 0 };
 
     // Interface list
     var interfaces = [];
@@ -345,7 +348,6 @@ var JamMonitor = (function() {
                 var data = JSON.parse(saved);
                 if (data.pingHistory) pingHistory = data.pingHistory;
                 if (data.pingStats) pingStats = data.pingStats;
-                if (data.bwHistory) bwHistory = data.bwHistory;
                 if (data.throughputHistory) throughputHistory = data.throughputHistory;
                 if (data.pingTargets) {
                     if (data.pingTargets.vps) pingTargets.vps = data.pingTargets.vps;
@@ -397,7 +399,6 @@ var JamMonitor = (function() {
             var data = {
                 pingHistory: pingHistory,
                 pingStats: pingStats,
-                bwHistory: bwHistory.slice(-maxBwHistory),
                 throughputHistory: throughputHistory.slice(-maxBwHistory),
                 pingTargets: pingTargets,
                 timestamp: Date.now()
@@ -448,7 +449,7 @@ var JamMonitor = (function() {
         }, 5000);
 
         // Always collect data in background
-        setInterval(collectBackgroundData, 3000);
+        if (!bgTimer) bgTimer = setInterval(collectBackgroundData, 3000);
     }
 
     function collectBackgroundData() {
@@ -459,6 +460,28 @@ var JamMonitor = (function() {
 
         // Always collect throughput
         collectThroughput();
+
+        // Refresh network_info cache (used by updateOverview)
+        api('network_info').then(function(data) {
+            if (data) {
+                networkInfoCache.data = data;
+                networkInfoCache.ts = Date.now();
+            }
+        });
+    }
+
+    // Get network_info from cache if fresh (< 4s), otherwise fetch
+    function getNetworkInfo() {
+        if (networkInfoCache.data && (Date.now() - networkInfoCache.ts) < 4000) {
+            return Promise.resolve(networkInfoCache.data);
+        }
+        return api('network_info').then(function(data) {
+            if (data) {
+                networkInfoCache.data = data;
+                networkInfoCache.ts = Date.now();
+            }
+            return data;
+        });
     }
 
     // === SECURE API FUNCTIONS ===
@@ -488,6 +511,7 @@ var JamMonitor = (function() {
     }
 
     // === VERSION CHECK & SETTINGS ===
+    var versionCheckInFlight = false;
     // Check for updates (called once on page load)
     function checkVersion() {
         // Only fetch once per session
@@ -495,11 +519,14 @@ var JamMonitor = (function() {
             updateSettingsBadge(versionCheckResult);
             return;
         }
+        if (versionCheckInFlight) return;
+        versionCheckInFlight = true;
 
         // First, get local version (fast, no network)
         api('version_check').then(function(data) {
             if (!data) {
                 versionCheckResult = { error: 'api_error' };
+                versionCheckInFlight = false;
                 return;
             }
 
@@ -508,6 +535,7 @@ var JamMonitor = (function() {
             // Now check remote (may be slow or fail)
             api('version_check', { check_remote: '1' }).then(function(remoteData) {
                 versionCheckFetched = true;
+                versionCheckInFlight = false;
                 versionCheckResult = remoteData || data;
                 updateSettingsBadge(versionCheckResult);
             });
@@ -818,12 +846,14 @@ var JamMonitor = (function() {
             if (!data) return;
 
             // VPS IP from WireGuard endpoint or UCI config
+            var vpsEl = document.getElementById('ping-vps-target');
+            var tunnelEl = document.getElementById('ping-tunnel-target');
             if (data.wireguard && data.wireguard.endpoint) {
                 pingTargets.vps = data.wireguard.endpoint;
-                document.getElementById('ping-vps-target').textContent = pingTargets.vps;
+                if (vpsEl) vpsEl.textContent = pingTargets.vps;
             } else if (data.vps && data.vps.ip) {
                 pingTargets.vps = data.vps.ip;
-                document.getElementById('ping-vps-target').textContent = data.vps.ip;
+                if (vpsEl) vpsEl.textContent = data.vps.ip;
             }
 
             // Tunnel peer IP
@@ -831,14 +861,14 @@ var JamMonitor = (function() {
                 var tunnelIp = data.tunnel.gateway || data.tunnel.peer;
                 if (tunnelIp) {
                     pingTargets.tunnel = tunnelIp;
-                    document.getElementById('ping-tunnel-target').textContent = tunnelIp;
+                    if (tunnelEl) tunnelEl.textContent = tunnelIp;
                 } else if (data.tunnel.ip) {
                     // Fallback: use .1 of the tun0 subnet
                     var parts = data.tunnel.ip.split('.');
                     if (parts.length === 4) {
                         parts[3] = '1';
                         pingTargets.tunnel = parts.join('.');
-                        document.getElementById('ping-tunnel-target').textContent = pingTargets.tunnel;
+                        if (tunnelEl) tunnelEl.textContent = pingTargets.tunnel;
                     }
                 }
             }
@@ -919,11 +949,14 @@ var JamMonitor = (function() {
 
             // Temperature
             if (data.temp !== undefined) {
-                document.getElementById('sys-temp-big').textContent = data.temp.toFixed(1) + ' C';
-                var ind = document.getElementById('sys-indicator');
-                if (data.temp > 80) ind.className = 'jm-indicator red';
-                else if (data.temp > 65) ind.className = 'jm-indicator yellow';
-                else ind.className = 'jm-indicator green';
+                var tempVal = parseFloat(data.temp);
+                if (!isNaN(tempVal)) {
+                    document.getElementById('sys-temp-big').textContent = tempVal.toFixed(1) + ' C';
+                    var ind = document.getElementById('sys-indicator');
+                    if (tempVal > 80) ind.className = 'jm-indicator red';
+                    else if (tempVal > 65) ind.className = 'jm-indicator yellow';
+                    else ind.className = 'jm-indicator green';
+                }
             }
 
             // RAM
@@ -965,6 +998,7 @@ var JamMonitor = (function() {
             var vpnIp = document.getElementById('vpn-ip');
             var vpnEndpoint = document.getElementById('vpn-endpoint');
             var vpnHandshake = document.getElementById('vpn-handshake');
+            if (!vpnInd || !vpnStatus) return;
 
             // Check tunnel (tun0) first
             if (data.tunnel && data.tunnel.exists && data.tunnel.ip) {
@@ -1006,8 +1040,8 @@ var JamMonitor = (function() {
             }
         });
 
-        // WAN info - get route and public IP using APIs
-        api('network_info').then(function(data) {
+        // WAN info - get route and public IP using APIs (use cached data)
+        getNetworkInfo().then(function(data) {
             if (!data) return;
 
             // Parse default route
@@ -1663,16 +1697,16 @@ var JamMonitor = (function() {
 
     // Format lease expiry time
     function formatExpiry(expiryTimestamp) {
-        if (!expiryTimestamp) return 'Unknown';
+        if (!expiryTimestamp) return _('Unknown');
         var now = Math.floor(Date.now() / 1000);
         var remaining = expiryTimestamp - now;
-        if (remaining <= 0) return 'Expired';
+        if (remaining <= 0) return _('Expired');
         var days = Math.floor(remaining / 86400);
         var hours = Math.floor((remaining % 86400) / 3600);
         var mins = Math.floor((remaining % 3600) / 60);
-        if (days > 0) return 'Expires in ' + days + ' day' + (days > 1 ? 's' : '');
-        if (hours > 0) return 'Expires in ' + hours + ' hour' + (hours > 1 ? 's' : '');
-        return 'Expires in ' + mins + ' min' + (mins > 1 ? 's' : '');
+        if (days > 0) return _('Expires in %s day(s)', days);
+        if (hours > 0) return _('Expires in %s hour(s)', hours);
+        return _('Expires in %s min(s)', mins);
     }
 
     // Load client metadata from server
@@ -1753,7 +1787,7 @@ var JamMonitor = (function() {
         var delBtn = popup.querySelector('#res-delete');
         if (delBtn) {
             delBtn.onclick = function() {
-                if (!confirm('Remove DHCP reservation for ' + mac + '?\n(Click "Save and Apply" to finalize)')) return;
+                if (!confirm(_('Remove DHCP reservation for %s?\n(Click "Save and Apply" to finalize)', mac))) return;
                 if (reservedMacs[macLower]) {
                     // Existing reservation - mark for removal
                     pendingReservations[macLower] = { action: 'remove' };
@@ -1830,7 +1864,7 @@ var JamMonitor = (function() {
         Promise.all(promises).then(function(results) {
             var failed = results.filter(function(r) { return r && r.error; });
             if (failed.length > 0) {
-                alert('Some changes failed to save:\n' + failed.map(function(f) { return f.error; }).join('\n'));
+                alert(_('Some changes failed to save:') + '\n' + failed.map(function(f) { return f.error; }).join('\n'));
             }
             // Clear pending state
             pendingMeta = {};
@@ -1844,7 +1878,7 @@ var JamMonitor = (function() {
                 saveBtn.textContent = _('Save and Apply');
             }
         }).catch(function(err) {
-            alert('Failed to save changes: ' + err);
+            alert(_('Failed to save changes: %s', err));
             if (saveBtn) {
                 saveBtn.disabled = false;
                 saveBtn.textContent = _('Save and Apply');
@@ -1854,7 +1888,7 @@ var JamMonitor = (function() {
 
     // Reset all pending changes (discard without saving)
     function resetClientChanges() {
-        if (!confirm('Discard all unsaved changes?')) return;
+        if (!confirm(_('Discard all unsaved changes?'))) return;
         pendingMeta = {};
         pendingReservations = {};
         // Remove any editing state so updateClients doesn't skip refresh
@@ -2152,8 +2186,9 @@ var JamMonitor = (function() {
 
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
+        if (!tbody) return;
         // Skip refresh if user is actively editing a name
-        if (tbody && tbody.querySelector('.client-name.editing')) {
+        if (tbody.querySelector('.client-name.editing')) {
             return;
         }
         api('clients').then(function(data) {
@@ -2277,6 +2312,7 @@ var JamMonitor = (function() {
         fetch(window.location.pathname + '/wifi_status')
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                if (!data || !data.local_radios) return;
                 // Calculate real-time utilization from survey deltas
                 data.local_radios.forEach(function(radio) {
                     if (radio.survey_active !== undefined && radio.survey_busy !== undefined) {
@@ -2462,7 +2498,7 @@ var JamMonitor = (function() {
             cancelApEdit();
             updateRemoteAps();
         } catch(e) {
-            alert('Invalid JSON format. Use: [{"name":"AP-1","ip":"10.0.0.2"}]');
+            alert(_('Invalid JSON format. Use: [{"name":"AP-1","ip":"10.0.0.2"}]'));
         }
     }
 
@@ -2743,7 +2779,7 @@ var JamMonitor = (function() {
                 iconClass += ' cellular';
             } else if (proto === 'wwan' || device.indexOf('wlan') >= 0 || device.indexOf('ra') === 0) {
                 iconClass += ' wifi';
-            } else if (device.indexOf('usb') >= 0 || device.indexOf('eth') >= 0 && proto === 'ncm') {
+            } else if (device.indexOf('usb') >= 0 || (device.indexOf('eth') >= 0 && proto === 'ncm')) {
                 iconClass += ' usb';
             } else {
                 // Default ethernet icon
@@ -3126,7 +3162,7 @@ var JamMonitor = (function() {
                 startWanPolicyPolling();
                 loadWanPolicy(true);
             } else {
-                errorDiv.textContent = result.error || 'Failed to save settings';
+                errorDiv.textContent = result.error || _('Failed to save settings');
                 errorDiv.style.display = 'block';
                 saveBtn.disabled = false;
                 saveBtn.textContent = _('Save and Apply');
@@ -3134,7 +3170,7 @@ var JamMonitor = (function() {
         })
         .catch(function(e) {
             console.error('Save WAN settings error:', e);
-            errorDiv.textContent = 'Network error: ' + e.message;
+            errorDiv.textContent = _('Network error: %s', e.message);
             errorDiv.style.display = 'block';
             saveBtn.disabled = false;
             saveBtn.textContent = _('Save and Apply');
@@ -3459,12 +3495,12 @@ var JamMonitor = (function() {
             var ifaceResult = results[0];
             var advResult = results[1];
             if (ifaceResult.success && advResult.success) {
-                successDiv.textContent = 'All settings saved successfully!';
+                successDiv.textContent = _('All settings saved successfully!');
                 successDiv.style.display = 'block';
                 loadWanPolicy(); // Reload WAN policy to reflect changes
                 setTimeout(function() { successDiv.style.display = 'none'; }, 3000);
             } else {
-                errorDiv.textContent = ifaceResult.error || advResult.error || 'Failed to save settings';
+                errorDiv.textContent = ifaceResult.error || advResult.error || _('Failed to save settings');
                 errorDiv.style.display = 'block';
             }
         })
@@ -3472,7 +3508,7 @@ var JamMonitor = (function() {
             console.error('Save advanced settings error:', e);
             saveBtn.disabled = false;
             saveBtn.textContent = _('Save and Apply');
-            errorDiv.textContent = 'Network error: ' + e.message;
+            errorDiv.textContent = _('Network error: %s', e.message);
             errorDiv.style.display = 'block';
         });
     }
@@ -4505,13 +4541,13 @@ var JamMonitor = (function() {
                     statusBadge = '<span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:8px;">System</span>';
                 }
 
-                html += '<div class="storage-device-option" data-device="' + dev.partition + '" onclick="JamMonitor.selectStorageDevice(this)">' +
+                html += '<div class="storage-device-option" data-device="' + escapeHtml(dev.partition) + '" onclick="JamMonitor.selectStorageDevice(this)">' +
                     '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-                    '<strong>' + dev.partition + '</strong>' + statusBadge +
+                    '<strong>' + escapeHtml(dev.partition) + '</strong>' + statusBadge +
                     '</div>' +
                     '<div style="color:#7f8c8d;font-size:13px;margin-top:4px;">' +
-                    dev.size_human + (dev.filesystem ? ' &middot; ' + dev.filesystem : ' &middot; Unformatted') +
-                    (dev.label ? ' &middot; ' + dev.label : '') +
+                    escapeHtml(dev.size_human) + (dev.filesystem ? ' &middot; ' + escapeHtml(dev.filesystem) : ' &middot; Unformatted') +
+                    (dev.label ? ' &middot; ' + escapeHtml(dev.label) : '') +
                     '</div></div>';
             });
 
@@ -4576,7 +4612,7 @@ var JamMonitor = (function() {
             return;
         }
 
-        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Formatting ' + selectedStorageDevice + '... This may take a moment.</span>';
+        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Formatting ' + escapeHtml(selectedStorageDevice) + '... This may take a moment.</span>';
 
         api('storage_format', { device: selectedStorageDevice }).then(function(data) {
             if (data && data.success) {
@@ -4602,7 +4638,7 @@ var JamMonitor = (function() {
     function mountAndInit(device) {
         storageStep(3, true);
         var statusDiv = document.getElementById('storage-init-status');
-        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Mounting ' + device + '...</span>';
+        statusDiv.innerHTML = '<span style="color:#7f8c8d;">Mounting ' + escapeHtml(device) + '...</span>';
 
         api('storage_mount', { device: device }).then(function(mountData) {
             if (!mountData || !mountData.success) {
@@ -5032,25 +5068,14 @@ var JamMonitor = (function() {
             var sortColumn = null;
             var sortDirection = 'desc';
 
-            // IP to number for proper sorting
-            function ipToNumber(ip) {
-                if (!ip || ip === '—') return 0;
-                var parts = ip.split('.');
-                if (parts.length !== 4) return 0;
-                return ((parseInt(parts[0], 10) << 24) +
-                        (parseInt(parts[1], 10) << 16) +
-                        (parseInt(parts[2], 10) << 8) +
-                        parseInt(parts[3], 10)) >>> 0;
-            }
-
             // Sort function - returns unsorted if col is null
             function sortDevices(col, dir) {
                 if (!col) return devices.slice();
                 return devices.slice().sort(function(a, b) {
                     var valA, valB;
                     if (col === 'ip') {
-                        valA = ipToNumber(a.ip);
-                        valB = ipToNumber(b.ip);
+                        valA = ipToNumberClient(a.ip);
+                        valB = ipToNumberClient(b.ip);
                     } else if (col === 'name' || col === 'mac' || col === 'type') {
                         valA = (a[col] || '').toLowerCase();
                         valB = (b[col] || '').toLowerCase();

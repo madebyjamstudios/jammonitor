@@ -22,8 +22,9 @@ echo $$ > "$PIDFILE"
 # Cleanup PID file on exit
 trap "rm -f '$PIDFILE'" EXIT INT TERM
 
-DB_PATH="/mnt/data/jammonitor/history.db"
-LOG_PATH="/mnt/data/jammonitor/syslog.txt"
+DATA_DIR="/mnt/data/jammonitor"
+DB_PATH="${DATA_DIR}/history.db"
+LOG_PATH="${DATA_DIR}/syslog.txt"
 CLIENT_SNAPSHOT="/tmp/jammonitor_client_last"
 RETENTION_DAYS=30
 RETENTION_DAYS_RAW=30      # Keep raw per-client data for 30 days
@@ -37,9 +38,9 @@ mkdir -p /mnt/data/jammonitor 2>/dev/null || {
     exit 1
 }
 
-# Helper: Escape single quotes for SQLite (double them)
+# Helper: Escape strings for SQLite (single quotes doubled, backslashes and double quotes escaped)
 sql_escape() {
-    printf '%s' "$1" | sed "s/'/''/g"
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/''/g" -e 's/"/\\"/g'
 }
 
 # Get WAN interface list (dynamic or fallback)
@@ -355,7 +356,8 @@ collect_interface_traffic() {
 
                 # Store if non-zero
                 if [ "$delta_rx" -gt 0 ] || [ "$delta_tx" -gt 0 ]; then
-                    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO interface_traffic (ts, iface, rx_bytes, tx_bytes) VALUES ($TS, '$iface', $delta_rx, $delta_tx);" 2>/dev/null
+                    iface_esc=$(sql_escape "$iface")
+                    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO interface_traffic (ts, iface, rx_bytes, tx_bytes) VALUES ($TS, '$iface_esc', $delta_rx, $delta_tx);" 2>/dev/null
                 fi
             fi
         done < "$CURRENT_IFACE"

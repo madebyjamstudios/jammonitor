@@ -64,6 +64,14 @@ local function validate_ip(ip)
     return ip
 end
 
+-- Helper: Validate filesystem label (ext4 max 16 chars, safe chars only)
+local function validate_label(label)
+    if not label or label == "" then return nil end
+    if not label:match("^[a-zA-Z0-9_%-]+$") then return nil end
+    if #label > 16 then return nil end
+    return label
+end
+
 -- Helper: Atomic file write (write to temp, then rename)
 local function atomic_write(path, content)
     local fs = require "nixio.fs"
@@ -415,8 +423,15 @@ function action_set_client_meta()
         return
     end
 
-    -- Normalize MAC to lowercase
+    -- Normalize MAC to lowercase and validate format
     mac = mac:lower()
+    if not mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
+        http.write(json.stringify({error = "Invalid MAC address format"}))
+        return
+    end
+
+    -- Cap alias length
+    if alias and #alias > 64 then alias = alias:sub(1, 64) end
 
     -- Read existing metadata
     local content = fs.readfile(CLIENT_META_FILE) or "{}"
@@ -427,11 +442,8 @@ function action_set_client_meta()
     if alias and alias ~= "" then meta[mac].alias = alias end
     if dtype and dtype ~= "" then meta[mac].type = dtype end
 
-    -- Write back
-    local f = io.open(CLIENT_META_FILE, "w")
-    if f then
-        f:write(json.stringify(meta))
-        f:close()
+    -- Write back atomically
+    if atomic_write(CLIENT_META_FILE, json.stringify(meta)) then
         http.write(json.stringify({success = true}))
     else
         http.write(json.stringify({error = "Failed to write metadata"}))
@@ -779,7 +791,7 @@ function action_vnstat()
     if data then
         http.write(json.stringify(data))
     else
-        http.write(json.stringify({ error = "vnstat not available", raw = result }))
+        http.write(json.stringify({ error = "vnstat not available" }))
     end
 end
 
@@ -963,7 +975,7 @@ function action_storage_format()
     local content = http.content()
     local params = json.parse(content) or {}
     local device = params.device
-    local label = params.label or "JAMMONITOR"
+    local label = validate_label(params.label) or "JAMMONITOR"
 
     -- Validate device path
     local safe_device = validate_device_path(device)
@@ -994,7 +1006,7 @@ function action_storage_format()
     if result:match("Writing superblocks") or result:match("done") then
         http.write(json.stringify({success = true}))
     else
-        http.write(json.stringify({success = false, error = result}))
+        http.write(json.stringify({success = false, error = "Format failed. Check device and try again."}))
     end
 end
 
@@ -1137,6 +1149,7 @@ function action_wifi_status()
 
                 -- Get channel/txpower from iwinfo using first interface (not radio name)
                 local first_iface = radio_info.interfaces and radio_info.interfaces[1] and radio_info.interfaces[1].ifname
+                first_iface = validate_iface(first_iface)
                 if first_iface then
                     local iwinfo_out = sys.exec("iwinfo " .. first_iface .. " info 2>/dev/null")
                     if iwinfo_out and iwinfo_out ~= "" then
@@ -1149,6 +1162,7 @@ function action_wifi_status()
                     end
 
                     -- Get channel utilization from survey data (raw values for delta calc in JS)
+                    -- first_iface already validated above
                     local survey_out = sys.exec("iw " .. first_iface .. " survey dump 2>/dev/null")
                     if survey_out and survey_out ~= "" then
                         -- Find the "in use" frequency block and extract busy/active times
@@ -1181,7 +1195,7 @@ function action_wifi_status()
                         }
                         -- Get client details for this interface using iw station dump
                         -- Provides per-client bytes and WiFi generation info
-                        if iface.ifname then
+                        if iface.ifname and validate_iface(iface.ifname) then
                             local station_dump = sys.exec("iw dev " .. iface.ifname .. " station dump 2>/dev/null")
                             local client_count = 0
                             if station_dump and station_dump ~= "" then
@@ -2668,7 +2682,7 @@ function action_wan_edit()
 
     -- Static IP settings (only if proto is static)
     if data.proto == "static" then
-        if data.ipaddr and data.ipaddr:match("^%d+%.%d+%.%d+%.%d+$") then
+        if validate_ip(data.ipaddr) then
             local current = uci:get("network", iface, "ipaddr")
             if current ~= data.ipaddr then
                 uci:set("network", iface, "ipaddr", data.ipaddr)
@@ -2677,7 +2691,7 @@ function action_wan_edit()
             end
         end
 
-        if data.netmask and data.netmask:match("^%d+%.%d+%.%d+%.%d+$") then
+        if validate_ip(data.netmask) then
             local current = uci:get("network", iface, "netmask")
             if current ~= data.netmask then
                 uci:set("network", iface, "netmask", data.netmask)
@@ -2686,7 +2700,7 @@ function action_wan_edit()
             end
         end
 
-        if data.gateway and data.gateway:match("^%d+%.%d+%.%d+%.%d+$") then
+        if validate_ip(data.gateway) then
             local current = uci:get("network", iface, "gateway")
             if current ~= data.gateway then
                 uci:set("network", iface, "gateway", data.gateway)
@@ -2713,7 +2727,7 @@ function action_wan_edit()
         if #data.dns > 0 then
             local valid_dns = {}
             for _, d in ipairs(data.dns) do
-                if d:match("^%d+%.%d+%.%d+%.%d+$") then
+                if validate_ip(d) then
                     table.insert(valid_dns, d)
                 end
             end
@@ -2787,52 +2801,52 @@ function action_wan_advanced()
 
         local changes_made = false
 
+        -- Helper: validate integer in range
+        local function valid_int(val, min, max)
+            local n = tonumber(val)
+            if n and n >= min and n <= max and n == math.floor(n) then return n end
+            return nil
+        end
+
         -- Update failover settings (omr-tracker.defaults)
         if data.failover then
             local f = data.failover
-            if f.timeout then
-                uci:set("omr-tracker", "defaults", "timeout", tostring(f.timeout))
-                changes_made = true
-            end
-            if f.count then
-                uci:set("omr-tracker", "defaults", "count", tostring(f.count))
-                changes_made = true
-            end
-            if f.tries then
-                uci:set("omr-tracker", "defaults", "tries", tostring(f.tries))
-                changes_made = true
-            end
-            if f.interval then
-                uci:set("omr-tracker", "defaults", "interval", tostring(f.interval))
-                changes_made = true
-            end
-            if f.failure_interval then
-                uci:set("omr-tracker", "defaults", "failure_interval", tostring(f.failure_interval))
-                changes_made = true
-            end
-            if f.tries_up then
-                uci:set("omr-tracker", "defaults", "tries_up", tostring(f.tries_up))
-                changes_made = true
-            end
+            local n
+            n = valid_int(f.timeout, 1, 60)
+            if n then uci:set("omr-tracker", "defaults", "timeout", tostring(n)); changes_made = true end
+            n = valid_int(f.count, 1, 20)
+            if n then uci:set("omr-tracker", "defaults", "count", tostring(n)); changes_made = true end
+            n = valid_int(f.tries, 1, 20)
+            if n then uci:set("omr-tracker", "defaults", "tries", tostring(n)); changes_made = true end
+            n = valid_int(f.interval, 1, 300)
+            if n then uci:set("omr-tracker", "defaults", "interval", tostring(n)); changes_made = true end
+            n = valid_int(f.failure_interval, 1, 300)
+            if n then uci:set("omr-tracker", "defaults", "failure_interval", tostring(n)); changes_made = true end
+            n = valid_int(f.tries_up, 1, 20)
+            if n then uci:set("omr-tracker", "defaults", "tries_up", tostring(n)); changes_made = true end
         end
 
         -- Update MPTCP settings (network.globals)
         if data.mptcp then
             local m = data.mptcp
-            if m.scheduler then
+            local valid_schedulers = { default = true, roundrobin = true, redundant = true }
+            local valid_path_managers = { default = true, fullmesh = true }
+            local valid_congestion = { cubic = true, olia = true, wvegas = true, balia = true }
+            if m.scheduler and valid_schedulers[m.scheduler] then
                 uci:set("network", "globals", "mptcp_scheduler", m.scheduler)
                 changes_made = true
             end
-            if m.path_manager then
+            if m.path_manager and valid_path_managers[m.path_manager] then
                 uci:set("network", "globals", "mptcp_path_manager", m.path_manager)
                 changes_made = true
             end
-            if m.congestion then
+            if m.congestion and valid_congestion[m.congestion] then
                 uci:set("network", "globals", "congestion", m.congestion)
                 changes_made = true
             end
-            if m.subflows then
-                uci:set("network", "globals", "mptcp_subflows", tostring(m.subflows))
+            local sf = valid_int(m.subflows, 1, 8)
+            if sf then
+                uci:set("network", "globals", "mptcp_subflows", tostring(sf))
                 changes_made = true
             end
             if m.stale_loss_cnt then
@@ -2841,12 +2855,11 @@ function action_wan_advanced()
                 if stale_val and stale_val >= 1 and stale_val <= 100 and stale_val == math.floor(stale_val) then
                     -- stale_loss_cnt is a sysctl, set it directly
                     sys.exec("sysctl -w net.mptcp.stale_loss_cnt=" .. tostring(stale_val) .. " >/dev/null 2>&1")
-                    -- Also persist to sysctl.conf if possible
-                    local fs = require "nixio.fs"
+                    -- Also persist to sysctl.conf atomically
                     local sysctl_content = fs.readfile("/etc/sysctl.conf") or ""
                     sysctl_content = sysctl_content:gsub("net%.mptcp%.stale_loss_cnt%s*=%s*%d+\n?", "")
                     sysctl_content = sysctl_content .. "net.mptcp.stale_loss_cnt=" .. tostring(stale_val) .. "\n"
-                    fs.writefile("/etc/sysctl.conf", sysctl_content)
+                    atomic_write("/etc/sysctl.conf", sysctl_content)
                 end
             end
         end
@@ -2910,8 +2923,16 @@ function action_wan_ifaces()
             return
         end
 
+        -- Validate each interface name before writing
+        local valid_ifaces = {}
+        for _, iface_name in ipairs(data.enabled) do
+            if validate_iface(iface_name) then
+                table.insert(valid_ifaces, iface_name)
+            end
+        end
+
         -- Write to config file atomically (one interface per line)
-        local content = table.concat(data.enabled, "\n")
+        local content = table.concat(valid_ifaces, "\n")
         atomic_write(config_file, content)
 
         http.write(json.stringify({ success = true }))
@@ -2998,7 +3019,11 @@ function action_history()
     local cutoff, end_time
 
     if from_ts and to_ts then
-        -- Custom date range mode
+        -- Custom date range mode (cap to 720 hours max)
+        local max_range = 720 * 3600
+        if (to_ts - from_ts) > max_range then
+            from_ts = to_ts - max_range
+        end
         cutoff = from_ts
         end_time = to_ts
         -- Calculate hours for display
@@ -3315,6 +3340,14 @@ function action_bypass()
     local method = http.getenv("REQUEST_METHOD")
 
     if method == "POST" then
+        -- Prevent concurrent bypass requests with a lock file
+        local lockfile = "/tmp/jammonitor_bypass.lock"
+        if fs.stat(lockfile) then
+            http.write(json.stringify({ success = false, error = "Bypass operation already in progress" }))
+            return
+        end
+        fs.writefile(lockfile, tostring(os.time()))
+
         -- Toggle bypass mode
         local raw = http.content()
         local data = json.parse(raw) or {}
@@ -3350,6 +3383,7 @@ function action_bypass()
                     success = false,
                     error = "No MPTCP interfaces configured. Cannot enable bypass mode."
                 }))
+                fs.remove(lockfile)
                 return
             end
 
@@ -3446,6 +3480,7 @@ function action_bypass()
                 uci:commit("network")
                 fs.remove(bypass_flag)
                 fs.remove("/etc/jammonitor_bypass_vpn")
+                fs.remove(lockfile)
                 http.write(json.stringify({
                     success = false,
                     error = "Failed to set multipath to off - changes rolled back"
@@ -3461,6 +3496,7 @@ function action_bypass()
                     success = false,
                     error = "No saved configuration found to restore"
                 }))
+                fs.remove(lockfile)
                 return
             end
 
@@ -3487,10 +3523,10 @@ function action_bypass()
                 glorytun = "0"   -- default: disabled (enable=0)
             }
 
-            -- Parse saved VPN states
+            -- Parse saved VPN states (validate each is 0 or 1)
             for line in vpn_saved:gmatch("[^\n]+") do
                 local key, val = line:match("^([^=]+)=(.+)$")
-                if key and val then
+                if key and val and val:match("^[01]$") then
                     vpn_restore[key] = val
                 end
             end
@@ -3550,12 +3586,16 @@ function action_bypass()
                     success = false,
                     error = "Failed to restore multipath settings"
                 }))
+                fs.remove(lockfile)
                 return
             end
 
             -- 4. Reload firewall and network in background (after response sent)
             sys.exec("(sleep 1 && /etc/init.d/firewall reload && /etc/init.d/network reload) >/dev/null 2>&1 &")
         end
+
+        -- Release bypass lock
+        fs.remove(lockfile)
     else
         -- GET: Return current bypass status
         local bypass_enabled = fs.stat(bypass_flag) ~= nil

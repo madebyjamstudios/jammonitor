@@ -117,7 +117,39 @@ collect_metrics() {
     P2=$(timeout 2 ping -c1 -W1 8.8.8.8 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
     [ -z "$P1" ] && P1="null"
     [ -z "$P2" ] && P2="null"
-    PINGS="{\"1.1.1.1\":$P1,\"8.8.8.8\":$P2}"
+
+    # VPS ping: detect IP from WireGuard endpoint or UCI config
+    VPS_IP=""
+    if command -v wg >/dev/null 2>&1; then
+        VPS_IP=$(wg show all endpoints 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    fi
+    [ -z "$VPS_IP" ] && VPS_IP=$(uci get openmptcprouter.vps.ip 2>/dev/null)
+    [ -z "$VPS_IP" ] && VPS_IP=$(uci get glorytun.vpn.host 2>/dev/null)
+    P_VPS=""
+    if [ -n "$VPS_IP" ]; then
+        P_VPS=$(timeout 2 ping -c1 -W1 "$VPS_IP" 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+        [ -z "$P_VPS" ] && P_VPS="null"
+    fi
+
+    # Tunnel ping: detect IP from tun0 peer, route gateway, or subnet .1
+    TUNNEL_IP=""
+    TUNNEL_IP=$(ip addr show dev tun0 2>/dev/null | grep -oE 'peer [0-9.]+' | cut -d' ' -f2)
+    [ -z "$TUNNEL_IP" ] && TUNNEL_IP=$(ip route show dev tun0 2>/dev/null | grep -oE 'via [0-9.]+' | head -1 | cut -d' ' -f2)
+    if [ -z "$TUNNEL_IP" ]; then
+        TUN0_IP=$(ip addr show dev tun0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2)
+        [ -n "$TUN0_IP" ] && TUNNEL_IP=$(echo "$TUN0_IP" | sed 's/\.[0-9]*$/.1/')
+    fi
+    P_TUNNEL=""
+    if [ -n "$TUNNEL_IP" ]; then
+        P_TUNNEL=$(timeout 2 ping -c1 -W1 "$TUNNEL_IP" 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)
+        [ -z "$P_TUNNEL" ] && P_TUNNEL="null"
+    fi
+
+    # Build PINGS JSON with optional VPS/tunnel entries
+    PINGS="{\"1.1.1.1\":$P1,\"8.8.8.8\":$P2"
+    [ -n "$P_VPS" ] && PINGS="$PINGS,\"vps\":$P_VPS"
+    [ -n "$P_TUNNEL" ] && PINGS="$PINGS,\"tunnel\":$P_TUNNEL"
+    PINGS="$PINGS}"
 
     # Interface status (dynamic list)
     IFACES="{"

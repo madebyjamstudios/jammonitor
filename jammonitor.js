@@ -360,36 +360,35 @@ var JamMonitor = (function() {
         api('ping_history', { minutes: 10 }).then(function(data) {
             if (!data || !data.ok || !data.pings || !data.pings.length) return;
 
-            // Get earliest browser timestamp we have
-            var earliestBrowser = Infinity;
-            if (pingHistory.inet.length > 0) {
-                earliestBrowser = pingHistory.inet[0].time;
-            }
+            // Map ping history keys to their JSON keys in wan_pings
+            var keyMap = { inet: '1.1.1.1', vps: 'vps', tunnel: 'tunnel' };
 
-            // Add server data points that are older than our browser data
-            var serverPoints = [];
-            data.pings.forEach(function(p) {
-                if (p.ts < earliestBrowser) {
-                    try {
-                        var pingData = JSON.parse(p.data);
-                        // Use 1.1.1.1 as the inet ping (what the collector tracks)
-                        var latency = pingData['1.1.1.1'];
-                        serverPoints.push({
-                            time: p.ts,
-                            value: latency === null ? null : latency
-                        });
-                    } catch (e) {}
+            ['inet', 'vps', 'tunnel'].forEach(function(key) {
+                var earliest = pingHistory[key].length > 0 ? pingHistory[key][0].time : Infinity;
+                var serverPoints = [];
+
+                data.pings.forEach(function(p) {
+                    if (p.ts < earliest) {
+                        try {
+                            var pingData = JSON.parse(p.data);
+                            var val = pingData[keyMap[key]];
+                            if (val !== undefined) {
+                                serverPoints.push({
+                                    time: p.ts,
+                                    value: val === null ? null : val
+                                });
+                            }
+                        } catch (e) {}
+                    }
+                });
+
+                if (serverPoints.length > 0) {
+                    pingHistory[key] = serverPoints.concat(pingHistory[key]);
+                    if (pingHistory[key].length > maxPingHistory) {
+                        pingHistory[key] = pingHistory[key].slice(-maxPingHistory);
+                    }
                 }
             });
-
-            // Prepend server data to browser data
-            if (serverPoints.length > 0) {
-                pingHistory.inet = serverPoints.concat(pingHistory.inet);
-                // Trim to max
-                if (pingHistory.inet.length > maxPingHistory) {
-                    pingHistory.inet = pingHistory.inet.slice(-maxPingHistory);
-                }
-            }
         });
     }
 

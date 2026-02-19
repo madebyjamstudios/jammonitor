@@ -48,7 +48,7 @@ end
 -- Helper: Validate interface name (alphanumeric, dash, underscore only)
 local function validate_iface(name)
     if not name or name == "" then return nil end
-    if not name:match("^[a-zA-Z0-9_%-]+$") then return nil end
+    if not name:match("^[a-zA-Z0-9_.%-]+$") then return nil end
     if #name > 32 then return nil end
     return name
 end

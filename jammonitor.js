@@ -4989,10 +4989,12 @@ var JamMonitor = (function() {
         // Fetch data - clients and unattributed traffic in parallel
         var clientsPromise = api('history_clients', { range: range, start: startTs });
         var summaryPromise = api('traffic_summary', { range: range, start: startTs });
+        var dhcpPromise = api('clients');
 
-        Promise.all([clientsPromise, summaryPromise]).then(function(results) {
+        Promise.all([clientsPromise, summaryPromise, dhcpPromise]).then(function(results) {
             var data = results[0];
             var summary = results[1];
+            var dhcpData = results[2];
             var body = popup.querySelector('.jm-popup-body');
 
             if (!data || !data.ok || !data.devices || data.devices.length === 0) {
@@ -5006,13 +5008,28 @@ var JamMonitor = (function() {
                 unattributed = summary.data.unattributed;
             }
 
+            // Build MAC-to-hostname map from fresh DHCP lease data
+            var dhcpNames = {};
+            if (dhcpData && dhcpData.leases) {
+                dhcpData.leases.split('\n').forEach(function(line) {
+                    var p = line.split(/\s+/);
+                    if (p.length >= 4) {
+                        var leaseMac = p[1] ? p[1].toLowerCase() : '';
+                        var leaseHostname = p[3] || '';
+                        if (leaseMac && leaseHostname && leaseHostname !== '*') {
+                            dhcpNames[leaseMac] = leaseHostname;
+                        }
+                    }
+                });
+            }
+
             // Prepare devices with computed fields
             var devices = data.devices.map(function(dev) {
                 var mac = dev.mac && dev.mac !== 'unknown' ? dev.mac.toUpperCase() : '—';
                 var hostname = dev.hostname && dev.hostname !== '*' ? dev.hostname : '';
                 var macLower = dev.mac ? dev.mac.toLowerCase() : '';
                 var meta = clientMeta[macLower] || {};
-                var resolvedName = meta.alias || hostname || '';
+                var resolvedName = meta.alias || dhcpNames[macLower] || hostname || '';
                 var deviceType = detectDeviceType(hostname);
                 var typeDisplay = deviceType !== 'unknown'
                     ? getDeviceIcon(deviceType) + ' ' + deviceType.charAt(0).toUpperCase() + deviceType.slice(1)

@@ -1,0 +1,440 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Independent control-plane monitoring and alarms for JamMonitor Tailscale nodes
+
+Parameters:
+  OAuthSecretArn:
+    Type: String
+    Description: ARN of a Secrets Manager JSON secret with client_id and client_secret
+    AllowedPattern: '^arn:aws[a-zA-Z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$'
+  RouterDeviceId:
+    Type: String
+    Description: Exact Tailscale device id or nodeId for the BPI-R4
+    MinLength: 3
+    MaxLength: 256
+    AllowedPattern: '^[A-Za-z0-9._:-]+$'
+  VpsDeviceId:
+    Type: String
+    Description: Exact Tailscale device id or nodeId for the OMR VPS
+    MinLength: 3
+    MaxLength: 256
+    AllowedPattern: '^[A-Za-z0-9._:-]+$'
+  NotificationEmail:
+    Type: String
+    Description: Required email address for the encrypted SNS alarm topic
+    MinLength: 3
+    MaxLength: 320
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  OfflineAfterSeconds:
+    Type: Number
+    Description: Maximum age of lastSeen before a disconnected node is unhealthy
+    Default: 180
+    MinValue: 60
+    MaxValue: 3600
+  KeyWarningDays:
+    Type: Number
+    Description: Alert when an expiring node key enters this warning window
+    Default: 7
+    MinValue: 1
+    MaxValue: 30
+  LogRetentionDays:
+    Type: Number
+    Description: CloudWatch Logs retention for the monitor
+    Default: 30
+    AllowedValues: [14, 30, 60, 90]
+
+Rules:
+  DeviceIdentifiersMustDiffer:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref RouterDeviceId, !Ref VpsDeviceId]]
+        AssertDescription: RouterDeviceId and VpsDeviceId must identify different nodes
+
+Resources:
+  MonitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RetentionInDays: !Ref LogRetentionDays
+      LogGroupClass: STANDARD
+
+  FailureQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 60
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: !GetAtt AlertTopicKey.Arn
+
+  AlertTopicKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Encrypt JamMonitor Tailscale alarm notifications
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowCloudWatchAlarmEncryption
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub >-
+                  arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudWatchAlarmPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub >-
+                  arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref NotificationEmail
+      Protocol: email
+      TopicArn: !Ref AlertTopic
+
+  MonitorExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MonitorRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                # AWS::Logs::LogGroup.Arn already ends in :*, which is the
+                # IAM form that covers the group's log streams.
+                Resource: !GetAtt MonitorLogGroup.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref OAuthSecretArn
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: JamMonitor/Tailscale
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt FailureQueue.Arn
+              - Effect: Allow
+                Action:
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                Resource: '*'
+
+  MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt MonitorExecutionRole.Arn
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref MonitorLogGroup
+        LogFormat: JSON
+        ApplicationLogLevel: INFO
+        SystemLogLevel: INFO
+      Environment:
+        Variables:
+          OAUTH_SECRET_ARN: !Ref OAuthSecretArn
+          ROUTER_DEVICE_ID: !Ref RouterDeviceId
+          VPS_DEVICE_ID: !Ref VpsDeviceId
+          OFFLINE_AFTER_SECONDS: !Ref OfflineAfterSeconds
+          KEY_WARNING_DAYS: !Ref KeyWarningDays
+          METRIC_NAMESPACE: JamMonitor/Tailscale
+
+  MonitorAsyncFailureConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref MonitorFunction
+      Qualifier: $LATEST
+      MaximumEventAgeInSeconds: 60
+      MaximumRetryAttempts: 1
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt FailureQueue.Arn
+
+  SchedulerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                aws:SourceArn: !Sub >-
+                  arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default
+      Policies:
+        - PolicyName: InvokeMonitor
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt MonitorFunction.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt FailureQueue.Arn
+
+  MonitorSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: MonitorAsyncFailureConfig
+    Properties:
+      Description: Poll Tailscale control-plane state once per minute
+      GroupName: default
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Target:
+        Arn: !GetAtt MonitorFunction.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"source":"jammonitor-tailscale-schedule"}'
+        DeadLetterConfig:
+          Arn: !GetAtt FailureQueue.Arn
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 60
+          MaximumRetryAttempts: 1
+
+  RouterControlPlaneAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: BPI-R4 is missing, stale, unapproved, or has an invalid key
+      Namespace: JamMonitor/Tailscale
+      MetricName: ControlPlaneHealthy
+      Dimensions:
+        - Name: Device
+          Value: router
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  VpsControlPlaneAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: OMR VPS is missing, stale, unapproved, or has an invalid key
+      Namespace: JamMonitor/Tailscale
+      MetricName: ControlPlaneHealthy
+      Dimensions:
+        - Name: Device
+          Value: vps
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  RouterKeyExpiryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: BPI-R4 key is invalid or within the configured warning window
+      Namespace: JamMonitor/Tailscale
+      MetricName: KeyExpiryWithinWarningWindow
+      Dimensions:
+        - Name: Device
+          Value: router
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  VpsKeyExpiryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: OMR VPS key is invalid or within the configured warning window
+      Namespace: JamMonitor/Tailscale
+      MetricName: KeyExpiryWithinWarningWindow
+      Dimensions:
+        - Name: Device
+          Value: vps
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ObservationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The independent Tailscale monitor failed or stopped publishing
+      Namespace: JamMonitor/Tailscale
+      MetricName: ObservationSucceeded
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  FunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The independent Tailscale monitor Lambda is erroring
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MonitorFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  FunctionThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The independent Tailscale monitor Lambda was throttled
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MonitorFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  FunctionDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The independent Tailscale monitor is approaching its timeout
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MonitorFunction
+      ExtendedStatistic: p99
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 24000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  FailureQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Failed scheduled observations reached the dead-letter queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt FailureQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TailscaleAvailabilityCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    DependsOn: AlertTopicPolicy
+    Properties:
+      AlarmDescription: JamMonitor Tailscale availability or monitor delivery failed
+      AlarmRule: !Sub >-
+        ALARM("${RouterControlPlaneAlarm.Arn}") OR
+        ALARM("${VpsControlPlaneAlarm.Arn}") OR
+        ALARM("${RouterKeyExpiryAlarm.Arn}") OR
+        ALARM("${VpsKeyExpiryAlarm.Arn}") OR
+        ALARM("${ObservationAlarm.Arn}") OR
+        ALARM("${FunctionErrorAlarm.Arn}") OR
+        ALARM("${FunctionThrottleAlarm.Arn}") OR
+        ALARM("${FunctionDurationAlarm.Arn}") OR
+        ALARM("${FailureQueueAlarm.Arn}")
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+Outputs:
+  AlertTopicArn:
+    Description: Encrypted SNS topic used by the composite availability alarm
+    Value: !Ref AlertTopic
+  CompositeAlarmName:
+    Description: Aggregate Tailscale availability alarm
+    Value: !Ref TailscaleAvailabilityCompositeAlarm
+  FailureQueueUrl:
+    Description: Retained dead-letter queue for failed observations
+    Value: !Ref FailureQueue
+  MonitorFunctionName:
+    Description: Independent Tailscale monitor Lambda function
+    Value: !Ref MonitorFunction

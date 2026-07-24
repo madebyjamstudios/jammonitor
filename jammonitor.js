@@ -166,7 +166,7 @@ var JamMonitor = (function() {
 
     // WAN Policy data
     var wanPolicyData = [];
-    var wanPolicyModes = {};
+    var wanPolicyModes = Object.create(null);
     var wanPolicyPollTimer = null;
     var wanPolicyPollEnd = 0;
 
@@ -188,6 +188,10 @@ var JamMonitor = (function() {
     var clientSortDirection = 'asc';
     var collapsedGroups = {};       // { '10.10.10': true } - collapsed subnet groups
     var clientsDataCache = null;    // Cache parsed client data for re-sorting
+    var clientsRequestInFlight = false;
+    var tailscaleStatusRequestInFlight = false;
+    var tailscaleStatusRequestGeneration = 0;
+    var tailscaleHealthAnnouncementKey = '';
 
     // Speed test state
     var speedTestSize = 10;          // Default 10MB
@@ -490,7 +494,73 @@ var JamMonitor = (function() {
     // === SECURE API FUNCTIONS ===
     // These replace the generic exec() function with specific endpoints
 
-    function api(endpoint, params) {
+    function checkedJsonResponse(response) {
+        if (!response.ok) {
+            throw new Error('API error: ' + response.status);
+        }
+        return response.json();
+    }
+
+    function csrfToken() {
+        if (typeof L === 'undefined' || !L.env ||
+                typeof L.env.token !== 'string' || !L.env.token.trim()) {
+            throw new Error('LuCI CSRF token is unavailable');
+        }
+        return L.env.token;
+    }
+
+    function postJson(endpoint, payload) {
+        var token;
+        try {
+            token = csrfToken();
+        } catch (error) {
+            return Promise.reject(error);
+        }
+
+        var url = window.location.pathname + '/' + endpoint +
+            '?token=' + encodeURIComponent(token);
+        return fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload || {})
+        }).then(checkedJsonResponse);
+    }
+
+    function postForm(endpoint, params) {
+        var token;
+        try {
+            token = csrfToken();
+        } catch (error) {
+            return Promise.reject(error);
+        }
+
+        var values = { token: token };
+        Object.keys(params || {}).forEach(function(key) {
+            if (params[key] !== undefined && params[key] !== null) {
+                values[key] = params[key];
+            }
+        });
+        var body = Object.keys(values).map(function(key) {
+            return encodeURIComponent(key) + '=' + encodeURIComponent(values[key]);
+        }).join('&');
+
+        return fetch(window.location.pathname + '/' + endpoint, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+            },
+            body: body
+        }).then(checkedJsonResponse);
+    }
+
+    function api(endpoint, params, options) {
+        options = options || {};
         var url = window.location.pathname + '/' + endpoint;
         if (params) {
             var queryString = Object.keys(params).map(function(k) {
@@ -498,13 +568,34 @@ var JamMonitor = (function() {
             }).join('&');
             url += '?' + queryString;
         }
-        return fetch(url)
-            .then(function(r) {
-                if (!r.ok) throw new Error('API error: ' + r.status);
-                return r.json();
+
+        // Timeouts are opt-in so long-running actions keep their existing
+        // behavior. Fast polling endpoints can supply a deadline that is
+        // shorter than their refresh interval.
+        var controller = null;
+        var timeoutId = null;
+        var fetchOptions = {};
+        if (options.timeoutMs > 0 && typeof AbortController !== 'undefined') {
+            controller = new AbortController();
+            fetchOptions.signal = controller.signal;
+            timeoutId = setTimeout(function() {
+                controller.abort();
+            }, options.timeoutMs);
+        }
+
+        return fetch(url, fetchOptions)
+            .then(checkedJsonResponse)
+            .then(function(data) {
+                if (timeoutId) clearTimeout(timeoutId);
+                return data;
             })
             .catch(function(e) {
-                console.error('API error (' + endpoint + '):', e);
+                if (timeoutId) clearTimeout(timeoutId);
+                if (e && e.name === 'AbortError') {
+                    console.warn('API timeout (' + endpoint + ')');
+                } else {
+                    console.error('API error (' + endpoint + '):', e);
+                }
                 return null;
             });
     }
@@ -683,7 +774,7 @@ var JamMonitor = (function() {
             iconSymbol = '&#10060;';  // ❌
             mainText = _('Update failed');
             subText = updateState.error;
-            showButton = data && data.update_available;
+            showButton = false;
         } else if (!data || data.error) {
             // Error checking version
             iconClass = 'error';
@@ -695,8 +786,9 @@ var JamMonitor = (function() {
             iconClass = 'update-available';
             iconSymbol = '&#8593;';  // ↑
             mainText = _('Update available');
-            subText = (data.local_version || '?') + ' → ' + (data.remote_version || '?');
-            showButton = true;
+            subText = (data.local_version || '?') + ' → ' + (data.remote_version || '?') +
+                '. ' + _('Use the verified pinned installer over SSH.');
+            showButton = false;
         } else if (data.remote_version) {
             // Up to date
             iconClass = 'up-to-date';
@@ -757,34 +849,13 @@ var JamMonitor = (function() {
         }
     }
 
-    // Start the auto-update process
+    // LuCI deliberately cannot mutate the installation. Production updates
+    // require the pinned transactional installer and an independently trusted
+    // manifest digest.
     function startUpdate() {
-        if (updateState.updating) return;
-        if (!versionCheckResult || !versionCheckResult.remote_version) {
-            console.error('No remote version available');
-            return;
-        }
-
-        updateState.updating = true;
-        updateState.progress = 0;
-        updateState.currentFile = 'jammonitor.lua';
-        updateState.error = null;
-        updateState.startTime = Date.now();
-
+        updateState.updating = false;
+        updateState.error = _('Use the verified pinned installer over SSH.');
         updateVersionCard();
-
-        // Start the update on the backend
-        api('update_start', { target_version: versionCheckResult.remote_version }).then(function(data) {
-            if (!data || !data.ok) {
-                updateState.updating = false;
-                updateState.error = (data && data.error) || _('Failed to start update');
-                updateVersionCard();
-                return;
-            }
-
-            updateState.jobId = data.job_id;
-            pollUpdateStatus();
-        });
     }
 
     // Poll update status
@@ -927,6 +998,8 @@ var JamMonitor = (function() {
     }
 
     function updateOverview() {
+        refreshTailscaleHealth();
+
         // Use system_stats API for all system metrics
         api('system_stats').then(function(data) {
             if (!data) return;
@@ -1731,7 +1804,7 @@ var JamMonitor = (function() {
         var params = { mac: mac };
         if (alias !== undefined && alias !== null) params.alias = alias;
         if (type !== undefined && type !== null) params.type = type;
-        return api('set_client_meta', params).then(function(resp) {
+        return postForm('set_client_meta', params).then(function(resp) {
             if (resp && resp.success) {
                 if (!clientMeta[mac.toLowerCase()]) clientMeta[mac.toLowerCase()] = {};
                 if (alias) clientMeta[mac.toLowerCase()].alias = alias;
@@ -1846,25 +1919,47 @@ var JamMonitor = (function() {
             saveBtn.textContent = _('Saving...');
         }
 
-        var promises = [];
+        var operations = [];
 
         // Save pending meta changes (names, types)
         Object.keys(pendingMeta).forEach(function(mac) {
             var meta = pendingMeta[mac];
-            promises.push(saveClientMeta(mac, meta.alias, meta.type));
+            operations.push(function() {
+                return saveClientMeta(mac, meta.alias, meta.type);
+            });
         });
 
         // Save pending reservations
         Object.keys(pendingReservations).forEach(function(mac) {
             var res = pendingReservations[mac];
             if (res.action === 'remove') {
-                promises.push(api('delete_reservation', { mac: mac }));
+                operations.push(function() {
+                    return postForm('delete_reservation', { mac: mac });
+                });
             } else {
-                promises.push(api('set_reservation', { mac: mac, ip: res.ip, name: res.name }));
+                operations.push(function() {
+                    return postForm('set_reservation', {
+                        mac: mac,
+                        ip: res.ip,
+                        name: res.name
+                    });
+                });
             }
         });
 
-        Promise.all(promises).then(function(results) {
+        // Serialize persistent mutations. Besides avoiding UCI commit races,
+        // this guarantees metadata read-modify-write requests never contend
+        // with the server-side lock under normal UI use.
+        var sequence = operations.reduce(function(promise, operation) {
+            return promise.then(function(results) {
+                return operation().then(function(result) {
+                    results.push(result);
+                    return results;
+                });
+            });
+        }, Promise.resolve([]));
+
+        sequence.then(function(results) {
             var failed = results.filter(function(r) { return r && r.error; });
             if (failed.length > 0) {
                 alert(_('Some changes failed to save:') + '\n' + failed.map(function(f) { return f.error; }).join('\n'));
@@ -1909,17 +2004,32 @@ var JamMonitor = (function() {
     // Client List Sorting & Grouping Helpers
     // ============================================================
 
-    function getSubnetGroup(ip) {
+    function isTailscaleIPv4(ip) {
+        if (typeof ip !== 'string') return false;
+        var parts = ip.split('.');
+        if (parts.length !== 4) return false;
+        for (var i = 0; i < parts.length; i++) {
+            if (!/^\d{1,3}$/.test(parts[i])) return false;
+            var octet = parseInt(parts[i], 10);
+            if (octet < 0 || octet > 255) return false;
+        }
+        var secondOctet = parseInt(parts[1], 10);
+        return parseInt(parts[0], 10) === 100 &&
+            secondOctet >= 64 && secondOctet <= 127;
+    }
+
+    function getSubnetGroup(ip, source) {
         if (!ip || ip === '--') return 'unknown';
-        // Tailscale IPs start with 100.
-        if (ip.startsWith('100.')) return 'tailscale';
+        // Tailscale IPv4 occupies 100.64.0.0/10, not the full 100.0.0.0/8.
+        // Explicitly projected peers may use a tailnet IPv6 address.
+        if (source === 'Tailscale' || isTailscaleIPv4(ip)) return 'tailscale';
         var parts = ip.split('.');
         if (parts.length >= 3) return parts[0] + '.' + parts[1] + '.' + parts[2];
         return 'unknown';
     }
 
     function getSubnetLabel(group) {
-        if (group === 'tailscale') return 'Tailscale (100.x.x.x)';
+        if (group === 'tailscale') return 'Tailscale (100.64.0.0/10 or tailnet IPv6)';
         if (group === 'unknown') return 'Unknown';
         return group + '.x';
     }
@@ -2021,7 +2131,7 @@ var JamMonitor = (function() {
         // Group clients by subnet
         var groups = {};
         clientsDataCache.forEach(function(client) {
-            var group = getSubnetGroup(client.ip);
+            var group = getSubnetGroup(client.ip, client.source);
             if (!groups[group]) groups[group] = [];
             groups[group].push(client);
         });
@@ -2171,30 +2281,536 @@ var JamMonitor = (function() {
             };
         });
 
-        // IP cell hover for lease expiry tooltip
-        table.addEventListener('mousemove', function(e) {
+        // Assign persistent handlers instead of appending listeners after
+        // every five-second re-render.
+        table.onmousemove = function(e) {
             var cell = e.target.closest('.client-ip-cell');
             if (cell && cell.dataset.expiry) {
                 var expiryText = formatExpiry(parseInt(cell.dataset.expiry, 10));
                 showChartTooltip(e.clientX, e.clientY, expiryText);
             }
-        });
+        };
 
-        table.addEventListener('mouseout', function(e) {
+        table.onmouseout = function(e) {
             if (e.target.classList.contains('client-ip-cell')) {
                 hideChartTooltip();
             }
+        };
+    }
+
+    function tailscaleNumber(value) {
+        if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+            return null;
+        }
+        var number = Number(value);
+        return isFinite(number) && number >= 0 ? number : null;
+    }
+
+    function tailscaleEpoch(value) {
+        var epoch = tailscaleNumber(value);
+        return epoch !== null && epoch > 0 ? epoch : null;
+    }
+
+    function formatTailscaleAge(epochSeconds) {
+        var epoch = tailscaleEpoch(epochSeconds);
+        if (epoch === null) return null;
+        var age = Math.max(0, Math.floor(Date.now() / 1000) - epoch);
+        if (age < 5) return _('just now');
+        if (age < 60 && age === 1) return _('1 second ago');
+        if (age < 60) return _('%s seconds ago', age);
+        if (age < 120) return _('1 minute ago');
+        if (age < 3600) return _('%s minutes ago', Math.floor(age / 60));
+        if (age < 7200) return _('1 hour ago');
+        if (age < 86400) return _('%s hours ago', Math.floor(age / 3600));
+        if (age < 172800) return _('1 day ago');
+        return _('%s days ago', Math.floor(age / 86400));
+    }
+
+    function formatTailscaleDuration(seconds) {
+        var value = Math.max(0, Math.floor(Number(seconds)));
+        if (value < 60) return value + 's';
+        return formatUptime(value);
+    }
+
+    function formatTailscaleTimestamp(epochSeconds) {
+        var epoch = tailscaleEpoch(epochSeconds);
+        if (epoch === null) return null;
+        var date = new Date(epoch * 1000);
+        if (!isFinite(date.getTime())) return null;
+        return date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    }
+
+    function tailscaleElapsed(duration, sinceAt) {
+        var elapsed = tailscaleNumber(duration);
+        if (elapsed !== null) return elapsed;
+        var since = tailscaleEpoch(sinceAt);
+        if (since === null) return null;
+        return Math.max(0, Math.floor(Date.now() / 1000) - since);
+    }
+
+    function tailscaleKeyExpiry(value) {
+        if (typeof value !== 'string') return null;
+        var expiry = value.trim();
+        if (!expiry || /^0001-01-01(?:T| )/i.test(expiry)) return null;
+
+        var expiryMs = Date.parse(expiry);
+        if (!isFinite(expiryMs)) return null;
+
+        var deltaSeconds = Math.floor((expiryMs - Date.now()) / 1000);
+        var timestamp = new Date(expiryMs).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+        if (deltaSeconds < 0) {
+            return {
+                text: _('Node key') + ': ' + _('expired %s ago', formatTailscaleDuration(-deltaSeconds)),
+                tone: 'bad',
+                title: _('Expiry') + ': ' + timestamp
+            };
+        }
+        if (deltaSeconds <= 7 * 86400) {
+            return {
+                text: _('Node key') + ': ' + _('expires in %s', formatTailscaleDuration(deltaSeconds)),
+                tone: 'warn',
+                title: _('Expiry') + ': ' + timestamp
+            };
+        }
+        return {
+            text: _('Node key expiry') + ': ' + timestamp,
+            tone: '',
+            title: ''
+        };
+    }
+
+    function tailscaleStatePresentation(status) {
+        var presentations = {
+            running: {
+                tone: 'good',
+                title: _('Running'),
+                detail: _('The local backend is Running and the router has a tailnet IP.')
+            },
+            running_degraded: {
+                tone: 'warn',
+                title: _('Running with warnings'),
+                detail: _('The local backend is Running, but its health check is degraded.')
+            },
+            backend_degraded: {
+                tone: 'warn',
+                title: _('Backend degraded'),
+                detail: _('The daemon answered, but its backend is not running.')
+            },
+            watchdog_error: {
+                tone: 'bad',
+                title: _('Monitoring error'),
+                detail: _('The watchdog could not complete a valid health check. Connectivity was not inferred.')
+            },
+            unsupported_backend: {
+                tone: 'bad',
+                title: _('Unsupported backend state'),
+                detail: _('Tailscale returned a backend state this watchdog does not recognize.')
+            },
+            needs_login: {
+                tone: 'bad',
+                title: _('Sign-in required'),
+                detail: _('Tailscale is disconnected. Its node key may have expired, or the node may have been signed out.')
+            },
+            key_expired: {
+                tone: 'bad',
+                title: _('Node key expired'),
+                detail: _('Tailscale is disconnected because this router must be authenticated again.')
+            },
+            needs_machine_auth: {
+                tone: 'bad',
+                title: _('Machine approval required'),
+                detail: _('An authorized tailnet administrator must approve this router.')
+            },
+            daemon_missing: {
+                tone: 'bad',
+                title: _('Daemon not running'),
+                detail: _('The Tailscale process is absent.')
+            },
+            socket_missing: {
+                tone: 'bad',
+                title: _('Local API socket missing'),
+                detail: _('The Tailscale process exists, but its expected local API socket is missing.')
+            },
+            daemon_unresponsive: {
+                tone: 'bad',
+                title: _('Daemon unresponsive'),
+                detail: _('The Tailscale process exists, but its local API did not answer before the deadline.')
+            },
+            disabled: {
+                tone: 'neutral',
+                title: _('Service disabled'),
+                detail: _('The Tailscale service is disabled. The watchdog will not enable it.')
+            },
+            stopped: {
+                tone: 'neutral',
+                title: _('Stopped by operator'),
+                detail: _('Tailscale is administratively disconnected. The watchdog will not override this state.')
+            },
+            maintenance: {
+                tone: 'neutral',
+                title: _('Maintenance mode'),
+                detail: _('Automatic recovery is paused by the maintenance marker.')
+            },
+            starting: {
+                tone: 'warn',
+                title: _('Starting'),
+                detail: _('The daemon is running, but the Tailscale backend is not ready yet.')
+            },
+            version_mismatch: {
+                tone: 'bad',
+                title: _('Version mismatch'),
+                detail: _('The Tailscale command and daemon versions do not match. Operator action is required.')
+            },
+            not_installed: {
+                tone: 'neutral',
+                title: _('Not installed'),
+                detail: _('The Tailscale command is not installed on this router.')
+            },
+            unknown: {
+                tone: 'neutral',
+                title: _('Status unknown'),
+                detail: _('JamMonitor could not classify the current Tailscale state safely.')
+            }
+        };
+        return presentations[status] || presentations.unknown;
+    }
+
+    function tailscaleReasonPresentation(reason) {
+        var reasons = {
+            tailnet_ip_missing: {
+                tone: 'bad',
+                detail: _('The backend is Running, but no valid tailnet IP proves delivered connectivity.')
+            },
+            tun_unavailable: {
+                tone: 'bad',
+                detail: _('The backend is Running, but the Tailscale tunnel is unavailable.')
+            },
+            tun_state_unknown: {
+                tone: 'bad',
+                detail: _('The backend is Running, but the tunnel state is missing or unsupported.')
+            },
+            engine_inactive: {
+                tone: 'bad',
+                detail: _('The backend is Running, but this node is not active in the network engine.')
+            },
+            engine_state_unknown: {
+                tone: 'bad',
+                detail: _('The backend is Running, but the network-engine state is missing or unsupported.')
+            },
+            health_warning: {
+                tone: 'warn',
+                detail: _('The local backend is connected but reports one or more health warnings.')
+            },
+            control_offline: {
+                tone: 'warn',
+                detail: _('The local data plane is ready, but the Tailscale control plane reports this node offline.')
+            },
+            control_state_unknown: {
+                tone: 'warn',
+                detail: _('The local data plane is ready, but the Tailscale control-plane state is unavailable.')
+            },
+            process_generation_unknown: {
+                tone: 'warn',
+                detail: _('The local data plane is ready, but JamMonitor cannot bind daemon uptime to a verified process generation.')
+            },
+            localapi_socket_missing: {
+                tone: 'bad',
+                detail: _('The Tailscale process exists, but its expected local API socket is missing.')
+            },
+            critical_peer_unreachable: {
+                tone: 'bad',
+                detail: _('The local backend is connected, but the configured critical peer is unreachable.')
+            },
+            maintenance_marker_invalid: {
+                tone: 'warn',
+                detail: _('The maintenance lease is invalid or expired and did not suppress recovery.')
+            }
+        };
+        return typeof reason === 'string' ? reasons[reason] || null : null;
+    }
+
+    function formatRecoveryState(state) {
+        var labels = {
+            boot_grace: { text: _('boot grace period'), tone: '' },
+            observing: { text: _('confirming the failure'), tone: 'warn' },
+            episode_latched: { text: _('restart already attempted for this incident'), tone: 'warn' },
+            restart_requested: { text: _('supervisor restart requested'), tone: 'warn' },
+            restart_completed: { text: _('restart command completed'), tone: '' },
+            restart_timeout: { text: _('restart command timed out'), tone: 'bad' },
+            restart_failed: { text: _('restart command failed'), tone: 'bad' },
+            rearmed: { text: _('recovery circuit rearmed'), tone: 'good' }
+        };
+        return labels[state] || null;
+    }
+
+    function strongerTailscaleTone(current, candidate) {
+        var priority = { neutral: 0, good: 1, warn: 2, bad: 3 };
+        return (priority[candidate] || 0) > (priority[current] || 0) ? candidate : current;
+    }
+
+    function addTailscaleFact(facts, text, tone, title) {
+        facts.push({
+            text: text,
+            tone: tone || '',
+            title: title || ''
         });
+    }
+
+    function renderTailscaleHealth(status) {
+        var panels = document.querySelectorAll('.tailscale-health');
+        if (!panels.length) return;
+
+        status = status && typeof status === 'object' ? status : {
+            status: 'unknown',
+            reason: 'status_unavailable',
+            source: 'unavailable'
+        };
+
+        var state = typeof status.status === 'string' ? status.status : 'unknown';
+        var presentation = tailscaleStatePresentation(state);
+        var panelTone = presentation.tone;
+        var facts = [];
+        var ips = Array.isArray(status.tailscale_ips) ? status.tailscale_ips : [];
+        var observedAge = formatTailscaleAge(status.observed_at);
+        var processUptime = tailscaleNumber(status.process_uptime_seconds);
+        if (processUptime === null) {
+            processUptime = tailscaleNumber(status.daemon_process_uptime_secs);
+        }
+        var warningCount = tailscaleNumber(status.health_warnings);
+        var connectedWasReported = Object.prototype.hasOwnProperty.call(status, 'connected');
+        var connected = status.connected === true ? true : (status.connected === false ? false : null);
+        var degraded = status.degraded === true;
+        var conditionUptime = tailscaleElapsed(status.condition_uptime_seconds, status.condition_since_at);
+        var connectivityUptime = tailscaleElapsed(status.connectivity_uptime_seconds, status.connected_since_at);
+        var conditionSinceTitle = formatTailscaleTimestamp(status.condition_since_at);
+        var connectedSinceTitle = formatTailscaleTimestamp(status.connected_since_at);
+        var lastConnectedAge = formatTailscaleAge(status.last_connected_at);
+        var lastConnectedTitle = formatTailscaleTimestamp(status.last_connected_at);
+        var keyExpiry = tailscaleKeyExpiry(status.key_expiry);
+        var reasonPresentation = tailscaleReasonPresentation(status.reason);
+
+        if (reasonPresentation) {
+            presentation.detail = reasonPresentation.detail;
+            panelTone = strongerTailscaleTone(panelTone, reasonPresentation.tone);
+        }
+
+        if (state === 'running' && degraded) {
+            presentation = tailscaleStatePresentation('running_degraded');
+            if (reasonPresentation) presentation.detail = reasonPresentation.detail;
+            panelTone = presentation.tone;
+            if (reasonPresentation) {
+                panelTone = strongerTailscaleTone(panelTone, reasonPresentation.tone);
+            }
+        } else if (state === 'running' &&
+                   (status.healthy !== true || connected !== true ||
+                    status.local_api_responsive !== true ||
+                    status.service_running !== true ||
+                    status.tun_available !== true ||
+                    status.in_engine !== true || ips.length === 0)) {
+            presentation = {
+                tone: 'bad',
+                title: _('Status conflict'),
+                detail: _('The backend reports Running, but JamMonitor cannot prove delivered connectivity.')
+            };
+            panelTone = presentation.tone;
+        }
+
+        if (ips.length > 0) {
+            addTailscaleFact(facts, _('Tailnet IP') + ': ' + ips.join(', '));
+        }
+        if (processUptime !== null) {
+            addTailscaleFact(facts, _('Daemon process uptime') + ': ' + formatTailscaleDuration(processUptime));
+        }
+        if (connectedWasReported) {
+            if (connected === true) {
+                addTailscaleFact(facts, _('Connectivity') + ': ' + _('connected'), degraded ? 'warn' : 'good');
+            } else if (connected === false) {
+                addTailscaleFact(facts, _('Connectivity') + ': ' + _('disconnected'), 'bad');
+                panelTone = strongerTailscaleTone(panelTone, 'bad');
+            } else {
+                addTailscaleFact(facts, _('Connectivity') + ': ' + _('unknown'), 'warn');
+                panelTone = strongerTailscaleTone(panelTone, 'warn');
+            }
+        }
+        if (degraded) {
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        }
+        if (conditionUptime !== null) {
+            addTailscaleFact(
+                facts,
+                _('Condition duration') + ': ' + formatTailscaleDuration(conditionUptime),
+                '',
+                conditionSinceTitle ? _('Condition since') + ': ' + conditionSinceTitle : ''
+            );
+        }
+        if (connected === true && connectivityUptime !== null) {
+            addTailscaleFact(
+                facts,
+                _('Connectivity uptime') + ': ' + formatTailscaleDuration(connectivityUptime),
+                '',
+                connectedSinceTitle ? _('Connected since') + ': ' + connectedSinceTitle : ''
+            );
+        } else if (connected !== true && lastConnectedAge) {
+            addTailscaleFact(
+                facts,
+                _('Last connected') + ': ' + lastConnectedAge,
+                '',
+                lastConnectedTitle ? _('Last connected') + ': ' + lastConnectedTitle : ''
+            );
+        }
+        if (warningCount !== null && warningCount > 0) {
+            addTailscaleFact(facts, _('Health warnings') + ': ' + Math.floor(warningCount), 'warn');
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        }
+        if (keyExpiry) {
+            addTailscaleFact(facts, keyExpiry.text, keyExpiry.tone, keyExpiry.title);
+            panelTone = strongerTailscaleTone(panelTone, keyExpiry.tone);
+        }
+        if (status.watchdog_active === true) {
+            addTailscaleFact(facts, _('Watchdog') + ': ' + (observedAge ? _('fresh, checked %s', observedAge) : _('active')));
+        } else if (status.source === 'live') {
+            addTailscaleFact(facts, _('Watchdog') + ': ' + _('no fresh report'), 'warn');
+            addTailscaleFact(facts, _('Source') + ': ' + (observedAge ? _('live check %s', observedAge) : _('live check')));
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        } else {
+            addTailscaleFact(facts, _('Watchdog') + ': ' + _('status unavailable'), 'warn');
+            panelTone = strongerTailscaleTone(panelTone, 'bad');
+        }
+        var failures = tailscaleNumber(status.consecutive_failures);
+        if (failures !== null && failures > 0) {
+            addTailscaleFact(facts, _('Consecutive failures') + ': ' + Math.floor(failures), 'warn');
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        }
+        var recoveryLabel = formatRecoveryState(status.recovery_state);
+        if (recoveryLabel) {
+            addTailscaleFact(facts, _('Recovery') + ': ' + recoveryLabel.text, recoveryLabel.tone);
+            panelTone = strongerTailscaleTone(panelTone, recoveryLabel.tone);
+        } else if (status.recoverable === true) {
+            addTailscaleFact(facts, _('Recovery') + ': ' + _('eligible after confirmation checks'));
+        }
+        var recoveryAttempted = tailscaleNumber(status.recovery_attempted);
+        if (!recoveryLabel && recoveryAttempted === 1) {
+            addTailscaleFact(facts, _('Recovery') + ': ' + _('attempted for this incident'), 'warn');
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        }
+        var recoveryCount = tailscaleNumber(status.recovery_count);
+        if (recoveryCount !== null && recoveryCount > 0) {
+            addTailscaleFact(facts, _('Recovery attempts') + ': ' + Math.floor(recoveryCount));
+        }
+
+        if (status.peer_configured === false) {
+            addTailscaleFact(
+                facts,
+                _('Critical peer') + ': ' +
+                    (status.watchdog_active === true ? _('not configured') : _('not observed')),
+                'warn'
+            );
+            panelTone = strongerTailscaleTone(panelTone, 'warn');
+        } else if (status.peer_configured === true) {
+            if (status.peer_reachable === true) {
+                addTailscaleFact(facts, _('Critical peer') + ': ' + _('reachable'), 'good');
+            } else if (status.peer_reachable === false) {
+                addTailscaleFact(facts, _('Critical peer') + ': ' + _('unreachable'), 'bad');
+                panelTone = strongerTailscaleTone(panelTone, 'bad');
+            } else {
+                var peerState = status.peer_state === 'reachable' ? _('reachable') :
+                    (status.peer_state === 'unreachable' ? _('unreachable') : _('unknown'));
+                addTailscaleFact(facts, _('Critical peer') + ': ' + peerState, 'warn');
+                panelTone = strongerTailscaleTone(panelTone, 'warn');
+            }
+
+            var peerLastSuccessAge = formatTailscaleAge(status.peer_last_success_at);
+            var peerLastSuccessTitle = formatTailscaleTimestamp(status.peer_last_success_at);
+            if (status.peer_reachable !== true && peerLastSuccessAge) {
+                addTailscaleFact(
+                    facts,
+                    _('Peer last reached') + ': ' + peerLastSuccessAge,
+                    '',
+                    peerLastSuccessTitle ? _('Peer last reached') + ': ' + peerLastSuccessTitle : ''
+                );
+            }
+        }
+
+        var backend = typeof status.backend_state === 'string' && status.backend_state ?
+            '<span class="tailscale-health-backend">' + _('Backend') + ': ' + escapeHtml(status.backend_state) + '</span>' : '';
+        var factHtml = facts.map(function(fact) {
+            var toneClass = fact.tone ? ' tailscale-health-fact-' + fact.tone : '';
+            var title = fact.title ? ' title="' + escapeHtml(fact.title) + '"' : '';
+            return '<span class="tailscale-health-fact' + toneClass + '"' + title + '>' +
+                escapeHtml(fact.text) + '</span>';
+        }).join('');
+        var announcementKey = [
+            state,
+            typeof status.reason === 'string' ? status.reason : '',
+            String(status.healthy === true),
+            connected === null ? 'unknown' : String(connected),
+            String(status.watchdog_active === true),
+            String(status.peer_configured === true),
+            status.peer_state || '',
+            status.recovery_state || '',
+            status.key_expiry || ''
+        ].join('|');
+        var announce = announcementKey !== tailscaleHealthAnnouncementKey;
+
+        Array.prototype.forEach.call(panels, function(panel) {
+            if (panel.id === 'tailscale-health-overview' && announce) {
+                panel.setAttribute('role', 'status');
+                panel.setAttribute('aria-live', 'polite');
+            } else {
+                panel.setAttribute('role', 'group');
+                panel.removeAttribute('aria-live');
+            }
+            panel.className = 'tailscale-health tailscale-health-' + panelTone;
+            panel.innerHTML =
+                '<div class="tailscale-health-summary">' +
+                    '<span class="tailscale-health-dot" aria-hidden="true"></span>' +
+                    '<div class="tailscale-health-copy">' +
+                        '<div class="tailscale-health-title">Tailscale: ' + escapeHtml(presentation.title) + '</div>' +
+                        '<div class="tailscale-health-detail">' + escapeHtml(presentation.detail) + '</div>' +
+                    '</div>' +
+                    backend +
+                '</div>' +
+                '<div class="tailscale-health-facts">' + factHtml + '</div>';
+        });
+        tailscaleHealthAnnouncementKey = announcementKey;
+    }
+
+    function refreshTailscaleHealth() {
+        if (tailscaleStatusRequestInFlight) return;
+        tailscaleStatusRequestInFlight = true;
+        var generation = ++tailscaleStatusRequestGeneration;
+        api('tailscale_status', null, { timeoutMs: 4000 }).then(function(data) {
+            tailscaleStatusRequestInFlight = false;
+            if (generation !== tailscaleStatusRequestGeneration) return;
+            renderTailscaleHealth(data);
+        });
+    }
+
+    function preferredTailscaleIp(ips) {
+        if (!Array.isArray(ips)) return '--';
+        for (var i = 0; i < ips.length; i++) {
+            if (isTailscaleIPv4(ips[i])) return ips[i];
+        }
+        return ips.length > 0 && typeof ips[0] === 'string' ? ips[0] : '--';
     }
 
     function updateClients() {
         var tbody = document.getElementById('clients-tbody');
         if (!tbody) return;
+        // Keep semantic Tailscale health independent from the slower client
+        // inventory request and from inline alias editing.
+        refreshTailscaleHealth();
         // Skip refresh if user is actively editing a name
         if (tbody.querySelector('.client-name.editing')) {
             return;
         }
-        api('clients').then(function(data) {
+        // The server bounds conntrack and the optional peer query separately.
+        // Allow their combined worst case while the in-flight guard prevents
+        // overlapping five-second polls.
+        if (clientsRequestInFlight) return;
+        clientsRequestInFlight = true;
+        api('clients', null, { timeoutMs: 7000 }).then(function(data) {
+            clientsRequestInFlight = false;
             if (!data) {
                 console.error('updateClients: No data from clients API');
                 tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">Failed to load clients</td></tr>';
@@ -2268,36 +2884,33 @@ var JamMonitor = (function() {
                 });
             });
 
-            // Tailscale peers
-            if (data.tailscale) {
-                try {
-                    var ts = typeof data.tailscale === 'string' ? JSON.parse(data.tailscale) : data.tailscale;
-                    if (ts.Peer) {
-                        Object.keys(ts.Peer).forEach(function(key) {
-                            var peer = ts.Peer[key];
-                            var hostname = peer.HostName || peer.DNSName || 'Unknown';
-                            var ip = peer.TailscaleIPs && peer.TailscaleIPs[0] ? peer.TailscaleIPs[0] : '--';
-                            var t = traffic[ip] || { rx: 0, tx: 0 };
-                            var deviceType = detectDeviceType(hostname);
+            // Tailscale peers arrive as an allowlisted projection. Never parse
+            // or retain the raw status payload in the browser.
+            if (Array.isArray(data.tailscale_peers)) {
+                data.tailscale_peers.forEach(function(peer) {
+                    if (!peer || typeof peer !== 'object') return;
+                    var hostname = typeof peer.hostname === 'string' && peer.hostname ?
+                        peer.hostname : 'Unknown';
+                    var ip = preferredTailscaleIp(peer.ips);
+                    var t = traffic[ip] || { rx: 0, tx: 0 };
+                    var rxBytes = Number(peer.rx_bytes);
+                    var txBytes = Number(peer.tx_bytes);
+                    var deviceType = detectDeviceType(hostname);
 
-                            clients.push({
-                                ip: ip,
-                                mac: null,
-                                hostname: hostname,
-                                name: hostname,
-                                type: deviceType,
-                                download: t.rx,
-                                upload: t.tx,
-                                source: 'Tailscale',
-                                expiry: null,
-                                offline: !peer.Online,
-                                os: peer.OS || '--'
-                            });
-                        });
-                    }
-                } catch (e) {
-                    console.error('Failed to parse Tailscale status:', e);
-                }
+                    clients.push({
+                        ip: ip,
+                        mac: null,
+                        hostname: hostname,
+                        name: hostname,
+                        type: deviceType,
+                        download: isFinite(rxBytes) && rxBytes >= 0 ? rxBytes : t.rx,
+                        upload: isFinite(txBytes) && txBytes >= 0 ? txBytes : t.tx,
+                        source: 'Tailscale',
+                        expiry: null,
+                        offline: peer.online !== true,
+                        os: typeof peer.os === 'string' && peer.os ? peer.os : '--'
+                    });
+                });
             }
 
             // Cache the data and render
@@ -2313,7 +2926,7 @@ var JamMonitor = (function() {
 
     function updateWifiAps() {
         fetch(window.location.pathname + '/wifi_status')
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 if (!data || !data.local_radios) return;
                 // Calculate real-time utilization from survey deltas
@@ -2521,7 +3134,7 @@ var JamMonitor = (function() {
         // Ping each AP
         var ips = list.map(function(ap) { return ap.ip; }).join(',');
         fetch(window.location.pathname + '/wifi_status?remote_ips=' + encodeURIComponent(ips))
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 var remoteData = {};
                 (data.remote_aps || []).forEach(function(ap) {
@@ -2551,7 +3164,7 @@ var JamMonitor = (function() {
     // WAN Policy Tab - Category-based drag-and-drop
     // ============================================================
     var wanDragInProgress = false;
-    var wanPendingChanges = {}; // Track interfaces with pending backend changes
+    var wanPendingChanges = Object.create(null); // Interface names are persistent UCI strings
 
     function loadWanPolicy(skipRender) {
         // Don't reload while drag is in progress
@@ -2568,7 +3181,7 @@ var JamMonitor = (function() {
         }
 
         fetch(window.location.pathname + '/wan_policy')
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 wanPolicyData = data.interfaces || [];
                 // Update modes from server, but preserve pending changes
@@ -2622,7 +3235,7 @@ var JamMonitor = (function() {
 
     function loadBypassStatus() {
         return fetch(window.location.pathname + '/bypass')
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 bypassEnabled = data.bypass_enabled || false;
                 bypassActiveWan = data.active_wan || null;
@@ -2704,12 +3317,7 @@ var JamMonitor = (function() {
         bypassToggling = true;
         updateBypassUI();
 
-        fetch(window.location.pathname + '/bypass', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enable: newState })
-        })
-        .then(function(r) { return r.json(); })
+        postJson('bypass_set', { enable: newState })
         .then(function(data) {
             bypassToggling = false;
             if (data.success) {
@@ -2789,7 +3397,7 @@ var JamMonitor = (function() {
                 iconHtml = '<div class="eth-row"><div class="eth-box"></div></div><div class="eth-row"><div class="eth-box"></div><div class="eth-box"></div></div>';
             }
 
-            var rowHtml = '<div class="wan-policy-row" data-iface="' + iface.name + '" data-idx="' + idx + '">';
+            var rowHtml = '<div class="wan-policy-row" data-iface="' + escapeHtml(iface.name) + '" data-idx="' + idx + '">';
             // Left section (grey): grab icon, interface icon, name
             rowHtml += '<div class="wan-policy-left">';
             rowHtml += '<span class="wan-drag-handle">☰</span>';
@@ -3150,12 +3758,7 @@ var JamMonitor = (function() {
         }
 
         // Full settings change - send to backend
-        fetch(window.location.pathname + '/wan_edit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        })
-        .then(function(r) { return r.json(); })
+        postJson('wan_edit', data)
         .then(function(result) {
             if (result.success) {
                 closeWanEditPopup();
@@ -3318,7 +3921,7 @@ var JamMonitor = (function() {
     function applyWanPolicy(changedIface) {
         // Build order and modes from current DOM state
         var order = [];
-        var modes = {};
+        var modes = Object.create(null);
 
         // Collect interfaces in priority order (master first, then on, backup, off)
         ['master', 'on', 'backup', 'off'].forEach(function(priority) {
@@ -3332,15 +3935,10 @@ var JamMonitor = (function() {
             }
         });
 
-        fetch(window.location.pathname + '/wan_policy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                order: order,
-                modes: modes
-            })
+        postJson('wan_policy_set', {
+            order: order,
+            modes: modes
         })
-        .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.success) {
                 // Start polling for status updates
@@ -3350,7 +3948,7 @@ var JamMonitor = (function() {
             } else {
                 console.error('WAN policy error:', data.error);
                 // Clear pending changes on error
-                wanPendingChanges = {};
+                wanPendingChanges = Object.create(null);
                 // Reload to show current state
                 loadWanPolicy(true);
             }
@@ -3358,7 +3956,7 @@ var JamMonitor = (function() {
         .catch(function(e) {
             console.error('WAN policy error:', e);
             // Clear pending changes on error
-            wanPendingChanges = {};
+            wanPendingChanges = Object.create(null);
             // Reload to show current state
             loadWanPolicy(true);
         });
@@ -3391,7 +3989,7 @@ var JamMonitor = (function() {
 
     function loadAdvancedSettings() {
         fetch(window.location.pathname + '/wan_advanced')
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 advancedSettingsLoaded = true;
                 // Failover settings
@@ -3462,6 +4060,7 @@ var JamMonitor = (function() {
         successDiv.style.display = 'none';
 
         var data = {
+            enabled: selectedIfaces,
             failover: {
                 timeout: parseInt(document.getElementById('adv-timeout').value, 10) || 1,
                 count: parseInt(document.getElementById('adv-count').value, 10) || 1,
@@ -3479,31 +4078,20 @@ var JamMonitor = (function() {
             }
         };
 
-        // Save both: WAN interfaces + advanced settings
-        Promise.all([
-            fetch(window.location.pathname + '/wan_ifaces', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: selectedIfaces })
-            }).then(function(r) { return r.json(); }),
-            fetch(window.location.pathname + '/wan_advanced', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            }).then(function(r) { return r.json(); })
-        ])
-        .then(function(results) {
+        // One backend transaction owns the selector, tracker, network globals,
+        // persistent sysctl, and live apply. This prevents one half of Save and
+        // Apply from succeeding when the other half fails.
+        postJson('wan_advanced_set', data)
+        .then(function(result) {
             saveBtn.disabled = false;
             saveBtn.textContent = _('Save and Apply');
-            var ifaceResult = results[0];
-            var advResult = results[1];
-            if (ifaceResult.success && advResult.success) {
+            if (result.success) {
                 successDiv.textContent = _('All settings saved successfully!');
                 successDiv.style.display = 'block';
                 loadWanPolicy(); // Reload WAN policy to reflect changes
                 setTimeout(function() { successDiv.style.display = 'none'; }, 3000);
             } else {
-                errorDiv.textContent = ifaceResult.error || advResult.error || _('Failed to save settings');
+                errorDiv.textContent = result.error || _('Failed to save settings');
                 errorDiv.style.display = 'block';
             }
         })
@@ -3525,7 +4113,7 @@ var JamMonitor = (function() {
     // WAN Interface Selector
     // ============================================================
     var wanIfacesOriginal = [];
-    var wanIfacesData = {};  // Store full interface data for status checks
+    var wanIfacesData = Object.create(null);  // Store full interface data for status checks
 
     function loadWanInterfaces() {
         var grid = document.getElementById('wan-iface-grid');
@@ -3534,13 +4122,13 @@ var JamMonitor = (function() {
         grid.innerHTML = '<div style="color:#95a5a6;font-size:11px;grid-column:1/-1;text-align:center;padding:20px;">Loading interfaces...</div>';
 
         fetch(window.location.pathname + '/wan_ifaces')
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 wanIfacesOriginal = data.enabled || [];
                 var allIfaces = data.all || [];
 
                 // Store full interface data for status checks
-                wanIfacesData = {};
+                wanIfacesData = Object.create(null);
                 allIfaces.forEach(function(iface) {
                     wanIfacesData[iface.name] = iface;
                 });
@@ -3566,11 +4154,11 @@ var JamMonitor = (function() {
                         statusBadge = '<span style="color:#f39c12;font-size:9px;margin-left:5px;">' + _('(up)') + '</span>';
                     }
 
-                    html += '<label class="wan-iface-item' + checkedClass + '" data-tooltip="' + iface.name + '">';
-                    html += '<input type="checkbox" name="wan-iface" value="' + iface.name + '"' + checkedAttr + ' onchange="JamMonitor.updateIfaceItem(this)">';
-                    html += '<span class="wan-iface-item-name">' + iface.name + statusBadge + '</span>';
+                    html += '<label class="wan-iface-item' + checkedClass + '" data-tooltip="' + escapeHtml(iface.name) + '">';
+                    html += '<input type="checkbox" name="wan-iface" value="' + escapeHtml(iface.name) + '"' + checkedAttr + ' onchange="JamMonitor.updateIfaceItem(this)">';
+                    html += '<span class="wan-iface-item-name">' + escapeHtml(iface.name) + statusBadge + '</span>';
                     if (iface.device) {
-                        html += '<span class="wan-iface-item-device">' + iface.device + '</span>';
+                        html += '<span class="wan-iface-item-device">' + escapeHtml(iface.device) + '</span>';
                     }
                     html += '</label>';
                 });
@@ -3610,12 +4198,7 @@ var JamMonitor = (function() {
 
         updateIfaceStatus('Saving...');
 
-        fetch(window.location.pathname + '/wan_ifaces', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: selected })
-        })
-        .then(function(r) { return r.json(); })
+        postJson('wan_ifaces_set', { enabled: selected })
         .then(function(result) {
             if (result.success) {
                 wanIfacesOriginal = selected.slice();
@@ -4445,10 +5028,31 @@ var JamMonitor = (function() {
                 parts.push((data.database_size / 1024 / 1024).toFixed(1) + ' MB ' + _('on disk'));
             }
 
-            // Collector status
-            var collectorHtml = data.collector_running
-                ? '<span style="color:#27ae60;">' + _('Collector running') + '</span>'
-                : '<span style="color:#e74c3c;">' + _('Collector stopped') + '</span>';
+            // A PID is only process liveness. The collector report, database
+            // integrity, writable mount, and sample freshness must all agree.
+            var collectorHtml;
+            if (data.healthy === true) {
+                collectorHtml = '<span style="color:#27ae60;">' + _('Collector healthy') + '</span>';
+            } else {
+                var collectorProblems = [];
+                if (!data.mount_writable) collectorProblems.push(_('USB is read-only'));
+                if (!data.collector_running) collectorProblems.push(_('collector stopped'));
+                if (data.collector_report_fresh !== true) collectorProblems.push(_('collector report stale'));
+                else if (data.collector_report_healthy !== true) collectorProblems.push(_('collector reports a write failure'));
+                if (data.database_healthy !== true) collectorProblems.push(_('database integrity check failed'));
+                if (data.sample_fresh !== true) {
+                    var sampleAge = Number(data.sample_age_secs);
+                    collectorProblems.push(
+                        isFinite(sampleAge) && sampleAge >= 0 ?
+                            _('latest sample is %s old', formatTailscaleDuration(sampleAge)) :
+                            _('latest sample is unavailable')
+                    );
+                }
+                collectorHtml = '<span style="color:#e74c3c;">' +
+                    _('Collector unhealthy') + ': ' +
+                    escapeHtml(collectorProblems.join(', ') || _('unknown reason')) +
+                    '</span>';
+            }
             parts.push(collectorHtml);
 
             // Anomalies warning (last 24h)
@@ -4617,7 +5221,10 @@ var JamMonitor = (function() {
 
         statusDiv.innerHTML = '<span style="color:#7f8c8d;">Formatting ' + escapeHtml(selectedStorageDevice) + '... This may take a moment.</span>';
 
-        api('storage_format', { device: selectedStorageDevice }).then(function(data) {
+        postJson('storage_format', {
+            device: selectedStorageDevice,
+            confirm: confirmInput.value
+        }).then(function(data) {
             if (data && data.success) {
                 statusDiv.innerHTML = '<span style="color:#27ae60;">Format complete!</span>';
                 setTimeout(function() {
@@ -4643,7 +5250,7 @@ var JamMonitor = (function() {
         var statusDiv = document.getElementById('storage-init-status');
         statusDiv.innerHTML = '<span style="color:#7f8c8d;">Mounting ' + escapeHtml(device) + '...</span>';
 
-        api('storage_mount', { device: device }).then(function(mountData) {
+        postJson('storage_mount', { device: device }).then(function(mountData) {
             if (!mountData || !mountData.success) {
                 statusDiv.innerHTML = '<span style="color:#e74c3c;">Mount failed: ' + escapeHtml(mountData && mountData.error ? mountData.error : 'Unknown error') + '</span>';
                 return;
@@ -4651,7 +5258,7 @@ var JamMonitor = (function() {
 
             statusDiv.innerHTML = '<span style="color:#7f8c8d;">Initializing database...</span>';
 
-            api('storage_init').then(function(initData) {
+            postJson('storage_init', {}).then(function(initData) {
                 if (!initData || !initData.success) {
                     statusDiv.innerHTML = '<span style="color:#e74c3c;">Init failed: ' + escapeHtml(initData && initData.error ? initData.error : 'Unknown error') + '</span>';
                     return;
@@ -4808,10 +5415,10 @@ var JamMonitor = (function() {
                 html += '<span class="wan-ip">' + escapeHtml(ipDisplay) + '</span>';
                 html += '<span class="wan-name" title="' + escapeHtml(wan.name) + '">' + escapeHtml(wan.name) + '</span>';
                 html += '<div class="test-buttons">';
-                html += '<button class="test-btn download" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'download\')" ' + disabled + '>&#8595; ' + _('Download') + '</button>';
+                html += '<button class="test-btn download" data-direction="download" ' + disabled + '>&#8595; ' + _('Download') + '</button>';
                 var uploadDisabled = disabled || (speedTestServer !== 'cloudflare' ? 'disabled' : '');
                 var uploadTitle = speedTestServer !== 'cloudflare' ? ' title="' + _('Upload not supported for this server') + '"' : '';
-                html += '<button class="test-btn upload" onclick="JamMonitor.runSpeedTest(\'' + escapeHtml(wan.name) + '\', \'upload\')" ' + uploadDisabled + uploadTitle + '>&#8593; ' + _('Upload') + '</button>';
+                html += '<button class="test-btn upload" data-direction="upload" ' + uploadDisabled + uploadTitle + '>&#8593; ' + _('Upload') + '</button>';
                 html += '</div>';
                 html += '<div class="status" id="speedtest-status-' + escapeHtml(wan.name) + '">';
                 html += '<div>&#8595; ' + downStatus + '</div>';
@@ -4821,10 +5428,25 @@ var JamMonitor = (function() {
             });
 
             container.innerHTML = html || '<div style="color:#7f8c8d;font-size:12px;text-align:center;padding:20px;">No WAN interfaces found</div>';
+            container.querySelectorAll('.test-btn[data-direction]').forEach(function(button) {
+                button.onclick = function() {
+                    var row = button.closest('.speedtest-row');
+                    if (!row) return;
+                    runSpeedTest(row.dataset.wan, button.dataset.direction);
+                };
+            });
         }).catch(function(err) {
             console.error('populateSpeedTestWans error:', err);
             container.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:20px;">Error loading WANs: ' + escapeHtml(err.message) + '</div>';
         });
+    }
+
+    function findSpeedTestRow(ifname) {
+        var rows = document.querySelectorAll('.speedtest-row');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].dataset.wan === ifname) return rows[i];
+        }
+        return null;
     }
 
     function runSpeedTest(ifname, direction) {
@@ -4832,7 +5454,7 @@ var JamMonitor = (function() {
         if (speedTestRunning[key]) return; // Already running
 
         // Disable buttons for this WAN
-        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        var row = findSpeedTestRow(ifname);
         if (row) {
             row.querySelectorAll('.test-btn').forEach(function(btn) {
                 btn.disabled = true;
@@ -4851,14 +5473,13 @@ var JamMonitor = (function() {
         var timeout = speedTestSize <= 10 ? 15 : (speedTestSize <= 25 ? 30 : 60);
 
         // Start test
-        var url = window.location.pathname + '/speedtest_start?ifname=' + encodeURIComponent(ifname) +
-            '&direction=' + encodeURIComponent(direction) +
-            '&size_mb=' + speedTestSize +
-            '&timeout_s=' + timeout +
-            '&server=' + encodeURIComponent(speedTestServer);
-
-        fetch(url)
-            .then(function(r) { return r.json(); })
+        postForm('speedtest_start', {
+            ifname: ifname,
+            direction: direction,
+            size_mb: speedTestSize,
+            timeout_s: timeout,
+            server: speedTestServer
+        })
             .then(function(data) {
                 if (!data.ok) {
                     showSpeedTestError(data.error, data.install_hint);
@@ -4880,7 +5501,7 @@ var JamMonitor = (function() {
         var url = window.location.pathname + '/speedtest_status?job_id=' + encodeURIComponent(job_id);
 
         fetch(url)
-            .then(function(r) { return r.json(); })
+            .then(checkedJsonResponse)
             .then(function(data) {
                 if (!data.ok) {
                     showSpeedTestError(data.error);
@@ -4922,7 +5543,7 @@ var JamMonitor = (function() {
         delete speedTestRunning[key];
 
         // Re-enable buttons (but keep upload disabled for non-Cloudflare servers)
-        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        var row = findSpeedTestRow(ifname);
         if (row) {
             row.querySelectorAll('.test-btn').forEach(function(btn) {
                 if (btn.classList.contains('upload') && speedTestServer !== 'cloudflare') {
@@ -4969,7 +5590,7 @@ var JamMonitor = (function() {
     }
 
     function restoreSpeedTestRow(ifname, originalStatus) {
-        var row = document.querySelector('.speedtest-row[data-wan="' + ifname + '"]');
+        var row = findSpeedTestRow(ifname);
         if (row) {
             row.querySelectorAll('.test-btn').forEach(function(btn) {
                 if (btn.classList.contains('upload') && speedTestServer !== 'cloudflare') {
@@ -4986,9 +5607,15 @@ var JamMonitor = (function() {
     }
 
     function escapeHtml(str) {
-        var div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
+        // This helper is used in text nodes and double-quoted attributes.
+        // Encode quotes too, so persisted aliases cannot break out of
+        // value/data/title attributes when a table is rebuilt with innerHTML.
+        return String(str === null || str === undefined ? '' : str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     // Convert CIDR prefix length to dotted subnet mask (e.g., 24 -> 255.255.255.0)

@@ -462,6 +462,54 @@ table.jm-table tr:not(.bw-day-separator):hover { background: #e8f4fc; }
 /* Client table sorting and grouping */
 #clients-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s; }
 #clients-table th.sortable:hover { background: #d4e6f1; }
+.tailscale-health {
+    background: #fff;
+    border: 1px solid #dfe6e9;
+    border-left: 4px solid #95a5a6;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    margin: 0 0 14px;
+    padding: 10px 12px;
+}
+.tailscale-health-good { border-left-color: #27ae60; }
+.tailscale-health-warn { border-left-color: #f39c12; }
+.tailscale-health-bad { border-left-color: #e74c3c; }
+.tailscale-health-neutral { border-left-color: #95a5a6; }
+.tailscale-health-summary { display: flex; align-items: flex-start; gap: 9px; }
+.tailscale-health-dot {
+    background: #95a5a6;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    height: 10px;
+    margin-top: 4px;
+    width: 10px;
+}
+.tailscale-health-good .tailscale-health-dot { background: #27ae60; box-shadow: 0 0 5px rgba(39,174,96,0.6); }
+.tailscale-health-warn .tailscale-health-dot { background: #f39c12; }
+.tailscale-health-bad .tailscale-health-dot { background: #e74c3c; }
+.tailscale-health-copy { min-width: 0; }
+.tailscale-health-title { color: #2c3e50; font-size: 13px; font-weight: 700; }
+.tailscale-health-detail { color: #566573; font-size: 11px; line-height: 1.35; margin-top: 2px; }
+.tailscale-health-backend {
+    background: #f4f6f7;
+    border-radius: 10px;
+    color: #566573;
+    font-family: monospace;
+    font-size: 10px;
+    margin-left: auto;
+    padding: 3px 7px;
+    white-space: nowrap;
+}
+.tailscale-health-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 7px 0 0 19px; }
+.tailscale-health-fact { color: #7f8c8d; font-size: 10px; }
+.tailscale-health-fact-good { color: #1e8449; font-weight: 600; }
+.tailscale-health-fact-warn { color: #b9770e; font-weight: 600; }
+.tailscale-health-fact-bad { color: #c0392b; font-weight: 600; }
+@media (max-width: 700px) {
+    .tailscale-health-summary { flex-wrap: wrap; }
+    .tailscale-health-backend { margin-left: 19px; }
+    .tailscale-health-facts { margin-left: 19px; }
+}
 .client-group-header { background: #f8f9fa; cursor: pointer; font-weight: 600; }
 .client-group-header:hover { background: #d4e6f1; }
 .client-group-header td { padding: 8px 10px !important; }
@@ -750,6 +798,15 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
         <!-- OVERVIEW -->
         <div id="view-overview" class="jm-view active">
             <h2 style="margin-top:0;color:#2c3e50;">Overview</h2>
+            <div id="tailscale-health-overview" class="tailscale-health tailscale-health-neutral" role="status" aria-live="polite">
+                <div class="tailscale-health-summary">
+                    <span class="tailscale-health-dot" aria-hidden="true"></span>
+                    <div class="tailscale-health-copy">
+                        <div class="tailscale-health-title">Tailscale: Checking status</div>
+                        <div class="tailscale-health-detail">Waiting for a bounded local health check.</div>
+                    </div>
+                </div>
+            </div>
             <div class="jm-grid">
                 <!-- 1. VPN/Tunnel -->
                 <div class="jm-block" id="block-vpn">
@@ -1050,6 +1107,15 @@ tr.bw-day-separator td, table.jm-table tr.bw-day-separator td {
                     <span id="client-pending-indicator" style="display:none;font-size:11px;color:#e67e22;">Unsaved changes</span>
                     <button class="wan-advanced-btn wan-advanced-btn-save" id="client-save-btn" onclick="JamMonitor.saveClientChanges()" disabled>Save and Apply</button>
                     <button class="wan-advanced-btn" style="background:#fff;border:1px solid #95a5a6;color:#95a5a6;" id="client-reset-btn" onclick="JamMonitor.resetClientChanges()" disabled>Reset</button>
+                </div>
+            </div>
+            <div id="tailscale-health" class="tailscale-health tailscale-health-neutral" role="group">
+                <div class="tailscale-health-summary">
+                    <span class="tailscale-health-dot" aria-hidden="true"></span>
+                    <div class="tailscale-health-copy">
+                        <div class="tailscale-health-title">Tailscale: Checking status</div>
+                        <div class="tailscale-health-detail">Waiting for a bounded local health check.</div>
+                    </div>
                 </div>
             </div>
             <table class="jm-table" id="clients-table">

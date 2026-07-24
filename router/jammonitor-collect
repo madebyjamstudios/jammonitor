@@ -1,46 +1,372 @@
 #!/bin/sh
-# JamMonitor Historical Metrics Collector v4
+# JamMonitor Historical Metrics Collector v5
 # Collects metrics every MINUTE (not second) to minimize storage
 # 24h = ~1,440 entries (~300KB) vs previous ~86,400 entries (~18MB)
 
-PIDFILE="/var/run/jammonitor-collect.pid"
-
-# Prevent multiple instances
-if [ -f "$PIDFILE" ]; then
-    OLDPID=$(cat "$PIDFILE" 2>/dev/null)
-    if [ -n "$OLDPID" ] && kill -0 "$OLDPID" 2>/dev/null; then
-        logger -t jammonitor "Collector already running (PID $OLDPID), exiting"
-        exit 0
-    fi
-    # Stale PID file, remove it
-    rm -f "$PIDFILE"
-fi
-
-# Write our PID
-echo $$ > "$PIDFILE"
-
-# Cleanup PID file on exit
-trap "rm -f '$PIDFILE'" EXIT INT TERM
-
-DATA_DIR="/mnt/data/jammonitor"
+LIB_ONLY="${JAMMONITOR_LIB_ONLY:-0}"
+RUNTIME_DIR="${JAMMONITOR_RUNTIME_DIR:-/var/run/jammonitor}"
+PIDFILE="${JAMMONITOR_PIDFILE:-/var/run/jammonitor-collect.pid}"
+LOCK_FILE="${JAMMONITOR_LOCK_FILE:-${PIDFILE}.lock}"
+PROC_ROOT="${JAMMONITOR_PROC_ROOT:-/proc}"
+PROC_STAT_CMD="${JAMMONITOR_PROC_STAT_CMD:-cat}"
+STATUS_FILE="${RUNTIME_DIR}/collector-status.json"
+MOUNT_POINT="${JAMMONITOR_MOUNT_POINT:-/mnt/data}"
+PROC_MOUNTS="${JAMMONITOR_PROC_MOUNTS:-/proc/mounts}"
+DATA_DIR="${MOUNT_POINT}/jammonitor"
 DB_PATH="${DATA_DIR}/history.db"
 LOG_PATH="${DATA_DIR}/syslog.txt"
-CLIENT_SNAPSHOT="/tmp/jammonitor_client_last"
+SYSLOG_PID=""
+SQLITE_CMD="${JAMMONITOR_SQLITE_CMD:-sqlite3}"
+TIMEOUT_CMD="${JAMMONITOR_TIMEOUT_CMD:-${JAMMONITOR_SQLITE_TIMEOUT_CMD:-timeout}}"
+SQLITE_TIMEOUT_CMD="${JAMMONITOR_SQLITE_TIMEOUT_CMD:-$TIMEOUT_CMD}"
+SQLITE_TIMEOUT_SECONDS="${JAMMONITOR_SQLITE_TIMEOUT_SECONDS:-15}"
+CONNTRACK_CMD="${JAMMONITOR_CONNTRACK_CMD:-conntrack}"
+CONNTRACK_TIMEOUT_SECONDS="${JAMMONITOR_CONNTRACK_TIMEOUT_SECONDS:-10}"
+FLOCK_CMD="${JAMMONITOR_FLOCK_CMD:-flock}"
+
 RETENTION_DAYS=30
 RETENTION_DAYS_RAW=30      # Keep raw per-client data for 30 days
 DISK_THRESHOLD=80          # Start cleanup when disk usage exceeds this %
-MAX_LOG_SIZE=104857600     # 100MB max syslog size
+MAX_LOG_SIZE=10485760      # Rotate the streamed system log at 10 MiB
 WAN_CONFIG="/etc/jammonitor_wans"
+CLIENT_SNAPSHOT="/tmp/jammonitor_client_last"
+DHCP_LEASES="${JAMMONITOR_DHCP_LEASES:-/tmp/dhcp.leases}"
+ARP_TABLE="${JAMMONITOR_ARP_TABLE:-/proc/net/arp}"
 
-# Ensure data directory exists
-mkdir -p /mnt/data/jammonitor 2>/dev/null || {
-    logger -t jammonitor "FATAL: Cannot create data directory /mnt/data/jammonitor"
-    exit 1
+umask 077
+if [ "$LIB_ONLY" != "1" ]; then
+    mkdir -p "$RUNTIME_DIR" || exit 1
+fi
+
+proc_start_ticks() {
+    _lock_stat="$("$PROC_STAT_CMD" "$PROC_ROOT/$1/stat" 2>/dev/null)" ||
+        return 1
+    # The comm field is parenthesized and may itself contain spaces or right
+    # parentheses. Strip through the final ") "; starttime (field 22 in the
+    # complete record) is then field 20.
+    _lock_tail="${_lock_stat##*) }"
+    set -- $_lock_tail
+    [ "$#" -ge 20 ] || return 1
+    shift 19
+    case "${1:-}" in
+        ""|*[!0-9]*|0) return 1 ;;
+        *) printf '%s\n' "$1" ;;
+    esac
 }
 
-# Helper: Escape strings for SQLite (single quotes doubled, backslashes and double quotes escaped)
+collector_identity() {
+    _lock_identity="${0##*/}"
+    _lock_identity="$(printf '%s' "$_lock_identity" |
+        tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
+    [ -n "$_lock_identity" ] || _lock_identity="jammonitor-collect"
+    printf '%s\n' "$_lock_identity"
+}
+
+acquire_collector_lock() {
+    COLLECTOR_START_TICKS="$(proc_start_ticks "$$")" || {
+        logger -t jammonitor \
+            "FATAL: cannot prove collector process generation for PID $$"
+        return 1
+    }
+    COLLECTOR_IDENTITY="$(collector_identity)"
+
+    # Descriptor 9 remains open for the collector lifetime. The kernel lock,
+    # not stale PID-file contents, is the singleton authority. This prevents
+    # PID reuse and simultaneous check-then-write starts from creating two
+    # writers. The persistent lock file is intentionally not unlinked.
+    exec 9<>"$LOCK_FILE" || {
+        logger -t jammonitor "FATAL: cannot open collector lock $LOCK_FILE"
+        return 1
+    }
+    if ! "$FLOCK_CMD" -n 9; then
+        logger -t jammonitor "Collector already owns $LOCK_FILE; exiting"
+        return 2
+    fi
+
+    {
+        printf 'pid=%s\n' "$$"
+        printf 'start_ticks=%s\n' "$COLLECTOR_START_TICKS"
+        printf 'identity=%s\n' "$COLLECTOR_IDENTITY"
+    } > "$LOCK_FILE" || {
+        logger -t jammonitor "FATAL: cannot publish collector lock metadata"
+        return 1
+    }
+
+    _pid_tmp="${PIDFILE}.tmp.$$"
+    if ! printf '%s\n' "$$" > "$_pid_tmp" ||
+       ! mv -f "$_pid_tmp" "$PIDFILE"; then
+        rm -f "$_pid_tmp"
+        logger -t jammonitor "FATAL: cannot publish collector PID"
+        return 1
+    fi
+    return 0
+}
+
+remove_owned_pidfile() {
+    _owned_pid="$(cat "$PIDFILE" 2>/dev/null)"
+    if [ "$_owned_pid" = "$$" ]; then
+        rm -f "$PIDFILE"
+    fi
+}
+
+cleanup_processes() {
+    if [ -n "$SYSLOG_PID" ]; then
+        kill "$SYSLOG_PID" 2>/dev/null || true
+        wait "$SYSLOG_PID" 2>/dev/null || true
+    fi
+    # Never unlink the persistent lock inode. Closing descriptor 9 releases
+    # ownership atomically; removing only our legacy PID file cannot erase a
+    # successor's metadata.
+    remove_owned_pidfile
+}
+
+handle_signal() {
+    exit 0
+}
+
+if [ "$LIB_ONLY" != "1" ]; then
+    command -v "$FLOCK_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor \
+            "FATAL: kernel lock command is unavailable: $FLOCK_CMD"
+        exit 1
+    }
+    acquire_collector_lock
+    _lock_rc=$?
+    if [ "$_lock_rc" -eq 2 ]; then
+        exit 0
+    elif [ "$_lock_rc" -ne 0 ]; then
+        exit 1
+    fi
+    trap cleanup_processes EXIT
+    trap handle_signal INT TERM
+fi
+
+# The mount must be a real filesystem, not the root overlay beneath an absent
+# USB drive. Failing closed lets procd retry without filling internal flash.
+data_mount_is_safe() {
+    awk -v mount_point="$MOUNT_POINT" '
+        $2 == mount_point && $3 != "overlay" && $3 != "tmpfs" &&
+            ("," $4 ",") ~ /,rw,/ { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$PROC_MOUNTS" 2>/dev/null
+}
+
+require_data_mount() {
+    if ! data_mount_is_safe; then
+        logger -t jammonitor "FATAL: $MOUNT_POINT is not a persistent mounted filesystem; refusing internal-flash fallback"
+        return 1
+    fi
+    if [ ! -w "$MOUNT_POINT" ]; then
+        logger -t jammonitor "FATAL: $MOUNT_POINT is mounted but not writable"
+        return 1
+    fi
+    return 0
+}
+
+if [ "$LIB_ONLY" != "1" ]; then
+    require_data_mount || {
+        exit 1
+    }
+    mkdir -p "$DATA_DIR" 2>/dev/null || {
+        logger -t jammonitor "FATAL: Cannot create data directory $DATA_DIR"
+        exit 1
+    }
+fi
+
+# SQLite single-quoted string literals escape only single quotes. Backslash
+# escaping double quotes corrupts JSON by storing the backslash literally.
 sql_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/''/g" -e 's/"/\\"/g'
+    printf '%s' "$1" | sed -e "s/'/''/g"
+}
+
+is_uint() {
+    case "${1:-}" in
+        ""|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_process_generation() {
+    _generation="${1:-}"
+    [ "${#_generation}" -le 64 ] || return 1
+    case "$_generation" in
+        *:*)
+            _generation_pid="${_generation%%:*}"
+            _generation_ticks="${_generation#*:}"
+            case "$_generation_ticks" in *:*) return 1 ;; esac
+            [ "${#_generation_pid}" -le 18 ] &&
+                [ "${#_generation_ticks}" -le 18 ] ||
+                return 1
+            is_uint "$_generation_pid" &&
+                is_uint "$_generation_ticks" &&
+                [ "$_generation_pid" -gt 1 ] &&
+                [ "$_generation_ticks" -gt 0 ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+if ! is_uint "$SQLITE_TIMEOUT_SECONDS" ||
+   [ "$SQLITE_TIMEOUT_SECONDS" -lt 1 ]; then
+    SQLITE_TIMEOUT_SECONDS=15
+fi
+if ! is_uint "$CONNTRACK_TIMEOUT_SECONDS" ||
+   [ "$CONNTRACK_TIMEOUT_SECONDS" -lt 1 ]; then
+    CONNTRACK_TIMEOUT_SECONDS=10
+fi
+
+if [ "$LIB_ONLY" != "1" ]; then
+    command -v "$SQLITE_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: SQLite command is unavailable: $SQLITE_CMD"
+        exit 1
+    }
+    command -v "$SQLITE_TIMEOUT_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: timeout command is unavailable: $SQLITE_TIMEOUT_CMD"
+        exit 1
+    }
+    command -v "$TIMEOUT_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: command deadline utility is unavailable: $TIMEOUT_CMD"
+        exit 1
+    }
+    command -v "$CONNTRACK_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: conntrack command is unavailable: $CONNTRACK_CMD"
+        exit 1
+    }
+fi
+
+sqlite_command() {
+    if [ "$LIB_ONLY" != "1" ]; then
+        require_data_mount || return 1
+    fi
+    "$SQLITE_TIMEOUT_CMD" "$SQLITE_TIMEOUT_SECONDS" \
+        "$SQLITE_CMD" "$DB_PATH" "$1"
+}
+
+sqlite_read() {
+    sqlite_command "$1" 2>/dev/null
+}
+
+ITERATION_WRITE_FAILED=0
+
+sqlite_write() {
+    _sql="$1"
+    if _error="$(sqlite_command "PRAGMA busy_timeout=5000; $_sql" 2>&1)"; then
+        return 0
+    fi
+    ITERATION_WRITE_FAILED=1
+    logger -t jammonitor "SQLite write failed: $(printf '%s' "$_error" | head -c 240)"
+    return 1
+}
+
+COLLECTOR_STARTED_AT="$(date +%s)"
+LAST_SAMPLE_AT=0
+LAST_SUCCESS_AT=0
+CONSECUTIVE_WRITE_FAILURES=0
+QUICK_CHECK="unknown"
+
+run_quick_check() {
+    QUICK_CHECK="$(sqlite_read "PRAGMA quick_check;" | head -n 1)"
+    [ "$QUICK_CHECK" = "ok" ]
+}
+
+publish_collector_status() {
+    _now="$(date +%s)"
+    _mounted=false
+    _writable=false
+    _healthy=false
+    data_mount_is_safe && _mounted=true
+    [ -w "$MOUNT_POINT" ] && _writable=true
+
+    if [ "$LAST_SAMPLE_AT" -gt 0 ]; then
+        _sample_age=$((_now - LAST_SAMPLE_AT))
+        [ "$_sample_age" -lt 0 ] && _sample_age=0
+    else
+        _sample_age=-1
+    fi
+
+    if [ "$_mounted" = true ] &&
+       [ "$_writable" = true ] &&
+       [ "$QUICK_CHECK" = "ok" ] &&
+       [ "$CONSECUTIVE_WRITE_FAILURES" -eq 0 ] &&
+       [ "$LAST_SUCCESS_AT" -ge "$COLLECTOR_STARTED_AT" ] &&
+       [ "$_sample_age" -ge 0 ] &&
+       [ "$_sample_age" -le 180 ]; then
+        _healthy=true
+    fi
+
+    _tmp="${STATUS_FILE}.tmp.$$"
+    {
+        printf '{'
+        printf '"schema":1,'
+        printf '"observed_at":%s,' "$_now"
+        printf '"started_at":%s,' "$COLLECTOR_STARTED_AT"
+        printf '"healthy":%s,' "$_healthy"
+        printf '"mounted":%s,' "$_mounted"
+        printf '"writable":%s,' "$_writable"
+        printf '"database_quick_check":"%s",' "$QUICK_CHECK"
+        printf '"last_sample_at":%s,' "$LAST_SAMPLE_AT"
+        printf '"last_success_at":%s,' "$LAST_SUCCESS_AT"
+        printf '"sample_age_secs":%s,' "$_sample_age"
+        printf '"consecutive_write_failures":%s' "$CONSECUTIVE_WRITE_FAILURES"
+        printf '}\n'
+    } > "$_tmp" && mv "$_tmp" "$STATUS_FILE"
+}
+
+# Match only RFC1918 addresses and Tailscale's assigned 100.64.0.0/10 range.
+# Treating all of 100.0.0.0/8 as local can attribute public CGNAT-adjacent
+# traffic to clients that do not exist.
+is_local_client_ip() {
+    _ip="$1"
+    _old_ifs="$IFS"
+    IFS=.
+    set -- $_ip
+    IFS="$_old_ifs"
+    [ "$#" -eq 4 ] || return 1
+
+    for _octet in "$@"; do
+        is_uint "$_octet" || return 1
+        [ "$_octet" -le 255 ] || return 1
+    done
+
+    case "$1" in
+        10) return 0 ;;
+        172) [ "$2" -ge 16 ] && [ "$2" -le 31 ] ;;
+        192) [ "$2" -eq 168 ] ;;
+        100) [ "$2" -ge 64 ] && [ "$2" -le 127 ] ;;
+        *) return 1 ;;
+    esac
+}
+
+is_tailscale_ip() {
+    _candidate="${1:-}"
+    case "$_candidate" in
+        *:*)
+            _candidate="$(printf '%s' "$_candidate" | tr 'A-F' 'a-f')"
+            case "$_candidate" in
+                fd7a:115c:a1e0:*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *.*)
+            _old_ifs="$IFS"
+            IFS=.
+            set -- $_candidate
+            IFS="$_old_ifs"
+            [ "$#" -eq 4 ] || return 1
+            for _octet in "$@"; do
+                is_uint "$_octet" || return 1
+                [ "$_octet" -le 255 ] || return 1
+            done
+            [ "$1" -eq 100 ] &&
+                [ "$2" -ge 64 ] &&
+                [ "$2" -le 127 ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # Get WAN interface list (dynamic or fallback)
@@ -53,8 +379,23 @@ get_wan_list() {
 }
 
 # Initialize database with all tables and WAL mode
+service_health_has_column() {
+    _required_column="$1"
+    sqlite_read "PRAGMA table_info(service_health);" |
+        awk -F'|' -v required="$_required_column" '$2 == required { found = 1 }
+            END { exit(found ? 0 : 1) }'
+}
+
+ensure_service_health_column() {
+    _required_column="$1"
+    _column_declaration="$2"
+    service_health_has_column "$_required_column" && return 0
+    sqlite_command "ALTER TABLE service_health ADD COLUMN $_column_declaration;" \
+        >/dev/null
+}
+
 init_db() {
-    sqlite3 "$DB_PATH" "
+    sqlite_command "
         PRAGMA journal_mode=WAL;
         PRAGMA busy_timeout=5000;
         CREATE TABLE IF NOT EXISTS metrics (
@@ -98,12 +439,56 @@ init_db() {
             tx_bytes INTEGER,
             PRIMARY KEY (ts, iface)
         );
+        CREATE TABLE IF NOT EXISTS service_health (
+            ts INTEGER,
+            service TEXT,
+            boot_id TEXT,
+            status TEXT,
+            reason TEXT,
+            healthy INTEGER,
+            connected INTEGER,
+            degraded INTEGER,
+            local_api_responsive INTEGER,
+            control_online INTEGER,
+            process_generation TEXT,
+            process_uptime_seconds INTEGER,
+            backend_state TEXT,
+            key_expiry TEXT,
+            condition_since_at INTEGER,
+            connected_since_at INTEGER,
+            connectivity_uptime_seconds INTEGER,
+            peer_state TEXT,
+            peer_reachable INTEGER,
+            recovery_attempted INTEGER,
+            recovery_count INTEGER,
+            PRIMARY KEY (ts, service)
+        );
         CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
         CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
         CREATE INDEX IF NOT EXISTS idx_client_ts ON client_traffic(ts);
         CREATE INDEX IF NOT EXISTS idx_client_hourly_ts ON client_traffic_hourly(hour_ts);
         CREATE INDEX IF NOT EXISTS idx_iface_ts ON interface_traffic(ts);
-    "
+        CREATE INDEX IF NOT EXISTS idx_service_health_ts ON service_health(ts);
+
+        -- v4 incorrectly inserted backslashes before every JSON double quote.
+        -- This migration is idempotent and repairs only the generated JSON
+        -- columns whose valid representation must begin with an object brace.
+        UPDATE metrics
+           SET wan_pings = replace(wan_pings, char(92) || char(34), char(34))
+         WHERE wan_pings LIKE '{' || char(92) || char(34) || '%';
+        UPDATE metrics
+           SET iface_status = replace(iface_status, char(92) || char(34), char(34))
+         WHERE iface_status LIKE '{' || char(92) || char(34) || '%';
+    " >/dev/null || return 1
+
+    # CREATE TABLE does not add fields to an existing router database. Keep
+    # these additive migrations explicit so older USB histories remain usable.
+    ensure_service_health_column control_online "control_online INTEGER" ||
+        return 1
+    ensure_service_health_column process_generation "process_generation TEXT" ||
+        return 1
+    ensure_service_health_column process_uptime_seconds \
+        "process_uptime_seconds INTEGER" || return 1
 }
 
 # Collect metrics (every minute)
@@ -168,7 +553,7 @@ collect_metrics() {
     PINGS_ESC=$(sql_escape "$PINGS")
     IFACES_ESC=$(sql_escape "$IFACES")
 
-    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD_ESC', $RAM, $TEMP, '$PINGS_ESC', '$IFACES_ESC');" 2>/dev/null
+    sqlite_write "INSERT OR REPLACE INTO metrics VALUES ($TS, '$LOAD_ESC', $RAM, $TEMP, '$PINGS_ESC', '$IFACES_ESC');"
 }
 
 # Collect slow snapshots (every minute)
@@ -204,7 +589,200 @@ collect_slow() {
     ROUTES_ESC=$(sql_escape "$ROUTES")
     DNS_ESC=$(sql_escape "$DNS")
 
-    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP_ESC', '$VPN_ESC', '$ROUTES_ESC', $CT_COUNT, '$DNS_ESC');" 2>/dev/null
+    sqlite_write "INSERT OR REPLACE INTO snapshots VALUES ($TS, '$MPTCP_ESC', '$VPN_ESC', '$ROUTES_ESC', $CT_COUNT, '$DNS_ESC');"
+}
+
+watchdog_snapshot_is_valid() {
+    [ "$_snapshot_schema" = "2" ] || return 1
+    case "$_snapshot_status" in
+        not_installed|watchdog_error|disabled|maintenance|daemon_missing|\
+        daemon_unresponsive|socket_missing|running|running_degraded|needs_login|\
+        needs_machine_auth|stopped|starting|unsupported_backend) ;;
+        *) return 1 ;;
+    esac
+    [ -n "$_snapshot_reason" ] || return 1
+
+    case "$_healthy" in true|false) ;; *) return 1 ;; esac
+    case "$_connected" in true|false|null) ;; *) return 1 ;; esac
+    case "$_degraded" in true|false) ;; *) return 1 ;; esac
+    case "$_local_api" in true|false|null) ;; *) return 1 ;; esac
+    case "$_control_online" in true|false|null) ;; *) return 1 ;; esac
+    case "$_installed" in true|false) ;; *) return 1 ;; esac
+    case "$_service_enabled" in true|false) ;; *) return 1 ;; esac
+    case "$_service_running" in true|false) ;; *) return 1 ;; esac
+    case "$_tun" in true|false|null) ;; *) return 1 ;; esac
+    case "$_engine" in true|false|null) ;; *) return 1 ;; esac
+    case "$_process_generation" in
+        ""|null)
+            case "$_process_uptime" in ""|null) ;; *) return 1 ;; esac
+            ;;
+        *)
+            is_process_generation "$_process_generation" &&
+                is_uint "$_process_uptime" &&
+                [ "${#_process_uptime}" -le 18 ] || return 1
+            ;;
+    esac
+
+    # A later/faulty producer must not be able to turn a syntactically fresh
+    # file into false historical uptime. Healthy and connected states require
+    # the complete set of delivery prerequisites observed by schema 2.
+    if [ "$_connected" = "true" ]; then
+        [ "$_installed" = "true" ] &&
+            [ "$_service_enabled" = "true" ] &&
+            [ "$_service_running" = "true" ] &&
+            [ "$_local_api" = "true" ] &&
+            [ "$_snapshot_backend" = "Running" ] &&
+            [ "$_tun" = "true" ] &&
+            [ "$_engine" = "true" ] &&
+            is_tailscale_ip "$_snapshot_ip" || return 1
+    fi
+
+    if [ "$_healthy" = "true" ]; then
+        [ "$_snapshot_status" = "running" ] &&
+            [ "$_snapshot_reason" = "ok" ] &&
+            [ "$_connected" = "true" ] &&
+            [ "$_control_online" = "true" ] &&
+            is_process_generation "$_process_generation" &&
+            [ "$_degraded" = "false" ] || return 1
+    fi
+
+    case "$_snapshot_status" in
+        running)
+            [ "$_healthy" = "true" ] || return 1
+            ;;
+        running_degraded)
+            [ "$_snapshot_backend" = "Running" ] &&
+                [ "$_local_api" = "true" ] &&
+                [ "$_healthy" = "false" ] &&
+                [ "$_degraded" = "true" ] || return 1
+            ;;
+        *)
+            [ "$_healthy" = "false" ] &&
+                [ "$_connected" != "true" ] || return 1
+            ;;
+    esac
+
+    [ "$_service_running" != "true" ] ||
+        [ "$_service_enabled" = "true" ] || return 1
+    [ "$_service_enabled" != "true" ] ||
+        [ "$_installed" = "true" ] || return 1
+    [ "$_local_api" != "true" ] ||
+        [ "$_service_running" = "true" ] || return 1
+    return 0
+}
+
+collect_tailscale_health() {
+    TS=$(date +%s)
+    WATCHDOG_STATUS="${RUNTIME_DIR}/tailscale-watchdog.json"
+    BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -cd 'A-Fa-f0-9-' | cut -c1-40)"
+    STATUS="watchdog_unavailable"
+    REASON="status_missing"
+    BACKEND_STATE=""
+    HEALTHY=0
+    CONNECTED="NULL"
+    DEGRADED=0
+    LOCAL_API_RESPONSIVE="NULL"
+    CONTROL_ONLINE="NULL"
+    PROCESS_GENERATION=""
+    PROCESS_UPTIME="NULL"
+    KEY_EXPIRY=""
+    CONDITION_SINCE_AT=0
+    CONNECTED_SINCE_AT=0
+    CONNECTIVITY_UPTIME="NULL"
+    PEER_STATE="unknown"
+    PEER_REACHABLE="NULL"
+    RECOVERY_ATTEMPTED=0
+    RECOVERY_COUNT=0
+
+    if [ -r "$WATCHDOG_STATUS" ] && command -v jsonfilter >/dev/null 2>&1; then
+        OBSERVED="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.observed_at' 2>/dev/null)"
+        if is_uint "$OBSERVED" && [ "$OBSERVED" -le $((TS + 5)) ] && [ $((TS - OBSERVED)) -le 45 ]; then
+            _snapshot_schema="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.schema' 2>/dev/null)"
+            _snapshot_status="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.status' 2>/dev/null)"
+            _snapshot_reason="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.reason' 2>/dev/null)"
+            _snapshot_backend="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.backend_state' 2>/dev/null)"
+            _snapshot_ip="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.tailscale_ip' 2>/dev/null)"
+            _healthy="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.healthy' 2>/dev/null)"
+            _connected="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connected' 2>/dev/null)"
+            _degraded="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.degraded' 2>/dev/null)"
+            _local_api="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.local_api_responsive' 2>/dev/null)"
+            _control_online="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.control_online' 2>/dev/null)"
+            _process_generation="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.process_generation' 2>/dev/null)"
+            _process_uptime="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.process_uptime_seconds' 2>/dev/null)"
+            _installed="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.installed' 2>/dev/null)"
+            _service_enabled="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.service_enabled' 2>/dev/null)"
+            _service_running="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.service_running' 2>/dev/null)"
+            _tun="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.tun_available' 2>/dev/null)"
+            _engine="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.in_engine' 2>/dev/null)"
+            KEY_EXPIRY="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.key_expiry' 2>/dev/null)"
+            _condition_since="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.condition_since_at' 2>/dev/null)"
+            _connected_since="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connected_since_at' 2>/dev/null)"
+            _connectivity_uptime="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connectivity_uptime_seconds' 2>/dev/null)"
+            PEER_STATE="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.peer_state' 2>/dev/null)"
+            _peer="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.peer_reachable' 2>/dev/null)"
+            _attempted="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.recovery_attempted' 2>/dev/null)"
+            _recovery="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.recovery_count' 2>/dev/null)"
+            if watchdog_snapshot_is_valid; then
+                STATUS="$_snapshot_status"
+                REASON="$_snapshot_reason"
+                BACKEND_STATE="$_snapshot_backend"
+                [ "$_healthy" = "true" ] && HEALTHY=1
+                [ "$_connected" = "true" ] && CONNECTED=1
+                [ "$_connected" = "false" ] && CONNECTED=0
+                [ "$_degraded" = "true" ] && DEGRADED=1
+                [ "$_local_api" = "true" ] && LOCAL_API_RESPONSIVE=1
+                [ "$_local_api" = "false" ] && LOCAL_API_RESPONSIVE=0
+                [ "$_control_online" = "true" ] && CONTROL_ONLINE=1
+                [ "$_control_online" = "false" ] && CONTROL_ONLINE=0
+                is_process_generation "$_process_generation" &&
+                    PROCESS_GENERATION="$_process_generation"
+                is_uint "$_process_uptime" &&
+                    [ "${#_process_uptime}" -le 18 ] &&
+                    PROCESS_UPTIME="$_process_uptime"
+                is_uint "$_condition_since" && CONDITION_SINCE_AT="$_condition_since"
+                is_uint "$_connected_since" && CONNECTED_SINCE_AT="$_connected_since"
+                is_uint "$_connectivity_uptime" && CONNECTIVITY_UPTIME="$_connectivity_uptime"
+                [ "$_peer" = "true" ] && PEER_REACHABLE=1
+                [ "$_peer" = "false" ] && PEER_REACHABLE=0
+                is_uint "$_attempted" && RECOVERY_ATTEMPTED="$_attempted"
+                is_uint "$_recovery" && RECOVERY_COUNT="$_recovery"
+            else
+                STATUS="watchdog_invalid"
+                REASON="status_invalid"
+                KEY_EXPIRY=""
+            fi
+        else
+            STATUS="watchdog_stale"
+            REASON="status_stale"
+        fi
+    fi
+
+    STATUS_ESC="$(sql_escape "$(printf '%s' "$STATUS" | tr -cd 'A-Za-z0-9_.:-' | cut -c1-80)")"
+    REASON_ESC="$(sql_escape "$(printf '%s' "$REASON" | tr -cd 'A-Za-z0-9_.:-' | cut -c1-80)")"
+    BACKEND_ESC="$(sql_escape "$(printf '%s' "$BACKEND_STATE" | tr -cd 'A-Za-z0-9_.:-' | cut -c1-80)")"
+    KEY_EXPIRY_ESC="$(sql_escape "$(printf '%s' "$KEY_EXPIRY" | tr -cd 'A-Za-z0-9_.:+-' | cut -c1-64)")"
+    PROCESS_GENERATION_ESC="$(sql_escape "$(printf '%s' "$PROCESS_GENERATION" | tr -cd '0-9:' | cut -c1-64)")"
+    PROCESS_GENERATION_SQL="NULL"
+    if is_process_generation "$PROCESS_GENERATION_ESC"; then
+        PROCESS_GENERATION_SQL="'$PROCESS_GENERATION_ESC'"
+    fi
+    PEER_STATE_ESC="$(sql_escape "$(printf '%s' "$PEER_STATE" | tr -cd 'A-Za-z0-9_.:-' | cut -c1-80)")"
+    BOOT_ESC="$(sql_escape "$BOOT_ID")"
+
+    sqlite_write "INSERT OR REPLACE INTO service_health
+        (ts, service, boot_id, status, reason, healthy, connected, degraded,
+         local_api_responsive, control_online, process_generation,
+         process_uptime_seconds, backend_state, key_expiry,
+         condition_since_at, connected_since_at, connectivity_uptime_seconds,
+         peer_state, peer_reachable,
+         recovery_attempted, recovery_count)
+        VALUES ($TS, 'tailscale', '$BOOT_ESC', '$STATUS_ESC', '$REASON_ESC',
+                $HEALTHY, $CONNECTED, $DEGRADED, $LOCAL_API_RESPONSIVE,
+                $CONTROL_ONLINE, $PROCESS_GENERATION_SQL, $PROCESS_UPTIME,
+                '$BACKEND_ESC', '$KEY_EXPIRY_ESC', $CONDITION_SINCE_AT,
+                $CONNECTED_SINCE_AT, $CONNECTIVITY_UPTIME, '$PEER_STATE_ESC',
+                $PEER_REACHABLE,
+                $RECOVERY_ATTEMPTED, $RECOVERY_COUNT);"
 }
 
 # Collect per-client traffic (every minute)
@@ -217,36 +795,45 @@ collect_client_traffic() {
     # Build MAC->hostname lookup from DHCP leases
     # Format: timestamp mac ip hostname clientid
     HOSTNAME_MAP=""
-    if [ -f /tmp/dhcp.leases ]; then
+    if [ -f "$DHCP_LEASES" ]; then
         while read -r exp mac ip host rest; do
             [ -n "$mac" ] && [ -n "$host" ] && [ "$host" != "*" ] && \
-                HOSTNAME_MAP="${HOSTNAME_MAP}${mac}=${host}\n"
-        done < /tmp/dhcp.leases
+                HOSTNAME_MAP="${HOSTNAME_MAP}${mac}=${host}
+"
+        done < "$DHCP_LEASES"
     fi
 
     # Build IP->MAC lookup from ARP table
     MAC_MAP=""
-    while read -r ip type flags mac mask iface; do
-        [ "$ip" = "IP" ] && continue  # Skip header
-        [ -n "$ip" ] && [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] && \
-            MAC_MAP="${MAC_MAP}${ip}=${mac}\n"
-    done < /proc/net/arp
+    if [ -r "$ARP_TABLE" ]; then
+        while read -r ip type flags mac mask iface; do
+            [ "$ip" = "IP" ] && continue  # Skip header
+            [ -n "$ip" ] && [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] && \
+                MAC_MAP="${MAC_MAP}${ip}=${mac}
+"
+        done < "$ARP_TABLE"
+    fi
 
     # Parse conntrack and aggregate bytes per source IP
     # conntrack format: ... src=IP ... bytes=X ... bytes=Y ...
     # First bytes is TX (outgoing), second is RX (incoming)
+    CONNTRACK_DUMP="${CLIENT_SNAPSHOT}.conntrack"
     > "$CURRENT_FILE"
-    conntrack -L 2>/dev/null | head -1000 | while read -r line; do
+    if ! "$TIMEOUT_CMD" "$CONNTRACK_TIMEOUT_SECONDS" \
+        "$CONNTRACK_CMD" -L > "$CONNTRACK_DUMP" 2>/dev/null; then
+        rm -f "$CURRENT_FILE" "$CONNTRACK_DUMP" 2>/dev/null
+        ITERATION_WRITE_FAILED=1
+        logger -t jammonitor "Conntrack snapshot failed or exceeded ${CONNTRACK_TIMEOUT_SECONDS}s"
+        return 1
+    fi
+
+    head -1000 "$CONNTRACK_DUMP" | while read -r line; do
         # Extract source IP (local client)
         src=$(echo "$line" | grep -oE 'src=[0-9.]+' | head -1 | cut -d= -f2)
         [ -z "$src" ] && continue
 
-        # Skip non-local IPs (external sources)
-        # Include: RFC1918 private ranges + Tailscale (100.x.x.x)
-        case "$src" in
-            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.*) ;;
-            *) continue ;;
-        esac
+        # Skip non-local IPs (external sources).
+        is_local_client_ip "$src" || continue
 
         # Extract bytes (first=TX, second=RX from client perspective)
         bytes=$(echo "$line" | grep -oE 'bytes=[0-9]+' | cut -d= -f2 | tr '\n' ' ')
@@ -257,6 +844,7 @@ collect_client_traffic() {
 
         echo "${src} ${tx} ${rx}" >> "$CURRENT_FILE"
     done
+    rm -f "$CONNTRACK_DUMP" 2>/dev/null
 
     # Aggregate by IP (sum all entries for same IP)
     AGGREGATED_FILE="${CLIENT_SNAPSHOT}.agg"
@@ -271,6 +859,8 @@ collect_client_traffic() {
     }' "$CURRENT_FILE" > "$AGGREGATED_FILE" 2>/dev/null
 
     # Compare with last snapshot to get deltas
+    CLIENT_SQL="BEGIN IMMEDIATE;"
+    CLIENT_INSERTS=0
     if [ -f "$LAST_FILE" ]; then
         while read -r ip tx rx; do
             [ -z "$ip" ] && continue
@@ -295,11 +885,11 @@ collect_client_traffic() {
             [ $delta_tx -eq 0 ] && [ $delta_rx -eq 0 ] && continue
 
             # Resolve MAC and hostname
-            mac=$(printf "$MAC_MAP" | grep "^${ip}=" | head -1 | cut -d= -f2)
+            mac=$(printf '%s' "$MAC_MAP" | grep "^${ip}=" | head -1 | cut -d= -f2)
             [ -z "$mac" ] && mac="unknown"
             hostname="*"
             if [ "$mac" != "unknown" ]; then
-                hostname=$(printf "$HOSTNAME_MAP" | grep -i "^${mac}=" | head -1 | cut -d= -f2)
+                hostname=$(printf '%s' "$HOSTNAME_MAP" | grep -i "^${mac}=" | head -1 | cut -d= -f2)
                 [ -z "$hostname" ] && hostname="*"
             fi
 
@@ -308,14 +898,31 @@ collect_client_traffic() {
             mac_esc=$(sql_escape "$mac")
             host_esc=$(sql_escape "$hostname")
 
-            # Insert into database
-            sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO client_traffic VALUES ($TS, '$ip_esc', '$mac_esc', '$host_esc', $delta_rx, $delta_tx);" 2>/dev/null
+            CLIENT_SQL="${CLIENT_SQL}
+INSERT OR REPLACE INTO client_traffic
+    VALUES ($TS, '$ip_esc', '$mac_esc', '$host_esc', $delta_rx, $delta_tx);"
+            CLIENT_INSERTS=$((CLIENT_INSERTS + 1))
 
         done < "$AGGREGATED_FILE"
     fi
 
-    # Save current as last for next iteration
-    mv "$AGGREGATED_FILE" "$LAST_FILE" 2>/dev/null
+    # Commit every row as one batch, then advance the counter baseline. If the
+    # database rejects any row, retain the previous baseline so the full delta
+    # can be retried instead of being silently discarded.
+    if [ "$CLIENT_INSERTS" -gt 0 ]; then
+        CLIENT_SQL="${CLIENT_SQL}
+COMMIT;"
+        if ! sqlite_write "$CLIENT_SQL"; then
+            rm -f "$CURRENT_FILE" "$AGGREGATED_FILE" 2>/dev/null
+            return 1
+        fi
+    fi
+    if ! mv "$AGGREGATED_FILE" "$LAST_FILE" 2>/dev/null; then
+        ITERATION_WRITE_FAILED=1
+        rm -f "$CURRENT_FILE" "$AGGREGATED_FILE" 2>/dev/null
+        logger -t jammonitor "Failed to advance client traffic baseline"
+        return 1
+    fi
     rm -f "$CURRENT_FILE" 2>/dev/null
 }
 
@@ -340,6 +947,8 @@ collect_interface_traffic() {
     done
 
     # If we have a previous snapshot, calculate deltas
+    IFACE_SQL="BEGIN IMMEDIATE;"
+    IFACE_INSERTS=0
     if [ -f "$LAST_IFACE" ]; then
         while read -r iface curr_rx curr_tx; do
             # Find this interface in last snapshot
@@ -357,27 +966,64 @@ collect_interface_traffic() {
                 # Store if non-zero
                 if [ "$delta_rx" -gt 0 ] || [ "$delta_tx" -gt 0 ]; then
                     iface_esc=$(sql_escape "$iface")
-                    sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO interface_traffic (ts, iface, rx_bytes, tx_bytes) VALUES ($TS, '$iface_esc', $delta_rx, $delta_tx);" 2>/dev/null
+                    IFACE_SQL="${IFACE_SQL}
+INSERT OR REPLACE INTO interface_traffic
+    (ts, iface, rx_bytes, tx_bytes)
+    VALUES ($TS, '$iface_esc', $delta_rx, $delta_tx);"
+                    IFACE_INSERTS=$((IFACE_INSERTS + 1))
                 fi
             fi
         done < "$CURRENT_IFACE"
     fi
 
-    mv "$CURRENT_IFACE" "$LAST_IFACE" 2>/dev/null
-}
-
-# Stream syslog (continuous append with rotation)
-stream_syslog() {
-    # Rotate if too big
-    if [ -f "$LOG_PATH" ]; then
-        SIZE=$(stat -c%s "$LOG_PATH" 2>/dev/null || stat -f%z "$LOG_PATH" 2>/dev/null || echo 0)
-        if [ "$SIZE" -gt "$MAX_LOG_SIZE" ]; then
-            mv "$LOG_PATH" "${LOG_PATH}.old"
+    if [ "$IFACE_INSERTS" -gt 0 ]; then
+        IFACE_SQL="${IFACE_SQL}
+COMMIT;"
+        if ! sqlite_write "$IFACE_SQL"; then
+            rm -f "$CURRENT_IFACE" 2>/dev/null
+            return 1
         fi
     fi
+    if ! mv "$CURRENT_IFACE" "$LAST_IFACE" 2>/dev/null; then
+        ITERATION_WRITE_FAILED=1
+        rm -f "$CURRENT_IFACE" 2>/dev/null
+        logger -t jammonitor "Failed to advance interface traffic baseline"
+        return 1
+    fi
+}
 
-    # Append recent syslog entries (last 100 lines since last check)
-    logread 2>/dev/null | tail -100 >> "$LOG_PATH"
+# Stream each log record once. The previous once-per-minute `tail -100`
+# snapshot duplicated the same ring-buffer lines thousands of times and
+# repeatedly overwrote the only archive.
+start_syslog_stream() {
+    # The indefinite child must not inherit the singleton lock. Otherwise a
+    # SIGKILL of the collector can leave logread holding descriptor 9 forever.
+    logread -f 9>&- >> "$LOG_PATH" 2>/dev/null &
+    SYSLOG_PID=$!
+}
+
+stop_syslog_stream() {
+    if [ -n "$SYSLOG_PID" ]; then
+        kill "$SYSLOG_PID" 2>/dev/null || true
+        wait "$SYSLOG_PID" 2>/dev/null || true
+        SYSLOG_PID=""
+    fi
+}
+
+maintain_syslog_stream() {
+    if [ -z "$SYSLOG_PID" ] || ! kill -0 "$SYSLOG_PID" 2>/dev/null; then
+        stop_syslog_stream
+        start_syslog_stream
+    fi
+
+    [ -f "$LOG_PATH" ] || return
+    SIZE=$(stat -c%s "$LOG_PATH" 2>/dev/null || stat -f%z "$LOG_PATH" 2>/dev/null || echo 0)
+    if [ "$SIZE" -gt "$MAX_LOG_SIZE" ]; then
+        stop_syslog_stream
+        ROTATED="${LOG_PATH}.$(date +%s)"
+        mv "$LOG_PATH" "$ROTATED" || return
+        start_syslog_stream
+    fi
 }
 
 # Rollup old per-client traffic to hourly summaries
@@ -385,13 +1031,14 @@ rollup_client_traffic() {
     CUTOFF_RAW=$(($(date +%s) - RETENTION_DAYS_RAW * 86400))
 
     # Check if there's data to roll up
-    COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM client_traffic WHERE ts < $CUTOFF_RAW;" 2>/dev/null)
+    COUNT=$(sqlite_read "SELECT COUNT(*) FROM client_traffic WHERE ts < $CUTOFF_RAW;")
     [ -z "$COUNT" ] || [ "$COUNT" -eq 0 ] && return
 
     logger -t jammonitor "Rolling up $COUNT old client_traffic entries to hourly"
 
     # Aggregate into hourly buckets (use INSERT OR IGNORE + UPDATE to merge)
-    sqlite3 "$DB_PATH" "
+    sqlite_write "
+        BEGIN IMMEDIATE;
         INSERT OR REPLACE INTO client_traffic_hourly (hour_ts, ip, mac, hostname, rx_bytes, tx_bytes)
         SELECT
             (ts / 3600) * 3600 as hour_ts,
@@ -405,40 +1052,42 @@ rollup_client_traffic() {
         GROUP BY (ts / 3600) * 3600, ip;
 
         DELETE FROM client_traffic WHERE ts < $CUTOFF_RAW;
-    " 2>/dev/null
+        COMMIT;
+    "
 }
 
 # Dynamic cleanup when disk usage exceeds threshold
 dynamic_cleanup() {
-    # Get disk usage percentage for /mnt/data
-    USAGE=$(df /mnt/data 2>/dev/null | awk 'NR==2 {gsub(/%/,""); print $5}')
+    # Get disk usage percentage for the exact configured data mount.
+    USAGE=$(df "$MOUNT_POINT" 2>/dev/null | awk 'NR==2 {gsub(/%/,""); print $5}')
     [ -z "$USAGE" ] && return
 
     if [ "$USAGE" -gt "$DISK_THRESHOLD" ]; then
         # Delete oldest week of hourly rollups
-        OLDEST=$(sqlite3 "$DB_PATH" "SELECT MIN(hour_ts) FROM client_traffic_hourly;" 2>/dev/null)
+        OLDEST=$(sqlite_read "SELECT MIN(hour_ts) FROM client_traffic_hourly;")
         [ -z "$OLDEST" ] || [ "$OLDEST" = "" ] && return
 
         CUTOFF=$((OLDEST + 7 * 86400))
-        sqlite3 "$DB_PATH" "DELETE FROM client_traffic_hourly WHERE hour_ts < $CUTOFF;" 2>/dev/null
+        sqlite_write "DELETE FROM client_traffic_hourly WHERE hour_ts < $CUTOFF;"
         logger -t jammonitor "Cleaned old hourly rollups, disk was ${USAGE}%"
 
         # Also run vacuum to reclaim space
-        sqlite3 "$DB_PATH" "VACUUM;" 2>/dev/null
+        sqlite_write "VACUUM;"
     fi
 }
 
 # Cleanup old data
 cleanup() {
     CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
-    sqlite3 "$DB_PATH" "DELETE FROM metrics WHERE ts < $CUTOFF;"
-    sqlite3 "$DB_PATH" "DELETE FROM snapshots WHERE ts < $CUTOFF;"
+    sqlite_write "DELETE FROM metrics WHERE ts < $CUTOFF;"
+    sqlite_write "DELETE FROM snapshots WHERE ts < $CUTOFF;"
+    sqlite_write "DELETE FROM service_health WHERE ts < $CUTOFF;"
 
     # Rollup and cleanup per-client traffic
     rollup_client_traffic
     dynamic_cleanup
 
-    # Cleanup old syslog
+    # Cleanup the legacy archive and timestamped rotations.
     if [ -f "${LOG_PATH}.old" ]; then
         OLDTIME=$(stat -c%Y "${LOG_PATH}.old" 2>/dev/null || stat -f%m "${LOG_PATH}.old" 2>/dev/null || echo 0)
         NOW=$(date +%s)
@@ -446,28 +1095,87 @@ cleanup() {
             rm -f "${LOG_PATH}.old"
         fi
     fi
+    find "$DATA_DIR" -type f -name 'syslog.txt.*' -mtime +"$RETENTION_DAYS" \
+        -exec rm -f {} \; 2>/dev/null
 }
 
+# Stop after defining functions when sourced by the regression suite.
+if [ "$LIB_ONLY" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # Main
-init_db
+if ! init_db; then
+    logger -t jammonitor "FATAL: failed to initialize $DB_PATH"
+    QUICK_CHECK="failed"
+    publish_collector_status
+    exit 1
+fi
+
+LAST_SAMPLE_AT="$(sqlite_read "SELECT COALESCE(MAX(ts), 0) FROM metrics;")"
+is_uint "$LAST_SAMPLE_AT" || LAST_SAMPLE_AT=0
+run_quick_check || {
+    logger -t jammonitor "FATAL: SQLite quick_check returned ${QUICK_CHECK:-no result}"
+    publish_collector_status
+    exit 1
+}
+
+start_syslog_stream
+publish_collector_status
 
 COUNTER=0
 
 while true; do
-    # Collect metrics, snapshots, per-client and per-interface traffic every minute
-    collect_metrics
-    collect_slow
-    collect_client_traffic
-    collect_interface_traffic
-    stream_syslog
+    if ! require_data_mount; then
+        publish_collector_status
+        exit 1
+    fi
+
+    ITERATION_WRITE_FAILED=0
+    METRIC_WRITE_OK=0
+
+    # Collect metrics, snapshots, per-client and per-interface traffic every minute.
+    # A successful metrics row is necessary but not sufficient: any failed
+    # essential SQLite write makes the complete collection cycle unhealthy.
+    if collect_metrics; then
+        LAST_SAMPLE_AT="$TS"
+        METRIC_WRITE_OK=1
+    fi
+
+    collect_slow || true
+    collect_tailscale_health || true
+    collect_client_traffic || true
+    collect_interface_traffic || true
+    maintain_syslog_stream
 
     COUNTER=$((COUNTER + 1))
 
     # Cleanup every hour (60 iterations)
     if [ $COUNTER -ge 60 ]; then
+        if ! run_quick_check; then
+            logger -t jammonitor "FATAL: hourly SQLite quick_check returned ${QUICK_CHECK:-no result}"
+            publish_collector_status
+            exit 1
+        fi
         cleanup
         COUNTER=0
     fi
 
-    sleep 60
+    if [ "$METRIC_WRITE_OK" -eq 1 ] &&
+       [ "$ITERATION_WRITE_FAILED" -eq 0 ]; then
+        LAST_SUCCESS_AT="$LAST_SAMPLE_AT"
+        CONSECUTIVE_WRITE_FAILURES=0
+    else
+        CONSECUTIVE_WRITE_FAILURES=$((CONSECUTIVE_WRITE_FAILURES + 1))
+    fi
+    publish_collector_status
+
+    if [ "$CONSECUTIVE_WRITE_FAILURES" -ge 3 ]; then
+        logger -t jammonitor "FATAL: three consecutive essential collection writes failed; exiting for supervised recovery"
+        exit 1
+    fi
+
+    # As with the log stream, a parent crash must release the singleton lock
+    # immediately instead of waiting for an orphaned sleep to exit.
+    sleep 60 9>&-
 done

@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+#
+# Tailscale procd service for standalone binaries on OpenMPTCProuter.
+# Based on the upstream OpenWrt package service. Stopping the daemon must not
+# persist an administratively disconnected backend state, because that would
+# prevent an ordinary service restart from reconnecting.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+TAILSCALED="/usr/sbin/tailscaled"
+STATE_FILE="/etc/tailscale/tailscaled.state"
+SOCKET_FILE="/var/run/tailscale/tailscaled.sock"
+
+start_service() {
+    mkdir -p /etc/tailscale /var/run/tailscale
+    chmod 0700 /etc/tailscale
+    chmod 0755 /var/run/tailscale
+
+    # Remove stale routes/firewall state from a prior unclean exit.
+    "$TAILSCALED" --cleanup >/dev/null 2>&1 || true
+
+    procd_open_instance
+    procd_set_param command "$TAILSCALED"
+    procd_append_param command --state="$STATE_FILE"
+    procd_append_param command --socket="$SOCKET_FILE"
+    procd_append_param command --tun=tailscale0
+    # Match the upstream OpenWrt package's finite default respawn policy.
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param term_timeout 15
+    procd_close_instance
+}
+
+stop_service() {
+    "$TAILSCALED" --cleanup >/dev/null 2>&1 || true
+}

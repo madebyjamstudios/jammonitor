@@ -13,6 +13,8 @@
 # held in private temporary files and deleted after every observation.
 
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+LC_ALL=C
+export LC_ALL
 
 TAILSCALE_CLI="${TAILSCALE_CLI:-/usr/sbin/tailscale}"
 TAILSCALE_INIT="${TAILSCALE_INIT:-/etc/init.d/tailscale}"
@@ -24,7 +26,9 @@ CONTINUITY_BREAK_FILE="${WATCHDOG_CONTINUITY_BREAK_FILE:-${STATE_DIR}/tailscale-
 MAINTENANCE_FILE="${WATCHDOG_MAINTENANCE_FILE:-${STATE_DIR}/tailscale-maintenance}"
 CRITICAL_PEER_FILE="${WATCHDOG_CRITICAL_PEER_FILE:-/etc/jammonitor/tailscale-critical-peer}"
 LOCK_FILE="${WATCHDOG_LOCK_FILE:-${STATE_DIR}/tailscale-watchdog.lock}"
+INSTALL_LOCK_FILE="${WATCHDOG_INSTALL_LOCK_FILE:-${STATE_DIR}/router-install.lock}"
 PROC_ROOT="${WATCHDOG_PROC_ROOT:-/proc}"
+FD_ROOT="${WATCHDOG_FD_ROOT:-/proc/self/fd}"
 UPTIME_FILE="${WATCHDOG_UPTIME_FILE:-/proc/uptime}"
 PROCESS_NAME="${WATCHDOG_PROCESS_NAME:-tailscaled}"
 PROCESS_BINARY="${WATCHDOG_PROCESS_BINARY:-/usr/sbin/tailscaled}"
@@ -40,6 +44,9 @@ FAILURE_THRESHOLD="${WATCHDOG_FAILURE_THRESHOLD:-3}"
 VALID_STREAK_REQUIRED="${WATCHDOG_VALID_STREAK_REQUIRED:-5}"
 BOOT_GRACE="${WATCHDOG_BOOT_GRACE:-120}"
 RESTART_TIMEOUT="${WATCHDOG_RESTART_TIMEOUT:-30}"
+# Logging is diagnostic only. Never let a blocked local logging stack stall
+# observations, recovery decisions, or singleton handoff.
+LOGGER_TIMEOUT=2
 # Recovery authority is a fixed safety contract, not a tunable threshold.
 RECOVERY_MAX_ATTEMPTS=3
 RECOVERY_RETRY_SHORT=60
@@ -49,6 +56,10 @@ CLOCK_TICKS="${WATCHDOG_CLOCK_TICKS:-100}"
 CONTINUITY_MAX_GAP="${WATCHDOG_CONTINUITY_MAX_GAP:-30}"
 # POSIX ulimit -f uses 512-byte blocks. Keep raw LocalAPI output at 64 KiB.
 STATUS_FILE_BLOCKS=128
+# This accommodates the complete fixed schema with 100 maximum-width members
+# in each projected array. It rejects pathological type vectors before ash can
+# spend thousands of interpreted iterations on attacker-shaped LocalAPI data.
+PROJECTION_TYPE_HEADER_MAX_BYTES=2048
 
 TIMEOUT_CMD="${WATCHDOG_TIMEOUT_CMD:-timeout}"
 LOGGER_CMD="${WATCHDOG_LOGGER_CMD:-logger}"
@@ -289,22 +300,92 @@ mkdir -p "$STATE_DIR" || exit 1
 chmod 0700 "$STATE_DIR" 2>/dev/null || true
 
 ACTIVE_CHILD=""
+ACTIVE_LOG_CHILD=""
+INSTALL_LOCK_TRUSTED=0
+INSTALL_LOCK_IDENTITY=""
+INSTALL_LOCK_HELD=0
+INSTALL_TRANSACTION_STATE="unknown"
 STATUS_OUTPUT="${STATE_DIR}/tailscale-status.$$"
 STATUS_ERROR="${STATE_DIR}/tailscale-status-error.$$"
+STATUS_PROJECTION="${STATE_DIR}/tailscale-status-projection.$$"
+
+terminate_child_pid() {
+    _terminate_pid="$1"
+    if [ -n "$_terminate_pid" ]; then
+        kill -TERM "$_terminate_pid" 2>/dev/null || true
+        (
+            /bin/sleep 1
+            kill -KILL "$_terminate_pid" 2>/dev/null || true
+        ) 7>&- 9>&- &
+        _terminate_killer=$!
+        wait "$_terminate_pid" 2>/dev/null || true
+        kill "$_terminate_killer" 2>/dev/null || true
+        wait "$_terminate_killer" 2>/dev/null || true
+    fi
+}
 
 terminate_active_child() {
-    if [ -n "$ACTIVE_CHILD" ]; then
-        kill "$ACTIVE_CHILD" 2>/dev/null || true
-        wait "$ACTIVE_CHILD" 2>/dev/null || true
-        ACTIVE_CHILD=""
-    fi
+    terminate_child_pid "$ACTIVE_LOG_CHILD"
+    ACTIVE_LOG_CHILD=""
+    terminate_child_pid "$ACTIVE_CHILD"
+    ACTIVE_CHILD=""
+}
+
+clear_status_artifacts() {
+    _clear_status_rc=0
+    clear_raw_status_artifacts || _clear_status_rc=1
+    clear_projection_artifact || _clear_status_rc=1
+    [ "$_clear_status_rc" -eq 0 ]
+}
+
+clear_raw_status_artifacts() {
+    rm -f "$STATUS_OUTPUT" "$STATUS_ERROR" 9>&- || return 1
+    [ ! -e "$STATUS_OUTPUT" ] && [ ! -L "$STATUS_OUTPUT" ] &&
+        [ ! -e "$STATUS_ERROR" ] && [ ! -L "$STATUS_ERROR" ]
+}
+
+clear_projection_artifact() {
+    rm -f "$STATUS_PROJECTION" 9>&- || return 1
+    [ ! -e "$STATUS_PROJECTION" ] && [ ! -L "$STATUS_PROJECTION" ]
+}
+
+remove_stale_status_artifacts() {
+    for _stale_path in \
+        "$STATE_DIR"/tailscale-status.[0-9]* \
+        "$STATE_DIR"/tailscale-status-error.[0-9]* \
+        "$STATE_DIR"/tailscale-status-projection.[0-9]*
+    do
+        [ -e "$_stale_path" ] || [ -L "$_stale_path" ] || continue
+        _stale_basename="${_stale_path##*/}"
+        case "$_stale_basename" in
+            tailscale-status-error.*)
+                _stale_suffix="${_stale_basename#tailscale-status-error.}"
+                ;;
+            tailscale-status-projection.*)
+                _stale_suffix="${_stale_basename#tailscale-status-projection.}"
+                ;;
+            tailscale-status.*)
+                _stale_suffix="${_stale_basename#tailscale-status.}"
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        case "$_stale_suffix" in
+            ""|*[!0-9]*) continue ;;
+        esac
+        rm -f "$_stale_path" 9>&- || return 1
+        [ ! -e "$_stale_path" ] && [ ! -L "$_stale_path" ] ||
+            return 1
+    done
 }
 
 cleanup() {
     terminate_active_child
-    rm -f "$STATUS_OUTPUT" "$STATUS_ERROR"
-    # The persistent lock inode is never removed. Descriptor 9 remains the
-    # singleton authority and is released atomically by process exit.
+    release_install_lock
+    clear_status_artifacts 2>/dev/null || true
+    # Neither persistent lock inode is removed. Descriptors 7 and 9 are
+    # released atomically by close or process exit.
 }
 
 handle_signal() {
@@ -331,6 +412,140 @@ acquire_lock() {
     return 0
 }
 
+prepare_install_lock() {
+    _install_lock_created=0
+    if [ ! -e "$INSTALL_LOCK_FILE" ] &&
+       [ ! -L "$INSTALL_LOCK_FILE" ]; then
+        if (
+            set -C
+            umask 077
+            : > "$INSTALL_LOCK_FILE"
+        ) 2>/dev/null; then
+            _install_lock_created=1
+        fi
+    fi
+
+    [ -f "$INSTALL_LOCK_FILE" ] &&
+        [ ! -L "$INSTALL_LOCK_FILE" ] ||
+        return 1
+    if [ "$_install_lock_created" -eq 1 ]; then
+        chmod 0600 "$INSTALL_LOCK_FILE" || return 1
+    fi
+    _install_lock_metadata="$(
+        "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$INSTALL_LOCK_FILE" 2>/dev/null
+    )" || return 1
+    _old_ifs="$IFS"
+    IFS=:
+    set -- $_install_lock_metadata
+    IFS="$_old_ifs"
+    [ "$#" -eq 7 ] &&
+        [ "$1" = "$EXPECTED_ROOT_UID" ] &&
+        [ "$2" = "$EXPECTED_ROOT_GID" ] &&
+        [ "$3" = "600" ] &&
+        [ "$4" = "1" ] &&
+        is_uint "$5" &&
+        is_uint "$6" &&
+        is_uint "$7" &&
+        [ "$7" -le 1024 ] ||
+        return 1
+    INSTALL_LOCK_IDENTITY="$_install_lock_metadata"
+    INSTALL_LOCK_TRUSTED=1
+}
+
+release_install_lock() {
+    if [ "$INSTALL_LOCK_HELD" -eq 1 ]; then
+        exec 7>&-
+        INSTALL_LOCK_HELD=0
+    fi
+}
+
+acquire_install_lock() {
+    [ "$INSTALL_LOCK_TRUSTED" -eq 1 ] &&
+        [ -n "$INSTALL_LOCK_IDENTITY" ] ||
+        return 2
+    _install_lock_before="$(
+        "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$INSTALL_LOCK_FILE" 2>/dev/null
+    )" || return 2
+    [ "$_install_lock_before" = "$INSTALL_LOCK_IDENTITY" ] ||
+        return 2
+    exec 7<>"$INSTALL_LOCK_FILE" || return 2
+    _install_lock_fd="$(
+        "$STAT_CMD" -L -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$FD_ROOT/7" 2>/dev/null
+    )" || {
+        exec 7>&-
+        return 2
+    }
+    _install_lock_after="$(
+        "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$INSTALL_LOCK_FILE" 2>/dev/null
+    )" || {
+        exec 7>&-
+        return 2
+    }
+    if [ "$_install_lock_fd" != "$INSTALL_LOCK_IDENTITY" ] ||
+       [ "$_install_lock_after" != "$INSTALL_LOCK_IDENTITY" ]; then
+        exec 7>&-
+        return 2
+    fi
+
+    "$FLOCK_CMD" -n 7
+    _install_lock_rc=$?
+    if [ "$_install_lock_rc" -eq 0 ]; then
+        # The pathname can be replaced after the pre-flock join while this
+        # descriptor still names the original inode. Rejoin both sides after
+        # kernel ownership is established, before granting restart authority.
+        _install_lock_fd="$(
+            "$STAT_CMD" -L -c '%u:%g:%a:%h:%d:%i:%s' \
+                "$FD_ROOT/7" 2>/dev/null
+        )" || {
+            exec 7>&-
+            return 2
+        }
+        _install_lock_after="$(
+            "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+                "$INSTALL_LOCK_FILE" 2>/dev/null
+        )" || {
+            exec 7>&-
+            return 2
+        }
+        if [ "$_install_lock_fd" != "$INSTALL_LOCK_IDENTITY" ] ||
+           [ "$_install_lock_after" != "$INSTALL_LOCK_IDENTITY" ]; then
+            exec 7>&-
+            return 2
+        fi
+        INSTALL_LOCK_HELD=1
+        return 0
+    fi
+    exec 7>&-
+    if [ "$_install_lock_rc" -eq 1 ]; then
+        return 1
+    fi
+    return 2
+}
+
+inspect_install_transaction() {
+    INSTALL_TRANSACTION_STATE="unknown"
+    acquire_install_lock
+    _install_lock_rc=$?
+    case "$_install_lock_rc" in
+        0)
+            INSTALL_TRANSACTION_STATE="idle"
+            release_install_lock
+            return 0
+            ;;
+        1)
+            INSTALL_TRANSACTION_STATE="active"
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 command -v "$FLOCK_CMD" >/dev/null 2>&1 || {
     printf 'jammonitor-tailscale-watchdog: flock command unavailable: %s\n' \
         "$FLOCK_CMD" >&2
@@ -345,6 +560,13 @@ elif [ "$_lock_rc" -ne 0 ]; then
         "$LOCK_FILE" >&2
     exit 1
 fi
+prepare_install_lock || INSTALL_LOCK_TRUSTED=0
+remove_stale_status_artifacts || {
+    printf '%s\n' \
+        'jammonitor-tailscale-watchdog: cannot clear stale status artifacts' \
+        >&2
+    exit 1
+}
 
 sanitize_token() {
     printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9_.:-' | cut -c1-128
@@ -498,7 +720,12 @@ now_monotonic() {
 }
 
 log_event() {
-    "$LOGGER_CMD" -t jammonitor-tailscale-watchdog -- "$*" 2>/dev/null || true
+    "$TIMEOUT_CMD" -s TERM -k 2 "$LOGGER_TIMEOUT" \
+        "$LOGGER_CMD" -t jammonitor-tailscale-watchdog -- "$*" \
+        </dev/null >/dev/null 2>&1 7>&- 9>&- &
+    ACTIVE_LOG_CHILD=$!
+    wait "$ACTIVE_LOG_CHILD" 2>/dev/null || true
+    ACTIVE_LOG_CHILD=""
 }
 
 save_memory() {
@@ -747,7 +974,7 @@ query_init_state() {
 
     "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
         "$TAILSCALE_INIT" "$_init_action" \
-        9>&- >/dev/null 2>&1 &
+        7>&- 9>&- >/dev/null 2>&1 &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD"
     _init_rc=$?
@@ -759,96 +986,388 @@ query_init_state() {
     esac
 }
 
-json_value() {
-    "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -e "$1" 2>/dev/null | head -n 1
+run_projection_capture() {
+    : > "$STATUS_PROJECTION" || {
+        PROJECTION_FAILURE_REASON="status_parse_error"
+        return 1
+    }
+    PROJECTION_STARTED_CENTISECONDS="$(command_monotonic)"
+    "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
+        /bin/sh -c \
+        'ulimit -f "$1" || exit 125; shift; exec "$@"' \
+        jammonitor-projection-limit "$STATUS_FILE_BLOCKS" \
+        "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" "$@" \
+        7>&- 9>&- >"$STATUS_PROJECTION" 2>/dev/null &
+    ACTIVE_CHILD=$!
+    wait "$ACTIVE_CHILD"
+    PROJECTION_RC=$?
+    ACTIVE_CHILD=""
+    PROJECTION_FINISHED_CENTISECONDS="$(command_monotonic)"
+    PROJECTION_DEADLINE_REACHED=false
+    if is_uint "$PROJECTION_STARTED_CENTISECONDS" &&
+       is_uint "$PROJECTION_FINISHED_CENTISECONDS" &&
+       [ "$PROJECTION_STARTED_CENTISECONDS" -gt 0 ] &&
+       [ "$PROJECTION_FINISHED_CENTISECONDS" -ge \
+           "$PROJECTION_STARTED_CENTISECONDS" ] &&
+       [ $((PROJECTION_FINISHED_CENTISECONDS -
+               PROJECTION_STARTED_CENTISECONDS)) -ge \
+           $((STATUS_TIMEOUT * 100)) ]; then
+        PROJECTION_DEADLINE_REACHED=true
+    fi
+
+    case "$PROJECTION_RC" in
+        0|1)
+            ;;
+        124|137|143)
+            if [ "$PROJECTION_DEADLINE_REACHED" = "true" ]; then
+                PROJECTION_FAILURE_REASON="status_parse_timeout"
+            else
+                PROJECTION_FAILURE_REASON="status_parse_error"
+            fi
+            return 1
+            ;;
+        *)
+            PROJECTION_FAILURE_REASON="status_parse_error"
+            return 1
+            ;;
+    esac
+
+    _projection_size="$(
+        exec 9>&-
+        wc -c < "$STATUS_PROJECTION" 2>/dev/null | tr -d ' \r\n'
+    )" || {
+        PROJECTION_FAILURE_REASON="status_parse_error"
+        return 1
+    }
+    is_uint "$_projection_size" &&
+        [ "$_projection_size" -le 65536 ] || {
+            PROJECTION_FAILURE_REASON="status_parse_error"
+            return 1
+        }
 }
 
-json_type() {
-    "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -t "$1" 2>/dev/null | head -n 1
+projection_type_is_valid() {
+    case "$1" in
+        string|boolean|array|object|null|int|double) ;;
+        *) return 1 ;;
+    esac
 }
 
-json_string() {
-    [ "$(json_type "$1")" = "string" ] || return 0
-    json_value "$1"
+parse_projection_type_sequence() {
+    _type_sequence="$1"
+    PROJECTED_MEMBER_TYPES=""
+    PROJECTED_MEMBER_COUNT=0
+    while [ -n "$_type_sequence" ]; do
+        case "$_type_sequence" in
+            *\\\ *)
+                _member_type="${_type_sequence%%\\ *}"
+                _type_sequence="${_type_sequence#*\\ }"
+                ;;
+            *)
+                _member_type="$_type_sequence"
+                _type_sequence=""
+                ;;
+        esac
+        projection_type_is_valid "$_member_type" || return 1
+        PROJECTED_MEMBER_COUNT=$((PROJECTED_MEMBER_COUNT + 1))
+        PROJECTED_MEMBER_TYPES="${PROJECTED_MEMBER_TYPES}${_member_type} "
+    done
 }
 
-json_string_exact() {
-    JSON_STRING_VALUE=""
-    [ "$(json_type "$1")" = "string" ] || return 1
-    _json_exact_capture="$(
-        "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -e "$1" 2>/dev/null
-        _json_exact_rc=$?
-        # A non-newline sentinel prevents command substitution from erasing
-        # trailing newlines that are part of the decoded JSON string.
-        printf .
-        exit "$_json_exact_rc"
-    )" || return 1
-    _json_exact_with_delimiter="${_json_exact_capture%?}"
-    case "$_json_exact_with_delimiter" in
-        *'
-')
-            # jsonfilter contributes exactly one record delimiter. Remove only
-            # that byte, leaving any newline inside the JSON value visible to
-            # the exact token/IP validators.
-            JSON_STRING_VALUE="${_json_exact_with_delimiter%
-}"
+parse_projection_type_header() {
+    _type_header="$1"
+    case "$_type_header" in
+        object)
+            _type_exports=""
+            ;;
+        *'; object')
+            _type_exports="${_type_header% object} "
             ;;
         *)
             return 1
             ;;
     esac
-}
 
-json_boolean() {
-    [ "$(json_type "$1")" = "boolean" ] || {
-        printf 'null'
-        return
-    }
-    _boolean="$(json_value "$1")"
-    case "$_boolean" in
-        true|false) printf '%s' "$_boolean" ;;
-        *) printf 'null' ;;
-    esac
-}
+    TYPE_BACKEND=""
+    TYPE_IP_ARRAY=""
+    TYPE_KEY_EXPIRY=""
+    TYPE_ONLINE=""
+    TYPE_TUN=""
+    TYPE_HEALTH=""
+    TYPE_IP_MEMBERS=""
+    TYPE_HEALTH_MEMBERS=""
+    TYPE_IP_MEMBERS_NORMALIZED=""
+    TYPE_HEALTH_MEMBERS_NORMALIZED=""
+    _last_type_index=0
 
-inspect_health_warnings() {
-    HEALTH_SCHEMA_VALID=false
-    HEALTH_WARNINGS=0
-    [ "$(json_type '@.Health')" = "array" ] || return
-    _health_types="$(
-        "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -t '@.Health[*]' 2>/dev/null
-    )"
-    _count=0
-    while [ -n "$_health_types" ]; do
-        case "$_health_types" in
-            string)
-                _count=$((_count + 1))
-                _health_types=""
-                ;;
-            string\\\ *)
-                _count=$((_count + 1))
-                _health_types="${_health_types#string\\ }"
+    while [ -n "$_type_exports" ]; do
+        case "$_type_exports" in
+            'export '*'; '*)
+                _type_entry="${_type_exports%%; *}"
+                _type_exports="${_type_exports#*"$_type_entry; "}"
                 ;;
             *)
-                return
+                return 1
                 ;;
         esac
-        [ "$_count" -le 100 ] || return
+        _type_assignment="${_type_entry#export }"
+        _type_name="${_type_assignment%%=*}"
+        _type_value="${_type_assignment#*=}"
+        [ "$_type_name" != "$_type_assignment" ] || return 1
+
+        case "$_type_name" in
+            JM_BT) _type_index=1; TYPE_BACKEND="$_type_value" ;;
+            JM_IAT) _type_index=2; TYPE_IP_ARRAY="$_type_value" ;;
+            JM_KT) _type_index=3; TYPE_KEY_EXPIRY="$_type_value" ;;
+            JM_OT) _type_index=4; TYPE_ONLINE="$_type_value" ;;
+            JM_TT) _type_index=5; TYPE_TUN="$_type_value" ;;
+            JM_HT) _type_index=6; TYPE_HEALTH="$_type_value" ;;
+            JM_IPT) _type_index=7; TYPE_IP_MEMBERS="$_type_value" ;;
+            JM_HET) _type_index=8; TYPE_HEALTH_MEMBERS="$_type_value" ;;
+            *) return 1 ;;
+        esac
+        [ "$_type_index" -gt "$_last_type_index" ] || return 1
+        _last_type_index="$_type_index"
+        case "$_type_name" in
+            JM_IPT)
+                parse_projection_type_sequence "$_type_value" || return 1
+                TYPE_IP_MEMBERS_NORMALIZED="$PROJECTED_MEMBER_TYPES"
+                ;;
+            JM_HET)
+                parse_projection_type_sequence "$_type_value" || return 1
+                TYPE_HEALTH_MEMBERS_NORMALIZED="$PROJECTED_MEMBER_TYPES"
+                ;;
+            *)
+                projection_type_is_valid "$_type_value" || return 1
+                ;;
+        esac
     done
-    if ! "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" \
-        -e '@.Health[*]' 2>/dev/null |
-        awk -v expected="$_count" '
-            length($0) > 512 { invalid = 1 }
-            { count += 1 }
-            END {
-                if (invalid || count != expected) exit 1
-            }
-        '
-    then
-        return
+}
+
+type_emits_value() {
+    [ -n "$1" ] && [ "$1" != "null" ]
+}
+
+reset_projected_status_fields() {
+    BACKEND_STATE=""
+    TAILSCALE_IP=""
+    SELF_IP_KEYS=""
+    KEY_EXPIRY=""
+    CONTROL_ONLINE=null
+    TUN_AVAILABLE=null
+    HEALTH_WARNINGS=0
+    HEALTH_SCHEMA_VALID=false
+}
+
+project_status_fields() {
+    PROJECTION_FAILURE_REASON=""
+    reset_projected_status_fields
+    grep -Fq '\u0000' "$STATUS_OUTPUT" 2>/dev/null 9>&-
+    _raw_nul_scan_rc=$?
+    case "$_raw_nul_scan_rc" in
+        0)
+            PROJECTION_FAILURE_REASON="invalid_status_json"
+            if ! clear_raw_status_artifacts; then
+                PROJECTION_FAILURE_REASON="status_artifact_cleanup_failed"
+            fi
+            return 1
+            ;;
+        1)
+            ;;
+        *)
+            PROJECTION_FAILURE_REASON="status_parse_error"
+            if ! clear_raw_status_artifacts; then
+                PROJECTION_FAILURE_REASON="status_artifact_cleanup_failed"
+            fi
+            return 1
+            ;;
+    esac
+
+    _projection_capture_valid=true
+    if ! run_projection_capture \
+        -t 'JM_BT=@.BackendState' \
+        -t 'JM_IAT=@.Self.TailscaleIPs' \
+        -t 'JM_KT=@.Self.KeyExpiry' \
+        -t 'JM_OT=@.Self.Online' \
+        -t 'JM_TT=@.TUN' \
+        -t 'JM_HT=@.Health' \
+        -t 'JM_IPT=@.Self.TailscaleIPs[*]' \
+        -t 'JM_HET=@.Health[*]' \
+        -t '@' \
+        -e '@.BackendState' \
+        -e '@.Self.KeyExpiry' \
+        -e '@.Self.Online' \
+        -e '@.TUN' \
+        -t '@' \
+        -e '@.Self.TailscaleIPs[*]' \
+        -t '@' \
+        -e '@.Health[*]' \
+        -t '@'; then
+        _projection_capture_valid=false
+        _projection_capture_failure="$PROJECTION_FAILURE_REASON"
     fi
-    HEALTH_WARNINGS="$_count"
-    HEALTH_SCHEMA_VALID=true
+    if ! clear_raw_status_artifacts; then
+        PROJECTION_FAILURE_REASON="status_artifact_cleanup_failed"
+        return 1
+    fi
+    if [ "$_projection_capture_valid" != "true" ]; then
+        PROJECTION_FAILURE_REASON="$_projection_capture_failure"
+        return 1
+    fi
+
+    exec 8< "$STATUS_PROJECTION" || {
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    }
+    IFS= read -r _type_header <&8 || {
+        exec 8<&-
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    }
+    if [ "${#_type_header}" -gt "$PROJECTION_TYPE_HEADER_MAX_BYTES" ]; then
+        exec 8<&-
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    fi
+    parse_projection_type_header "$_type_header" || {
+        exec 8<&-
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    }
+
+    BACKEND_STATE=""
+    KEY_EXPIRY=""
+    CONTROL_ONLINE=null
+    TUN_AVAILABLE=null
+    for _scalar_name in backend key online tun; do
+        case "$_scalar_name" in
+            backend) _scalar_type="$TYPE_BACKEND" ;;
+            key) _scalar_type="$TYPE_KEY_EXPIRY" ;;
+            online) _scalar_type="$TYPE_ONLINE" ;;
+            tun) _scalar_type="$TYPE_TUN" ;;
+        esac
+        _scalar_value=""
+        if type_emits_value "$_scalar_type"; then
+            IFS= read -r _scalar_value <&8 || {
+                exec 8<&-
+                PROJECTION_FAILURE_REASON="invalid_status_json"
+                return 1
+            }
+        fi
+        case "$_scalar_name:$_scalar_type" in
+            backend:string) BACKEND_STATE="$_scalar_value" ;;
+            key:string)
+                KEY_EXPIRY="$(
+                    sanitize_token "$_scalar_value" 8>&- 9>&-
+                )"
+                ;;
+            online:boolean)
+                case "$_scalar_value" in
+                    true|false) CONTROL_ONLINE="$_scalar_value" ;;
+                esac
+                ;;
+            tun:boolean)
+                case "$_scalar_value" in
+                    true|false) TUN_AVAILABLE="$_scalar_value" ;;
+                esac
+                ;;
+        esac
+    done
+    IFS= read -r _scalar_anchor <&8 &&
+        [ "$_scalar_anchor" = "object" ] || {
+            exec 8<&-
+            PROJECTION_FAILURE_REASON="invalid_status_json"
+            return 1
+        }
+    if [ "$TYPE_BACKEND" != "string" ] ||
+       ! is_safe_token "$BACKEND_STATE"; then
+        exec 8<&-
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    fi
+
+    TAILSCALE_IP=""
+    SELF_IP_KEYS=""
+    _ip_projection_valid=true
+    _ip_index=0
+    _ip_types_normalized="$TYPE_IP_MEMBERS_NORMALIZED"
+    for _ip_member_type in $_ip_types_normalized; do
+        _ip_index=$((_ip_index + 1))
+        _ip_member=""
+        if type_emits_value "$_ip_member_type"; then
+            IFS= read -r _ip_member <&8 || {
+                exec 8<&-
+                PROJECTION_FAILURE_REASON="invalid_status_json"
+                return 1
+            }
+        fi
+        [ "$_ip_member_type" = "string" ] ||
+            _ip_projection_valid=false
+        if [ "$_ip_member_type" = "string" ]; then
+            if is_tailscale_ip "$_ip_member" 8>&- 9>&-; then
+                _ip_key="$(
+                    tailscale_ip_key "$_ip_member" 8>&- 9>&-
+                )" ||
+                    _ip_projection_valid=false
+                [ "$_ip_index" -eq 1 ] && TAILSCALE_IP="$_ip_member"
+                SELF_IP_KEYS="${SELF_IP_KEYS}${_ip_key} "
+            else
+                _ip_projection_valid=false
+            fi
+        fi
+    done
+    IFS= read -r _ip_anchor <&8 &&
+        [ "$_ip_anchor" = "object" ] || {
+            exec 8<&-
+            PROJECTION_FAILURE_REASON="invalid_status_json"
+            return 1
+        }
+    if [ "$TYPE_IP_ARRAY" != "array" ] ||
+       [ "$_ip_projection_valid" != "true" ] ||
+       [ "$_ip_index" -eq 0 ] ||
+       [ "$_ip_index" -gt 100 ]; then
+        TAILSCALE_IP=""
+        SELF_IP_KEYS=""
+    fi
+
+    HEALTH_WARNINGS=0
+    HEALTH_SCHEMA_VALID=false
+    _health_projection_valid=true
+    _health_count=0
+    _health_types_normalized="$TYPE_HEALTH_MEMBERS_NORMALIZED"
+    for _health_member_type in $_health_types_normalized; do
+        _health_value=""
+        if type_emits_value "$_health_member_type"; then
+            IFS= read -r _health_value <&8 || {
+                exec 8<&-
+                PROJECTION_FAILURE_REASON="invalid_status_json"
+                return 1
+            }
+        fi
+        _health_count=$((_health_count + 1))
+        [ "$_health_member_type" = "string" ] &&
+            [ "${#_health_value}" -le 512 ] ||
+            _health_projection_valid=false
+    done
+    IFS= read -r _health_anchor <&8 &&
+        [ "$_health_anchor" = "object" ] || {
+            exec 8<&-
+            PROJECTION_FAILURE_REASON="invalid_status_json"
+            return 1
+        }
+    if IFS= read -r _projection_extra <&8; then
+        exec 8<&-
+        PROJECTION_FAILURE_REASON="invalid_status_json"
+        return 1
+    fi
+    exec 8<&-
+
+    if [ "$TYPE_HEALTH" = "array" ] &&
+       [ "$_health_projection_valid" = "true" ] &&
+       [ "$_health_count" -le 100 ]; then
+        HEALTH_WARNINGS="$_health_count"
+        HEALTH_SCHEMA_VALID=true
+    fi
 }
 
 command_monotonic() {
@@ -908,7 +1427,7 @@ run_status_query() {
         'ulimit -f "$1" || exit 125; shift; exec "$@"' \
         jammonitor-status-limit "$STATUS_FILE_BLOCKS" "$TAILSCALE_CLI" \
         --socket="$TAILSCALE_SOCKET" status --json --peers=false \
-        9>&- >"$STATUS_OUTPUT" 2>"$STATUS_ERROR" &
+        7>&- 9>&- >"$STATUS_OUTPUT" 2>"$STATUS_ERROR" &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD"
     STATUS_RC=$?
@@ -1089,7 +1608,11 @@ capture_process_generation() {
             continue
         }
 
-        _exe_path="$("$READLINK_CMD" "$PROC_ROOT/$_pid/exe" 2>/dev/null)" ||
+        _exe_path="$(
+            exec 7>&- 9>&-
+            "$READLINK_CMD" "$PROC_ROOT/$_pid/exe" \
+                2>/dev/null
+        )" ||
             continue
         [ "$_exe_path" = "$PROCESS_BINARY" ] || continue
 
@@ -1100,7 +1623,9 @@ capture_process_generation() {
         IFS= read -r _stat_line_after < "$_stat_path" || continue
         [ "$_stat_line_after" = "$_stat_line" ] || continue
         _exe_path_after="$(
-            "$READLINK_CMD" "$PROC_ROOT/$_pid/exe" 2>/dev/null
+            exec 7>&- 9>&-
+            "$READLINK_CMD" "$PROC_ROOT/$_pid/exe" \
+                2>/dev/null
         )" || continue
         [ "$_exe_path_after" = "$PROCESS_BINARY" ] || continue
 
@@ -1195,6 +1720,7 @@ set_process_join_failure() {
     LOCAL_API_RESPONSIVE=null
     BACKEND_STATE=""
     TAILSCALE_IP=""
+    SELF_IP_KEYS=""
     KEY_EXPIRY=""
     CONTROL_ONLINE=null
     TUN_AVAILABLE=null
@@ -1216,6 +1742,20 @@ publish_process_join_failure() {
     publish_status
 }
 
+publish_artifact_cleanup_failure() {
+    STATUS="watchdog_error"
+    REASON="status_artifact_cleanup_failed"
+    HEALTHY=false
+    CONNECTED=null
+    DEGRADED=false
+    LOCAL_API_RESPONSIVE=null
+    reset_projected_status_fields
+    RECOVERABLE=false
+    record_invalid_response
+    CONSECUTIVE_FAILURES=0
+    publish_status
+}
+
 inspect_maintenance_marker() {
     MAINTENANCE_STATE="none"
     MAINTENANCE_EXPIRES_AT=0
@@ -1234,6 +1774,7 @@ inspect_maintenance_marker() {
     fi
 
     _marker_before="$(
+        exec 7>&- 9>&-
         "$STAT_CMD" -c '%u:%g:%a:%d:%i:%s' \
             "$MAINTENANCE_FILE" 2>/dev/null
     )" || {
@@ -1262,6 +1803,7 @@ inspect_maintenance_marker() {
         return
     }
     _marker_after="$(
+        exec 7>&- 9>&-
         "$STAT_CMD" -c '%u:%g:%a:%d:%i:%s' \
             "$MAINTENANCE_FILE" 2>/dev/null
     )" || {
@@ -1304,7 +1846,7 @@ observe_peer() {
     "$TIMEOUT_CMD" -s TERM -k 2 "$PEER_TIMEOUT" "$TAILSCALE_CLI" \
         --socket="$TAILSCALE_SOCKET" ping \
         --tsmp --c=1 --timeout=3s --until-direct=false -- "$CRITICAL_PEER" \
-        9>&- >/dev/null 2>&1 &
+        7>&- 9>&- >/dev/null 2>&1 &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD"
     _peer_rc=$?
@@ -1328,15 +1870,10 @@ critical_peer_is_self() {
         [ -n "$CRITICAL_PEER" ] || return 1
     _critical_peer_key="$(tailscale_ip_key "$CRITICAL_PEER")" || return 1
 
-    "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" \
-        -e '@.Self.TailscaleIPs[*]' 2>/dev/null |
-        (
-            while IFS= read -r _self_ip; do
-                _self_ip_key="$(tailscale_ip_key "$_self_ip")" || continue
-                [ "$_critical_peer_key" = "$_self_ip_key" ] && exit 0
-            done
-            exit 1
-        )
+    for _self_ip_key in $SELF_IP_KEYS; do
+        [ "$_critical_peer_key" = "$_self_ip_key" ] && return 0
+    done
+    return 1
 }
 
 record_valid_response() {
@@ -1362,7 +1899,9 @@ file_metadata_matches() {
     [ -f "$_metadata_path" ] &&
         [ ! -L "$_metadata_path" ] || return 1
     _metadata="$(
-        "$STAT_CMD" -c '%u:%g:%a' "$_metadata_path" 2>/dev/null
+        exec 7>&- 9>&-
+        "$STAT_CMD" -c '%u:%g:%a' "$_metadata_path" \
+            2>/dev/null
     )" || return 1
     [ "$_metadata" = \
         "${EXPECTED_ROOT_UID}:${EXPECTED_ROOT_GID}:${_metadata_mode}" ]
@@ -1373,7 +1912,10 @@ hash_regular_file() {
     HASHED_FILE_SHA256=""
     [ -f "$_hash_path" ] &&
         [ ! -L "$_hash_path" ] || return 1
-    _hash_output="$("$SHA256_CMD" "$_hash_path" 2>/dev/null)" ||
+    _hash_output="$(
+        exec 7>&- 9>&-
+        "$SHA256_CMD" "$_hash_path" 2>/dev/null
+    )" ||
         return 1
     set -- $_hash_output
     [ "$#" -ge 1 ] && is_sha256 "$1" || return 1
@@ -1390,12 +1932,14 @@ verify_init_integrity() {
     file_metadata_matches "$TAILSCALE_INIT" 755 || return 1
 
     _manifest_size="$(
+        exec 7>&- 9>&-
         wc -c < "$ROUTER_MANIFEST" 2>/dev/null | tr -d ' \r\n'
     )"
     is_uint "$_manifest_size" &&
         [ "$_manifest_size" -gt 0 ] &&
         [ "$_manifest_size" -le 65536 ] || return 1
     _digest_size="$(
+        exec 7>&- 9>&-
         wc -c < "$ROUTER_MANIFEST_DIGEST" 2>/dev/null |
             tr -d ' \r\n'
     )"
@@ -1482,7 +2026,27 @@ rollback_unspent_restart_latch() {
 final_restart_authority_is_valid() {
     FINAL_RESTART_SUPPRESSION=""
 
+    # Acquire before every final mutable proof. A transaction that completed
+    # between an earlier generation check and this lock could otherwise make
+    # stale state look current. Proof helpers close descriptor 7 only in their
+    # child context; this shell retains the kernel lock throughout.
+    acquire_install_lock
+    _final_install_lock_rc=$?
+    case "$_final_install_lock_rc" in
+        0)
+            ;;
+        1)
+            FINAL_RESTART_SUPPRESSION="install_transaction_active"
+            return 1
+            ;;
+        *)
+            FINAL_RESTART_SUPPRESSION="install_lock_invalid"
+            return 1
+            ;;
+    esac
+
     if ! verify_init_integrity; then
+        release_install_lock
         FINAL_RESTART_SUPPRESSION="init_integrity_unknown"
         return 1
     fi
@@ -1490,39 +2054,36 @@ final_restart_authority_is_valid() {
     query_init_state running
     case "$_restart_expected_running:$INIT_QUERY_STATE" in
         true:true)
-            if ! verify_process_generation_join \
-                "$_restart_expected_generation"; then
-                FINAL_RESTART_SUPPRESSION="process_generation_changed"
-                set_process_join_failure
-                return 1
-            fi
             ;;
         false:false)
-            if ! prove_process_generation_absent; then
-                FINAL_RESTART_SUPPRESSION="process_presence_unknown"
-                return 1
-            fi
             ;;
         true:false|false:true)
+            release_install_lock
             FINAL_RESTART_SUPPRESSION="supervisor_state_changed"
             return 1
             ;;
         *)
+            release_install_lock
             FINAL_RESTART_SUPPRESSION="supervisor_state_unknown"
             return 1
             ;;
     esac
 
     # The query above executes the init. Authenticate the exact installed
-    # bytes again after it returns, then make the maintenance lease the last
-    # external proof before the bounded restart process is spawned.
+    # bytes again after it returns while install authority is still held.
     if ! verify_init_integrity; then
+        release_install_lock
         FINAL_RESTART_SUPPRESSION="init_integrity_unknown"
         return 1
     fi
+
+    # Reinspect the manual lease after the executable and supervisor proofs.
+    # A cooperating manual maintenance action also needs this lock, so it
+    # cannot publish or remove a lease across this final section.
     inspect_maintenance_marker
     if [ "$MAINTENANCE_LEASE_ID" != "$STATUS_MAINTENANCE_LEASE_ID" ] ||
        [ "$MAINTENANCE_STATE" = "active" ]; then
+        release_install_lock
         FINAL_RESTART_SUPPRESSION="maintenance_changed"
         if [ "$MAINTENANCE_STATE" = "active" ]; then
             STATUS="maintenance"
@@ -1530,6 +2091,37 @@ final_restart_authority_is_valid() {
         fi
         return 1
     fi
+
+    # Process generation is the final external proof. procd can recover a
+    # daemon independently of the install lock, so checking it before the
+    # second init hash or marker read would leave stale restart authority.
+    case "$_restart_expected_running" in
+        true)
+            if ! verify_process_generation_join \
+                "$_restart_expected_generation"; then
+                release_install_lock
+                FINAL_RESTART_SUPPRESSION="process_generation_changed"
+                set_process_join_failure
+                return 1
+            fi
+            ;;
+        false)
+            if ! prove_process_generation_absent; then
+                release_install_lock
+                FINAL_RESTART_SUPPRESSION="process_presence_unknown"
+                return 1
+            fi
+            ;;
+        *)
+            release_install_lock
+            FINAL_RESTART_SUPPRESSION="supervisor_state_unknown"
+            return 1
+            ;;
+    esac
+
+    # A successful return deliberately retains descriptor 7 through the
+    # bounded restart. No installer or upgrader can enter between this proof
+    # and the service action.
     return 0
 }
 
@@ -1594,6 +2186,16 @@ restart_supervised_service_once() {
                     "maintenance_started" \
                     "maintenance lease appeared or changed"
                 ;;
+            install_transaction_active)
+                rollback_unspent_restart_latch \
+                    "install_transaction_active" \
+                    "router install or Tailscale upgrade transaction is active"
+                ;;
+            install_lock_invalid)
+                rollback_unspent_restart_latch \
+                    "install_lock_invalid" \
+                    "shared install lock authority is unproven"
+                ;;
             init_integrity_unknown)
                 rollback_unspent_restart_latch \
                     "init_integrity_unknown" \
@@ -1608,10 +2210,13 @@ restart_supervised_service_once() {
         return 1
     fi
 
-    # The maintenance lease is the last external proof above. Do not execute
-    # any command between its successful reinspection and this spawn.
+    # Timeout retains descriptor 7 as a bounded guardian if the watchdog is
+    # killed. The command child closes it before invoking procd, so neither
+    # procd nor tailscaled can inherit the install authority. Descriptor 9 is
+    # closed for the whole child tree.
     "$TIMEOUT_CMD" -s TERM -k 2 "$RESTART_TIMEOUT" \
-        "$TAILSCALE_INIT" restart \
+        /bin/sh -c 'exec 7>&-; exec "$@"' \
+        jammonitor-watchdog-restart "$TAILSCALE_INIT" restart \
         9>&- >/dev/null 2>&1 &
     ACTIVE_CHILD=$!
     publish_status
@@ -1619,6 +2224,7 @@ restart_supervised_service_once() {
     wait "$ACTIVE_CHILD"
     _restart_rc=$?
     ACTIVE_CHILD=""
+    release_install_lock
 
     if [ "$_restart_rc" -eq 0 ]; then
         RECOVERY_STATE="restart_completed"
@@ -1766,6 +2372,29 @@ observe_once() {
         return
     fi
 
+    if ! inspect_install_transaction; then
+        STATUS="watchdog_error"
+        REASON="install_lock_invalid"
+        CONNECTED=false
+        RECOVERABLE=false
+        RECOVERY_STATE="install_lock_invalid"
+        record_invalid_response
+        CONSECUTIVE_FAILURES=0
+        publish_status
+        return
+    fi
+    if [ "$INSTALL_TRANSACTION_STATE" = "active" ]; then
+        STATUS="watchdog_error"
+        REASON="install_transaction_active"
+        CONNECTED=false
+        RECOVERABLE=false
+        RECOVERY_STATE="install_transaction_active"
+        record_invalid_response
+        CONSECUTIVE_FAILURES=0
+        publish_status
+        return
+    fi
+
     query_init_state running
     case "$INIT_QUERY_STATE" in
         false)
@@ -1822,7 +2451,11 @@ observe_once() {
     # payload or timeout exit cannot be joined to a daemon that appeared,
     # disappeared, or changed PID:start_ticks while the LocalAPI command ran.
     if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
-        publish_process_join_failure
+        if clear_status_artifacts 2>/dev/null; then
+            publish_process_join_failure
+        else
+            publish_artifact_cleanup_failure
+        fi
         return
     fi
 
@@ -1830,6 +2463,10 @@ observe_once() {
          [ "$STATUS_RC" -eq 137 ] ||
          [ "$STATUS_RC" -eq 143 ]; } &&
        [ "$STATUS_DEADLINE_REACHED" = "true" ]; then
+        if ! clear_status_artifacts 2>/dev/null; then
+            publish_artifact_cleanup_failure
+            return
+        fi
         STATUS="daemon_unresponsive"
         REASON="localapi_timeout"
         LOCAL_API_RESPONSIVE=false
@@ -1839,6 +2476,10 @@ observe_once() {
     fi
 
     if [ "$STATUS_RC" -ne 0 ]; then
+        if ! clear_status_artifacts 2>/dev/null; then
+            publish_artifact_cleanup_failure
+            return
+        fi
         STATUS="watchdog_error"
         REASON="localapi_command_error"
         LOCAL_API_RESPONSIVE=null
@@ -1848,32 +2489,47 @@ observe_once() {
         return
     fi
 
-    if ! json_string_exact '@.BackendState'; then
-        _raw_backend_state=""
-    else
-        _raw_backend_state="$JSON_STRING_VALUE"
-    fi
-    if ! is_safe_token "$_raw_backend_state"; then
+    if ! project_status_fields; then
+        _projection_failure="$PROJECTION_FAILURE_REASON"
+        reset_projected_status_fields
+        if ! clear_status_artifacts 2>/dev/null; then
+            _projection_failure="status_artifact_cleanup_failed"
+        fi
+        if [ "$_projection_failure" = \
+             "status_artifact_cleanup_failed" ]; then
+            publish_artifact_cleanup_failure
+            return
+        fi
+        if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
+            publish_process_join_failure
+            return
+        fi
         STATUS="watchdog_error"
-        REASON="invalid_status_json"
+        case "$_projection_failure" in
+            status_parse_timeout|invalid_status_json|status_parse_error|\
+            status_artifact_cleanup_failed)
+                REASON="$_projection_failure"
+                ;;
+            *)
+                REASON="status_parse_error"
+                ;;
+        esac
         LOCAL_API_RESPONSIVE=null
         record_invalid_response
         CONSECUTIVE_FAILURES=0
         publish_status
         return
     fi
-    BACKEND_STATE="$_raw_backend_state"
+    if ! clear_status_artifacts; then
+        publish_artifact_cleanup_failure
+        return
+    fi
+    if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
+        publish_process_join_failure
+        return
+    fi
 
     LOCAL_API_RESPONSIVE=true
-    TAILSCALE_IP=""
-    if [ "$(json_type '@.Self.TailscaleIPs')" = "array" ] &&
-       [ "$(json_type '@.Self.TailscaleIPs[0]')" = "string" ]; then
-        if json_string_exact '@.Self.TailscaleIPs[0]' &&
-           is_tailscale_ip "$JSON_STRING_VALUE"; then
-            _raw_tailscale_ip="$JSON_STRING_VALUE"
-            TAILSCALE_IP="$_raw_tailscale_ip"
-        fi
-    fi
     if [ "$PEER_CONFIGURED" = "true" ] &&
        [ "$PEER_STATE" = "unknown" ] &&
        ! critical_peer_contract_is_current; then
@@ -1885,10 +2541,6 @@ observe_once() {
         PEER_STATE="invalid_configuration"
         PEER_REACHABLE=false
     fi
-    KEY_EXPIRY="$(sanitize_token "$(json_string '@.Self.KeyExpiry')")"
-    CONTROL_ONLINE="$(json_boolean '@.Self.Online')"
-    TUN_AVAILABLE="$(json_boolean '@.TUN')"
-    inspect_health_warnings
 
     case "$BACKEND_STATE" in
         Running)
@@ -2037,7 +2689,7 @@ while :; do
     observe_once
     [ "$RUN_ONCE" -eq 1 ] && break
 
-    "$SLEEP_CMD" "$CHECK_INTERVAL" 9>&- &
+    "$SLEEP_CMD" "$CHECK_INTERVAL" 7>&- 9>&- &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD" 2>/dev/null || true
     ACTIVE_CHILD=""

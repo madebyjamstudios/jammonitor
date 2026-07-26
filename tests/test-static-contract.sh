@@ -37,6 +37,34 @@ reject_fixed() {
     ok "$_description"
 }
 
+extract_shell_fence_after() {
+    _source="$1"
+    _needle="$2"
+    _destination="$3"
+    awk -v needle="$_needle" '
+        !seen && index($0, needle) {
+            seen = 1
+            next
+        }
+        seen && !in_fence && $0 == "```bash" {
+            in_fence = 1
+            next
+        }
+        in_fence && $0 == "```" {
+            complete = 1
+            exit
+        }
+        in_fence {
+            print
+        }
+        END {
+            if (!seen || !in_fence || !complete) {
+                exit 1
+            }
+        }
+    ' "$_source" >"$_destination"
+}
+
 node --check jammonitor.js >/dev/null 2>&1 ||
     fail "frontend JavaScript parses"
 ok "frontend JavaScript parses"
@@ -550,8 +578,8 @@ require_fixed \
     'format=jammonitor-tailscale-upgrade-fence-v1' \
     router/upgrade-tailscale-arm64.sh
 require_fixed \
-    "the upgrader joins recovery to OpenWrt block metadata" \
-    '"$BLOCK_CMD" info "$storage_source_path"' \
+    "the upgrader bounds one global OpenWrt block metadata capture" \
+    '"$BLOCK_CMD" info ||' \
     router/upgrade-tailscale-arm64.sh
 reject_fixed \
     "the upgrader does not depend on absent blkid" \
@@ -636,5 +664,44 @@ reject_fixed \
     "router runbook does not require the unavailable mountpoint utility" \
     "mountpoint -q" \
     README.md
+
+RUNBOOK_TEST_DIR="$(
+    mktemp -d "${TMPDIR:-/tmp}/jammonitor-runbook-contract.XXXXXX"
+)"
+trap 'rm -rf "$RUNBOOK_TEST_DIR"' EXIT HUP INT TERM
+extract_shell_fence_after README.md \
+    "Use the maintenance marker before an intentional Tailscale service change:" \
+    "${RUNBOOK_TEST_DIR}/router-maintenance.sh" ||
+    fail "router manual-maintenance fence can be extracted deterministically"
+extract_shell_fence_after README.md \
+    "With a separate LAN session still working, perform one controlled generation" \
+    "${RUNBOOK_TEST_DIR}/router-generation-reset.sh" ||
+    fail "router generation-reset fence can be extracted deterministically"
+extract_shell_fence_after vps/README.md \
+    "### Bounded maintenance marker" \
+    "${RUNBOOK_TEST_DIR}/vps-maintenance.sh" ||
+    fail "VPS manual-maintenance fence can be extracted deterministically"
+extract_shell_fence_after vps/README.md \
+    "This is a deliberate service restart, not a crash injection:" \
+    "${RUNBOOK_TEST_DIR}/vps-generation-reset.sh" ||
+    fail "VPS generation-reset fence can be extracted deterministically"
+for runbook_script in "${RUNBOOK_TEST_DIR}"/*.sh; do
+    sh -n "$runbook_script" ||
+        fail "${runbook_script##*/} parses under POSIX sh"
+    dash -n "$runbook_script" ||
+        fail "${runbook_script##*/} parses under dash"
+done
+ok "all four lock-held maintenance runbooks parse under sh and dash"
+[ "$(grep -F -c 'is_uint "$5" && is_uint "$6" && is_uint "$7"' README.md)" \
+    -eq 2 ] &&
+    [ "$(grep -F -c '[ "$7" -le 1024 ]' README.md)" -eq 2 ] ||
+    fail "both router maintenance runbooks bound exact lock metadata"
+ok "both router maintenance runbooks bound exact lock metadata"
+[ "$(grep -F -c 'MARKER_EXPECTED_BYTES=$((' vps/README.md)" -eq 2 ] &&
+    [ "$(grep -F -c '"$MARKER_EXPECTED_BYTES" ] &&' vps/README.md)" -eq 2 ] ||
+    fail "both VPS maintenance runbooks prove exact marker byte length"
+ok "both VPS maintenance runbooks prove exact marker byte length"
+rm -rf "$RUNBOOK_TEST_DIR"
+trap - EXIT HUP INT TERM
 
 printf '1..%s\n' "$TEST_NUMBER"

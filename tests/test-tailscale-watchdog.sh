@@ -37,7 +37,7 @@ shift 4
 deadline="${1:-1}"
 shift
 flag="${MOCK_RUNTIME_DIR}/timeout.$$"
-"$@" &
+MOCK_TIMEOUT_ACTIVE=1 "$@" &
 child=$!
 timer=""
 cleanup_timeout() {
@@ -54,7 +54,7 @@ trap 'cleanup_timeout; exit 143' INT TERM
         sleep 0.02
         kill -KILL "$child" 2>/dev/null || true
     fi
-) &
+) 7>&- &
 timer=$!
 wait "$child" 2>/dev/null
 rc=$?
@@ -82,193 +82,187 @@ EOF
 cat > "${MOCK_BIN}/jsonfilter" <<'EOF'
 #!/bin/sh
 [ "${1:-}" = "-i" ] && file="${2:-}" || exit 2
-case "${3:-}" in
-    -e) mode=value ;;
-    -t) mode=type ;;
-    *) exit 2 ;;
-esac
-expression="${4:-}"
-[ -s "$file" ] || exit 1
-raw="$(cat "$file")"
-case "$raw" in
-    \{*\}) ;;
-    *) exit 1 ;;
-esac
-if [ "$mode" = "type" ]; then
-    case "$expression" in
-        '@.BackendState')
-            case "$raw" in
-                *'"BackendState":"'*) printf 'string\n' ;;
-                *'"BackendState":true'*|*'"BackendState":false'*)
-                    printf 'boolean\n'
-                    ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Self')
-            case "$raw" in
-                *'"Self":{'*) printf 'object\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Self.TailscaleIPs')
-            case "$raw" in
-                *'"TailscaleIPs":['*) printf 'array\n' ;;
-                *'"TailscaleIPs":null'*) printf 'null\n' ;;
-                *'"TailscaleIPs":"'*)
-                    printf 'string\n'
-                    ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Self.TailscaleIPs[0]')
-            case "$raw" in
-                *'"TailscaleIPs":["'*) printf 'string\n' ;;
-                *'"TailscaleIPs":['[0-9]*)
-                    printf 'int\n'
-                    ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Self.KeyExpiry')
-            case "$raw" in
-                *'"KeyExpiry":"'*) printf 'string\n' ;;
-                *'"KeyExpiry":null'*) printf 'null\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.TUN')
-            case "$raw" in
-                *'"TUN":"'*) printf 'string\n' ;;
-                *'"TUN":true'*|*'"TUN":false'*) printf 'boolean\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Self.Online')
-            case "$raw" in
-                *'"Online":"'*) printf 'string\n' ;;
-                *'"Online":true'*|*'"Online":false'*) printf 'boolean\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Health')
-            case "$raw" in
-                *'"Health":['*) printf 'array\n' ;;
-                *'"Health":"'*) printf 'string\n' ;;
-                *'"Health":null'*) printf 'null\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        '@.Health[*]')
-            case "$raw" in
-                *'"Health":[]'*) ;;
-                *'"Health":[null]'*) printf 'null\n' ;;
-                *'"Health":[7]'*) printf 'int\n' ;;
-                *'"Health":[{}]'*) printf 'object\n' ;;
-                *'"Health":["oversized-string"]'*)
-                    printf 'string\n'
-                    ;;
-                *'"Health":["too-many"]'*)
-                    _type_index=1
-                    while [ "$_type_index" -le 101 ]; do
-                        [ "$_type_index" -eq 1 ] ||
-                            printf '\\ '
-                        printf 'string'
-                        _type_index=$((_type_index + 1))
-                    done
-                    printf '\n'
-                    ;;
-                *'"Health":['*) printf 'string\n' ;;
-                *) exit 1 ;;
-            esac
-            ;;
-        *) exit 1 ;;
-    esac
+if [ "${MOCK_TIMEOUT_ACTIVE:-0}" = "1" ]; then
+    printf '%s\n' bounded >> "${MOCK_RUNTIME_DIR}/jsonfilter-bounds"
+else
+    printf '%s\n' unbounded >> "${MOCK_RUNTIME_DIR}/jsonfilter-bounds"
+fi
+{
+    printf 'projection'
+    printf ' <%s>' "$@"
+    printf '\n'
+} >> "${MOCK_RUNTIME_DIR}/jsonfilter-argv"
+if "$MOCK_PYTHON3" -c 'import os; os.fstat(9)' 2>/dev/null; then
+    printf '%s\n' open >> "${MOCK_RUNTIME_DIR}/jsonfilter-fd9"
+else
+    printf '%s\n' closed >> "${MOCK_RUNTIME_DIR}/jsonfilter-fd9"
+fi
+if [ "${MOCK_JSONFILTER_MODE:-normal}" = "hang" ]; then
+    printf '%s\n' "$$" > "${MOCK_RUNTIME_DIR}/jsonfilter-hang-pid"
+    fifo="${MOCK_RUNTIME_DIR}/jsonfilter-fifo"
+    [ -p "$fifo" ] || mkfifo "$fifo"
+    read -r ignored < "$fifo"
+fi
+if [ "${MOCK_JSONFILTER_MODE:-normal}" = "flood" ]; then
+    awk 'BEGIN { for (i = 0; i < 70000; i++) printf "x" }'
     exit 0
 fi
-case "$expression" in
-    '@.BackendState')
-        case "$raw" in
-            *'"BackendState":"backend-newline-fixture"'*)
-                printf 'Running\n\n'
-                ;;
-            *'"BackendState":"'*)
-                value="${raw#*\"BackendState\":\"}"
-                printf '%s\n' "${value%%\"*}"
-                ;;
-        esac
-        ;;
-    '@.Self.TailscaleIPs[0]')
-        case "$raw" in
-            *'"TailscaleIPs":["ip-newline-fixture"]'*)
-                printf '100.104.78.42\n\n'
-                ;;
-            *'"TailscaleIPs":["'*)
-                value="${raw#*\"TailscaleIPs\":[\"}"
-                printf '%s\n' "${value%%\"*}"
-                ;;
-        esac
-        ;;
-    '@.Self.TailscaleIPs[*]')
-        case "$raw" in
-            *'"TailscaleIPs":['*)
-                values="${raw#*\"TailscaleIPs\":[}"
-                values="${values%%]*}"
-                old_ifs="$IFS"
-                IFS=,
-                set -- $values
-                IFS="$old_ifs"
-                for value in "$@"; do
-                    value="${value#\"}"
-                    value="${value%\"}"
-                    printf '%s\n' "$value"
-                done
-                ;;
-        esac
-        ;;
-    '@.Self.KeyExpiry')
-        case "$raw" in
-            *'"KeyExpiry":"'*)
-                value="${raw#*\"KeyExpiry\":\"}"
-                printf '%s\n' "${value%%\"*}"
-                ;;
-        esac
-        ;;
-    '@.TUN')
-        case "$raw" in
-            *'"TUN":true'*) printf 'true\n' ;;
-            *'"TUN":false'*) printf 'false\n' ;;
-        esac
-        ;;
-    '@.Self.Online')
-        case "$raw" in
-            *'"Online":true'*) printf 'true\n' ;;
-            *'"Online":false'*) printf 'false\n' ;;
-        esac
-        ;;
-    '@.Health[*]')
-        case "$raw" in
-            *'"Health":[]'*) ;;
-            *'"Health":["oversized-string"]'*)
-                _health_byte=1
-                while [ "$_health_byte" -le 513 ]; do
-                    printf x
-                    _health_byte=$((_health_byte + 1))
-                done
-                printf '\n'
-                ;;
-            *'"Health":["too-many"]'*)
-                _health_line=1
-                while [ "$_health_line" -le 101 ]; do
-                    printf 'redacted-warning\n'
-                    _health_line=$((_health_line + 1))
-                done
-                ;;
-            *'"Health":['*) printf 'redacted-warning\n' ;;
-        esac
-        ;;
-    *) exit 1 ;;
-esac
+"$MOCK_PYTHON3" - "$@" <<'PY'
+import json
+import sys
+
+
+MISSING = object()
+
+
+def value_type(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "double"
+    raise ValueError("unsupported JSON type")
+
+
+def resolve(document, expression):
+    if expression == "@":
+        return document
+    paths = {
+        "@.BackendState": ("BackendState",),
+        "@.Self.TailscaleIPs": ("Self", "TailscaleIPs"),
+        "@.Self.KeyExpiry": ("Self", "KeyExpiry"),
+        "@.Self.Online": ("Self", "Online"),
+        "@.TUN": ("TUN",),
+        "@.Health": ("Health",),
+    }
+    if expression in ("@.Self.TailscaleIPs[*]", "@.Health[*]"):
+        base = expression[:-3]
+        container = resolve(document, base)
+        if not isinstance(container, list) or not container:
+            return MISSING
+        return container
+    path = paths.get(expression)
+    if path is None:
+        raise ValueError("unknown expression")
+    value = document
+    for component in path:
+        if not isinstance(value, dict) or component not in value:
+            return MISSING
+        value = value[component]
+    return value
+
+
+def normalize_fixtures(document):
+    if document.get("BackendState") == "backend-newline-fixture":
+        document["BackendState"] = "Running\n"
+    self_value = document.get("Self")
+    if isinstance(self_value, dict):
+        ips = self_value.get("TailscaleIPs")
+        if ips == ["ip-newline-fixture"]:
+            self_value["TailscaleIPs"] = ["100.104.78.42\n"]
+        elif ips == ["max-type-header"]:
+            self_value["TailscaleIPs"] = [False] * 100
+        elif ips == ["pathological-type-header"]:
+            self_value["TailscaleIPs"] = [False] * 300
+        if ips in (["max-type-header"], ["pathological-type-header"]):
+            self_value["KeyExpiry"] = False
+    health = document.get("Health")
+    if health == ["oversized-string"]:
+        document["Health"] = ["x" * 513]
+    elif health == ["too-many"]:
+        document["Health"] = ["redacted-warning"] * 101
+    elif health == ["max-type-header"]:
+        document["Health"] = [False] * 100
+    elif health == ["pathological-type-header"]:
+        document["Health"] = [False] * 300
+    elif health == ["near-limit-null-header"]:
+        document["Health"] = [None] * 10000
+
+
+def emit_record(value):
+    if isinstance(value, bool):
+        sys.stdout.write(("true" if value else "false") + "\n")
+    elif isinstance(value, (dict, list)):
+        sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    else:
+        sys.stdout.write(str(value) + "\n")
+
+
+def emit_value(value, wildcard):
+    if value is None:
+        return False
+    if wildcard:
+        emitted = False
+        for item in value:
+            if item is None:
+                continue
+            emit_record(item)
+            emitted = True
+        return emitted
+    emit_record(value)
+    return True
+
+
+args = sys.argv[1:]
+if len(args) < 4 or args[0] != "-i":
+    raise SystemExit(2)
+status_path = args[1]
+operations = args[2:]
+if len(operations) % 2:
+    raise SystemExit(2)
+try:
+    with open(status_path, "r", encoding="utf-8") as status_file:
+        document = json.load(status_file)
+    normalize_fixtures(document)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+aggregate_rc = 0
+for index in range(0, len(operations), 2):
+    operation = operations[index]
+    expression = operations[index + 1]
+    if operation not in ("-t", "-e"):
+        raise SystemExit(2)
+    name = None
+    if operation == "-t" and "=" in expression:
+        name, expression = expression.split("=", 1)
+        if not name or not name.replace("_", "").isalnum():
+            raise SystemExit(2)
+    try:
+        value = resolve(document, expression)
+    except ValueError:
+        raise SystemExit(2)
+    if value is MISSING:
+        aggregate_rc = 1
+        continue
+    if operation == "-t":
+        if isinstance(value, list) and expression.endswith("[*]"):
+            rendered = r"\ ".join(value_type(item) for item in value)
+        else:
+            rendered = value_type(value)
+        if name is not None:
+            sys.stdout.write(f"export {name}={rendered}; ")
+        else:
+            sys.stdout.write(rendered + "\n")
+    elif not emit_value(value, expression.endswith("[*]")):
+        aggregate_rc = 1
+raise SystemExit(aggregate_rc)
+PY
+parser_rc=$?
+if [ "${MOCK_JSONFILTER_MODE:-normal}" = "raw_cleanup_fail" ]; then
+    rm -f "$file"
+    mkdir "$file"
+fi
+exit "$parser_rc"
 EOF
 
 cat > "${MOCK_BIN}/tailscale" <<'EOF'
@@ -347,6 +341,26 @@ case "${MOCK_TAILSCALE_MODE:-running}" in
     running_warning)
         printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true,"InEngine":true,"KeyExpiry":"0001-01-01T00:00:00Z"},"Health":["secret warning text"]}'
         ;;
+    running_health_object_literal)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":["object"]}'
+        ;;
+    running_health_newline)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":["warning\nnext"]}'
+        ;;
+    running_nested_health_array)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":[[]]}'
+        ;;
+    running_nested_ip_array)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":[[]],"Online":true},"Health":[]}'
+        ;;
+    running_raw_nul_unterminated)
+        printf '%s' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42\u00008.8.8.8"],"Online":true},"Health":[]}'
+        ;;
+    running_raw_whitespace_bomb)
+        printf '%s' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":[]'
+        awk 'BEGIN { for (i = 0; i < 60000; i++) printf "\n" }'
+        printf '%s\n' '}'
+        ;;
     running_no_ip)
         printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":null,"Online":true,"InEngine":true},"Health":[]}'
         ;;
@@ -388,6 +402,15 @@ case "${MOCK_TAILSCALE_MODE:-running}" in
         ;;
     running_too_many_health_elements)
         printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":["too-many"]}'
+        ;;
+    running_max_type_header)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["max-type-header"],"Online":true},"Health":["max-type-header"]}'
+        ;;
+    running_pathological_type_header)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["pathological-type-header"],"Online":true},"Health":["pathological-type-header"]}'
+        ;;
+    running_near_limit_null_header)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":["near-limit-null-header"]}'
         ;;
     running_boolean_backend)
         printf '%s\n' '{"BackendState":true,"TUN":true,"Self":{"TailscaleIPs":["100.104.78.42"],"Online":true},"Health":[]}'
@@ -519,12 +542,18 @@ case "${1:-}" in
         exit 2
         ;;
     restart)
+        if "$MOCK_PYTHON3" -c 'import os; os.fstat(7)' 2>/dev/null; then
+            printf '%s\n' open >> "${MOCK_RUNTIME_DIR}/restart-fd7"
+        else
+            printf '%s\n' closed >> "${MOCK_RUNTIME_DIR}/restart-fd7"
+        fi
         if [ "${MOCK_REQUIRE_DURABLE_LATCH:-0}" = "1"; then
             grep -qx 'recovery_attempted=1' \
                 "${MOCK_STATE_DIR}/tailscale-watchdog.memory" || exit 98
         fi
         printf '%s\n' restart >> "${MOCK_ACTIONS_FILE}"
         if [ "${MOCK_RESTART_MODE:-complete}" = "hang" ]; then
+            printf '%s\n' "$$" > "${MOCK_RUNTIME_DIR}/restart-hang-pid"
             fifo="${MOCK_RUNTIME_DIR}/restart-fifo"
             [ -p "$fifo" ] || mkfifo "$fifo"
             read -r ignored < "$fifo"
@@ -539,22 +568,78 @@ EOF
 
 cat > "${MOCK_BIN}/logger" <<'EOF'
 #!/bin/sh
+if [ "${MOCK_TIMEOUT_ACTIVE:-0}" = "1" ]; then
+    printf '%s\n' bounded >> "${MOCK_RUNTIME_DIR}/logger-bounds"
+else
+    printf '%s\n' unbounded >> "${MOCK_RUNTIME_DIR}/logger-bounds"
+fi
+if "$MOCK_PYTHON3" -c 'import os; os.fstat(9)' 2>/dev/null; then
+    printf '%s\n' open >> "${MOCK_RUNTIME_DIR}/logger-fd9"
+else
+    printf '%s\n' closed >> "${MOCK_RUNTIME_DIR}/logger-fd9"
+fi
+if [ "${MOCK_LOGGER_MODE:-normal}" = "hang" ]; then
+    printf '%s\n' "$$" > "${MOCK_RUNTIME_DIR}/logger-hang-pid"
+    fifo="${MOCK_RUNTIME_DIR}/logger-fifo"
+    [ -p "$fifo" ] || mkfifo "$fifo"
+    read -r ignored < "$fifo"
+fi
 printf '%s\n' "$*" >> "${MOCK_LOG_FILE}"
 EOF
 
 cat > "${MOCK_BIN}/flock" <<EOF
 #!${PYTHON3}
 import fcntl
+import os
+import pathlib
 import sys
+import time
 
-if sys.argv[1:] != ["-n", "9"]:
+if len(sys.argv) != 3 or sys.argv[1] != "-n" or sys.argv[2] not in {"7", "9"}:
     raise SystemExit(64)
+descriptor = int(sys.argv[2])
+
+memory_path_text = os.environ.get("MOCK_MEMORY_FILE", "")
+memory_path = pathlib.Path(memory_path_text) if memory_path_text else None
+latched = bool(
+    memory_path
+    and memory_path.is_file()
+    and "recovery_attempted=1\n" in memory_path.read_text()
+)
+gate_path_text = os.environ.get("MOCK_FLOCK_GATE_AFTER_LATCH", "")
+if descriptor == 7 and latched and gate_path_text:
+    gate_path = pathlib.Path(gate_path_text)
+    used_path = pathlib.Path(gate_path_text + ".used")
+    if not used_path.exists():
+        used_path.touch()
+        pathlib.Path(gate_path_text + ".ready").touch()
+        release_path = pathlib.Path(gate_path_text + ".release")
+        for _ in range(1000):
+            if release_path.exists():
+                break
+            time.sleep(0.01)
+        else:
+            raise SystemExit(124)
+
 try:
-    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     raise SystemExit(1)
 except OSError:
     raise SystemExit(70)
+
+swap_path_text = os.environ.get("MOCK_FLOCK_REPLACE_AFTER_LATCH_PATH", "")
+if descriptor == 7 and swap_path_text and latched:
+    swap_path = pathlib.Path(swap_path_text)
+    swapped_marker = pathlib.Path(swap_path_text + ".swapped")
+    if not swapped_marker.exists():
+        orphan_path = pathlib.Path(swap_path_text + ".orphaned")
+        swap_path.rename(orphan_path)
+        replacement_descriptor = os.open(
+            swap_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        )
+        os.close(replacement_descriptor)
+        swapped_marker.touch()
 EOF
 
 cat > "${MOCK_BIN}/sha256sum" <<EOF
@@ -567,11 +652,43 @@ import time
 
 if len(sys.argv) != 2:
     raise SystemExit(64)
+
+
+def install_lock_descriptor_state():
+    lock_path_text = os.environ.get("WATCHDOG_INSTALL_LOCK_FILE", "")
+    if not lock_path_text:
+        return "closed"
+    try:
+        lock_stat = os.stat(lock_path_text)
+    except OSError:
+        return "closed"
+    matching = []
+    for descriptor_number in range(3, 64):
+        try:
+            descriptor_stat = os.fstat(descriptor_number)
+        except OSError:
+            continue
+        if (
+            descriptor_stat.st_dev == lock_stat.st_dev
+            and descriptor_stat.st_ino == lock_stat.st_ino
+        ):
+            matching.append(str(descriptor_number))
+    if not matching:
+        return "closed"
+    return "open:" + ",".join(matching)
+
+
 gate = os.environ.get("MOCK_FINAL_PROOF_GATE", "")
+second_integrity_gate = os.environ.get(
+    "MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH", ""
+)
 memory = pathlib.Path(os.environ.get(
     "MOCK_MEMORY_FILE", "/nonexistent-watchdog-memory"
 ))
-if gate and memory.is_file() and "recovery_attempted=1\n" in memory.read_text():
+latched = bool(
+    memory.is_file() and "recovery_attempted=1\n" in memory.read_text()
+)
+if gate and latched:
     claim = pathlib.Path(f"{gate}.claimed")
     try:
         descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -579,8 +696,31 @@ if gate and memory.is_file() and "recovery_attempted=1\n" in memory.read_text():
         descriptor = None
     if descriptor is not None:
         os.close(descriptor)
+        pathlib.Path(f"{gate}.fd7").write_text(
+            install_lock_descriptor_state() + "\n"
+        )
         pathlib.Path(f"{gate}.ready").touch()
         release = pathlib.Path(f"{gate}.release")
+        for _ in range(500):
+            if release.exists():
+                break
+            time.sleep(0.01)
+        else:
+            raise SystemExit(124)
+if second_integrity_gate and latched:
+    counter_path = pathlib.Path(f"{second_integrity_gate}.count")
+    try:
+        counter = int(counter_path.read_text())
+    except (FileNotFoundError, ValueError):
+        counter = 0
+    counter += 1
+    counter_path.write_text(f"{counter}\n")
+    if counter == 4:
+        pathlib.Path(f"{second_integrity_gate}.fd7").write_text(
+            install_lock_descriptor_state() + "\n"
+        )
+        pathlib.Path(f"{second_integrity_gate}.ready").touch()
+        release = pathlib.Path(f"{second_integrity_gate}.release")
         for _ in range(500):
             if release.exists():
                 break
@@ -599,18 +739,30 @@ import os
 import stat
 import sys
 
-if len(sys.argv) != 4 or sys.argv[1] != "-c":
+arguments = sys.argv[1:]
+follow_links = False
+if arguments and arguments[0] == "-L":
+    follow_links = True
+    arguments = arguments[1:]
+if len(arguments) != 3 or arguments[0] != "-c":
     raise SystemExit(64)
-value = os.lstat(sys.argv[3])
+fmt = arguments[1]
+path = arguments[2]
+if follow_links and path.startswith("/dev/fd/"):
+    value = os.fstat(int(path.rsplit("/", 1)[1]))
+elif follow_links:
+    value = os.stat(path)
+else:
+    value = os.lstat(path)
 mode = f"{stat.S_IMODE(value.st_mode):o}"
-if sys.argv[2] == "%u:%g:%a":
+if fmt == "%u:%g:%a":
     print(f"{value.st_uid}:{value.st_gid}:{mode}")
-elif sys.argv[2] == "%u:%g:%a:%d:%i:%s":
+elif fmt == "%u:%g:%a:%d:%i:%s":
     print(
         f"{value.st_uid}:{value.st_gid}:{mode}:"
         f"{value.st_dev}:{value.st_ino}:{value.st_size}"
     )
-elif sys.argv[2] == "%u:%g:%a:%h:%d:%i:%s":
+elif fmt == "%u:%g:%a:%h:%d:%i:%s":
     print(
         f"{value.st_uid}:{value.st_gid}:{mode}:{value.st_nlink}:"
         f"{value.st_dev}:{value.st_ino}:{value.st_size}"
@@ -688,6 +840,7 @@ new_case() {
     UPTIME_FILE="${CASE_DIR}/uptime"
     ROUTER_MANIFEST="${CASE_DIR}/router-files.sha256"
     ROUTER_MANIFEST_DIGEST="${CASE_DIR}/router-files.sha256.sha256"
+    INSTALL_LOCK_PATH="${STATE_DIR}/router-install.lock"
     mkdir -p "$STATE_DIR" "$RUNTIME_DIR" "$PROC_ROOT"
     SOCKET_FILE="$SHORT_SOCKET"
     rm -f "$SOCKET_FILE"
@@ -719,13 +872,18 @@ watchdog_env() {
     fi
     env \
         MOCK_TAILSCALE_MODE="$1" \
+        MOCK_JSONFILTER_MODE="${MOCK_JSONFILTER_MODE_VALUE:-normal}" \
         MOCK_SERVICE_RUNNING="$2" \
         MOCK_PEER_MODE="${3:-reachable}" \
+        MOCK_LOGGER_MODE="${MOCK_LOGGER_MODE_VALUE:-normal}" \
         MOCK_SERVICE_ENABLED="${MOCK_SERVICE_ENABLED_VALUE:-1}" \
         MOCK_RESTART_RC="${MOCK_RESTART_RC_VALUE:-0}" \
         MOCK_RESTART_MODE="${MOCK_RESTART_MODE_VALUE:-complete}" \
         MOCK_REQUIRE_DURABLE_LATCH="${MOCK_REQUIRE_DURABLE_LATCH_VALUE:-0}" \
         MOCK_FINAL_PROOF_GATE="${MOCK_FINAL_PROOF_GATE_VALUE:-}" \
+        MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH="${MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE:-}" \
+        MOCK_FLOCK_REPLACE_AFTER_LATCH_PATH="${MOCK_FLOCK_REPLACE_AFTER_LATCH_PATH_VALUE:-}" \
+        MOCK_FLOCK_GATE_AFTER_LATCH="${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE:-}" \
         MOCK_MEMORY_FILE="${STATE_DIR}/tailscale-watchdog.memory" \
         MOCK_RUNNING_SEQUENCE_FILE="${MOCK_RUNNING_SEQUENCE_FILE_VALUE:-}" \
         MOCK_TIMEOUT_DELAY="${MOCK_TIMEOUT_DELAY_VALUE:-0.5}" \
@@ -739,10 +897,13 @@ watchdog_env() {
         MOCK_INIT_FILE="${MOCK_BIN}/tailscale-init" \
         MOCK_PROC_ROOT="$PROC_ROOT" \
         MOCK_PROCESS_BINARY="$MOCK_PROCESS_BINARY" \
+        MOCK_PYTHON3="$PYTHON3" \
         TAILSCALE_CLI="${MOCK_BIN}/tailscale" \
         TAILSCALE_INIT="${MOCK_BIN}/tailscale-init" \
         TAILSCALE_SOCKET="$SOCKET_FILE" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_INSTALL_LOCK_FILE="$INSTALL_LOCK_PATH" \
+        WATCHDOG_FD_ROOT="/dev/fd" \
         WATCHDOG_TIMEOUT_CMD="${WATCHDOG_TIMEOUT_OVERRIDE:-${MOCK_BIN}/timeout}" \
         WATCHDOG_JSONFILTER_CMD="${WATCHDOG_JSONFILTER_OVERRIDE:-${MOCK_BIN}/jsonfilter}" \
         WATCHDOG_LOGGER_CMD="${MOCK_BIN}/logger" \
@@ -801,6 +962,16 @@ assert_no_actions() {
     [ ! -s "$ACTIONS_FILE" ] || fail "${CASE_NAME}: unexpected recovery action"
 }
 
+assert_no_raw_status_artifacts() {
+    if find "$STATE_DIR" -maxdepth 1 \
+        \( -name 'tailscale-status.*' \
+        -o -name 'tailscale-status-error.*' \
+        -o -name 'tailscale-status-projection.*' \) \
+        -print -quit | grep -q .; then
+        fail "${CASE_NAME}: raw status or projection artifact survived observation"
+    fi
+}
+
 action_count() {
     wc -l < "$ACTIONS_FILE" | tr -d ' '
 }
@@ -846,9 +1017,82 @@ wait_for_action_count() {
     fail "${CASE_NAME}: timed out waiting for ${_expected} recovery action(s)"
 }
 
+wait_for_pid_exit() {
+    _wait_pid="$1"
+    _wait_label="$2"
+    _attempt=0
+    while [ "$_attempt" -lt 250 ]; do
+        if ! kill -0 "$_wait_pid" 2>/dev/null; then
+            return 0
+        fi
+        _wait_state="$(
+            ps -o stat= -p "$_wait_pid" 2>/dev/null | tr -d ' \r\n'
+        )"
+        case "$_wait_state" in
+            ""|Z*) return 0 ;;
+        esac
+        sleep 0.02
+        _attempt=$((_attempt + 1))
+    done
+    fail "${CASE_NAME}: timed out waiting for ${_wait_label} PID ${_wait_pid}"
+}
+
 lock_inode() {
     stat -f '%i' "$1" 2>/dev/null ||
         stat -c '%i' "$1" 2>/dev/null
+}
+
+start_install_lock_holder() {
+    _holder_path="$1"
+    _holder_ready="$2"
+    _holder_release="$3"
+    "$PYTHON3" - "$_holder_path" "$_holder_ready" "$_holder_release" <<'PY' &
+import fcntl
+import pathlib
+import sys
+import time
+
+lock_path = pathlib.Path(sys.argv[1])
+ready_path = pathlib.Path(sys.argv[2])
+release_path = pathlib.Path(sys.argv[3])
+with lock_path.open("r+b") as lock_file:
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    ready_path.touch()
+    for _ in range(1000):
+        if release_path.exists():
+            break
+        time.sleep(0.01)
+    else:
+        raise SystemExit(124)
+PY
+    INSTALL_LOCK_HOLDER_PID=$!
+    wait_for_path "$_holder_ready"
+}
+
+stop_install_lock_holder() {
+    _holder_release="$1"
+    : > "$_holder_release"
+    wait "$INSTALL_LOCK_HOLDER_PID"
+    INSTALL_LOCK_HOLDER_PID=""
+}
+
+install_lock_is_available() {
+    (
+        exec 7<>"$INSTALL_LOCK_PATH"
+        "${MOCK_BIN}/flock" -n 7
+    )
+}
+
+wait_for_install_lock_available() {
+    _attempt=0
+    while [ "$_attempt" -lt 250 ]; do
+        if install_lock_is_available; then
+            return 0
+        fi
+        sleep 0.02
+        _attempt=$((_attempt + 1))
+    done
+    fail "${CASE_NAME}: shared install lock remained held"
 }
 
 sh -n "$WATCHDOG"
@@ -977,8 +1221,7 @@ do
 done
 for mode in \
     running_ip_leading_space \
-    running_ip_trailing_space \
-    running_ip_newline
+    running_ip_trailing_space
 do
     run_once "$mode" 1 215 1015
     assert_status running_degraded
@@ -987,6 +1230,12 @@ do
     assert_json '"healthy":false'
     assert_json '"connected":false'
 done
+run_once running_ip_newline 1 230 1030
+assert_status watchdog_error
+assert_json '"reason":"invalid_status_json"'
+assert_json '"backend_state":""'
+assert_json '"tailscale_ip":""'
+assert_json '"connected":null'
 assert_no_actions
 pass "recognized states and tailnet addresses are validated byte-exactly before publication"
 
@@ -1006,6 +1255,85 @@ do
 done
 assert_no_actions
 pass "Health requires at most 100 bounded string elements"
+
+new_case bounded_type_header
+run_once running_max_type_header 1 200 1000
+assert_status running_degraded
+assert_json '"reason":"tailnet_ip_missing"'
+assert_json '"connected":false'
+assert_json '"healthy":false'
+run_once running_pathological_type_header 1 215 1015
+assert_status watchdog_error
+assert_json '"reason":"invalid_status_json"'
+assert_json '"backend_state":""'
+assert_json '"connected":null'
+assert_json '"recoverable":false'
+assert_no_raw_status_artifacts
+run_once running_near_limit_null_header 1 230 1030
+assert_status watchdog_error
+assert_json '"reason":"invalid_status_json"'
+assert_json '"backend_state":""'
+assert_json '"connected":null'
+assert_json '"recoverable":false'
+assert_no_raw_status_artifacts
+assert_no_actions
+grep -qx 'PROJECTION_TYPE_HEADER_MAX_BYTES=2048' "$WATCHDOG" ||
+    fail "bounded_type_header: fixed parser work bound changed"
+awk '
+    /if \[ "\$\{#_type_header\}" -gt "\$PROJECTION_TYPE_HEADER_MAX_BYTES" \]/ {
+        cap_line = NR
+    }
+    /parse_projection_type_header "\$_type_header"/ {
+        parse_line = NR
+    }
+    END {
+        exit !(cap_line > 0 && parse_line > cap_line)
+    }
+' "$WATCHDOG" ||
+    fail "bounded_type_header: work cap does not precede interpreted parsing"
+[ "$(grep -Fc 'parse_projection_type_sequence "$_type_value"' "$WATCHDOG")" \
+    -eq 2 ] ||
+    fail "bounded_type_header: fixed member vectors are reparsed"
+if grep -F 'parse_projection_type_sequence "$TYPE_' "$WATCHDOG" >/dev/null; then
+    fail "bounded_type_header: cached member vectors are reparsed"
+fi
+pass "maximum and near-limit pathological type framing obey fixed work bounds"
+
+new_case projection_record_framing
+run_once running_raw_whitespace_bomb 1 190 990
+assert_status running
+assert_json '"connected":true'
+assert_no_raw_status_artifacts
+if rg -n '_raw_status_line|while IFS= read -r _raw' "$WATCHDOG" \
+    >/dev/null 2>&1; then
+    fail "projection_record_framing: raw input uses interpreted line scanning"
+fi
+grep -Fq "grep -Fq '\\u0000' \"\$STATUS_OUTPUT\"" "$WATCHDOG" ||
+    fail "projection_record_framing: literal NUL escape scan is missing"
+run_once running_health_object_literal 1 200 1000
+assert_status running_degraded
+assert_json '"reason":"health_warning"'
+assert_json '"health_warnings":1'
+assert_json '"connected":true'
+run_once running_nested_health_array 1 215 1015
+assert_status running_degraded
+assert_json '"reason":"health_state_unknown"'
+assert_json '"connected":true'
+run_once running_nested_ip_array 1 230 1030
+assert_status running_degraded
+assert_json '"reason":"tailnet_ip_missing"'
+assert_json '"tailscale_ip":""'
+run_once running_health_newline 1 245 1045
+assert_status watchdog_error
+assert_json '"reason":"invalid_status_json"'
+assert_json '"backend_state":""'
+run_once running_raw_nul_unterminated 1 260 1060
+assert_status watchdog_error
+assert_json '"reason":"invalid_status_json"'
+assert_json '"backend_state":""'
+assert_no_raw_status_artifacts
+assert_no_actions
+pass "projection framing distinguishes anchors, nested values, controls, and unterminated NUL input"
 
 new_case unknown_breaks_uptime
 run_once running 1 200 1000
@@ -1234,6 +1562,103 @@ assert_no_actions
 WATCHDOG_TIMEOUT_OVERRIDE=""
 pass "missing timeout or parser cannot trigger recovery"
 
+new_case bounded_status_projection
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable "" &
+watchdog_launcher_pid=$!
+wait_for_path "${STATE_DIR}/tailscale-watchdog.json"
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+assert_status running
+assert_no_raw_status_artifacts
+projection_count="$(
+    wc -l < "$RUNTIME_DIR/jsonfilter-argv" | tr -d ' \r\n'
+)"
+bounded_count="$(
+    grep -c '^bounded$' "$RUNTIME_DIR/jsonfilter-bounds"
+)"
+[ "$projection_count" -eq 1 ] &&
+    [ "$bounded_count" -eq "$projection_count" ] ||
+    fail "bounded_status_projection: expected one bounded status projection"
+expected_projection="projection <-i> <${STATE_DIR}/tailscale-status.${watchdog_pid}>"
+expected_projection="${expected_projection} <-t> <JM_BT=@.BackendState>"
+expected_projection="${expected_projection} <-t> <JM_IAT=@.Self.TailscaleIPs>"
+expected_projection="${expected_projection} <-t> <JM_KT=@.Self.KeyExpiry>"
+expected_projection="${expected_projection} <-t> <JM_OT=@.Self.Online>"
+expected_projection="${expected_projection} <-t> <JM_TT=@.TUN>"
+expected_projection="${expected_projection} <-t> <JM_HT=@.Health>"
+expected_projection="${expected_projection} <-t> <JM_IPT=@.Self.TailscaleIPs[*]>"
+expected_projection="${expected_projection} <-t> <JM_HET=@.Health[*]>"
+expected_projection="${expected_projection} <-t> <@>"
+expected_projection="${expected_projection} <-e> <@.BackendState>"
+expected_projection="${expected_projection} <-e> <@.Self.KeyExpiry>"
+expected_projection="${expected_projection} <-e> <@.Self.Online>"
+expected_projection="${expected_projection} <-e> <@.TUN>"
+expected_projection="${expected_projection} <-t> <@>"
+expected_projection="${expected_projection} <-e> <@.Self.TailscaleIPs[*]>"
+expected_projection="${expected_projection} <-t> <@>"
+expected_projection="${expected_projection} <-e> <@.Health[*]>"
+expected_projection="${expected_projection} <-t> <@>"
+[ "$(sed -n '1p' "$RUNTIME_DIR/jsonfilter-argv")" = \
+  "$expected_projection" ] ||
+    fail "bounded_status_projection: exact ordered projection contract changed"
+if grep -Fqx unbounded "$RUNTIME_DIR/jsonfilter-bounds" ||
+   grep -Fvx closed "$RUNTIME_DIR/jsonfilter-fd9" | grep -q .; then
+    fail "bounded_status_projection: parser escaped its timeout or inherited fd9"
+fi
+kill -TERM "$watchdog_pid"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+assert_no_raw_status_artifacts
+pass "one exact parser projection is bounded, lock-free, and secret-clean before sleep"
+
+new_case parser_faults_never_recover
+MOCK_JSONFILTER_MODE_VALUE=hang
+for observation in 1 2 3 4; do
+    run_once running 1 $((200 + observation)) $((1000 + observation))
+    assert_status watchdog_error
+    assert_json '"reason":"status_parse_timeout"'
+    assert_json '"recoverable":false'
+    assert_json '"consecutive_failures":0'
+    assert_no_actions
+    assert_no_raw_status_artifacts
+done
+parser_pid="$(
+    cat "$RUNTIME_DIR/jsonfilter-hang-pid" 2>/dev/null || true
+)"
+case "$parser_pid" in
+    ""|*[!0-9]*) ;;
+    *)
+        kill -0 "$parser_pid" 2>/dev/null &&
+            fail "parser_faults_never_recover: timed-out parser survived"
+        ;;
+esac
+MOCK_JSONFILTER_MODE_VALUE=flood
+run_once running 1 220 1020
+assert_status watchdog_error
+assert_json '"reason":"status_parse_error"'
+assert_json '"recoverable":false'
+assert_no_actions
+assert_no_raw_status_artifacts
+MOCK_JSONFILTER_MODE_VALUE=normal
+pass "parser timeout and output flood are non-recoverable and leave no raw data"
+
+new_case status_artifact_cleanup_failure
+MOCK_JSONFILTER_MODE_VALUE=raw_cleanup_fail
+run_once running 1 200 1000
+assert_status watchdog_error
+assert_json '"reason":"status_artifact_cleanup_failed"'
+assert_json '"recoverable":false'
+assert_json '"consecutive_failures":0'
+assert_no_actions
+if find "$STATE_DIR" -maxdepth 1 \
+    -name 'tailscale-status-projection.*' -print -quit | grep -q .; then
+    fail "status_artifact_cleanup_failure: projection cleanup was skipped"
+fi
+MOCK_JSONFILTER_MODE_VALUE=normal
+pass "artifact cleanup failure suppresses recovery and still removes the projection"
+
 new_case real_hang
 run_once hang 1 200 1000
 run_once hang 1 215 1015
@@ -1241,6 +1666,7 @@ assert_no_actions
 run_once hang 1 230 1030
 [ "$(action_count)" -eq 1 ] || fail "real_hang: expected one supervisor restart"
 assert_json '"recovery_attempted":1'
+assert_json '"recovery_state":"restart_completed"'
 for ignored in 1 2 3; do
     run_once hang 1 $((230 + ignored * 15)) $((1030 + ignored * 15))
 done
@@ -1258,6 +1684,19 @@ run_once hang_143 1 230 1030
 assert_status daemon_unresponsive
 assert_json '"reason":"localapi_timeout"'
 pass "elapsed deadline evidence recognizes BusyBox-style rc143 timeout"
+
+new_case restart_deadline_status
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_RESTART_MODE_VALUE=hang
+run_once hang 1 200 1000
+[ "$(action_count)" -eq 1 ] ||
+    fail "restart_deadline_status: bounded restart was not requested"
+assert_status daemon_unresponsive
+assert_json '"recovery_attempted":1'
+assert_json '"recovery_state":"restart_timeout"'
+MOCK_RESTART_MODE_VALUE=complete
+WATCHDOG_THRESHOLD_VALUE=3
+pass "completed and deadline-expired restart results are published exactly"
 
 new_case early_signal_exit
 for mode in early_137 early_143; do
@@ -1557,6 +1996,11 @@ WATCHDOG_EPOCH_VALUE=1000
 watchdog_env running 1 reachable --once &
 watchdog_launcher_pid=$!
 wait_for_path "${MOCK_FINAL_PROOF_GATE_VALUE}.ready"
+grep -qx closed "${MOCK_FINAL_PROOF_GATE_VALUE}.fd7" ||
+    fail "restart_generation_changes_after_latch: proof child inherited install authority"
+if install_lock_is_available; then
+    fail "restart_generation_changes_after_latch: parent lost install authority"
+fi
 write_process_generation 4243 20000
 : > "${MOCK_FINAL_PROOF_GATE_VALUE}.release"
 wait "$watchdog_launcher_pid"
@@ -1574,6 +2018,36 @@ grep -qx 'recovery_count=0' \
 MOCK_FINAL_PROOF_GATE_VALUE=
 WATCHDOG_THRESHOLD_VALUE=3
 pass "a generation swap during latch persistence rolls back the unspent restart"
+
+new_case generation_changes_during_second_integrity
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE="${CASE_DIR}/second-integrity"
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable --once &
+watchdog_launcher_pid=$!
+wait_for_path "${MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE}.ready"
+grep -qx closed "${MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE}.fd7" ||
+    fail "generation_changes_during_second_integrity: proof child inherited install authority"
+if install_lock_is_available; then
+    fail "generation_changes_during_second_integrity: parent lost install authority"
+fi
+write_process_generation 4244 21000
+: > "${MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE}.release"
+wait "$watchdog_launcher_pid"
+assert_no_actions
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"restart_generation_changed"'
+grep -qx 'recovery_attempted=0' \
+    "${STATE_DIR}/tailscale-watchdog.memory" ||
+    fail "generation_changes_during_second_integrity: latch was not refunded"
+install_lock_is_available ||
+    fail "generation_changes_during_second_integrity: final proof retained lock"
+MOCK_SECOND_INTEGRITY_GATE_AFTER_LATCH_VALUE=
+WATCHDOG_THRESHOLD_VALUE=3
+pass "generation is rejoined after the second init-integrity proof"
 
 new_case inactive_becomes_running_after_latch
 remove_process_generation
@@ -1622,6 +2096,154 @@ MOCK_FINAL_PROOF_GATE_VALUE=
 WATCHDOG_THRESHOLD_VALUE=3
 pass "an atomically appearing maintenance lease wins the final restart race"
 
+new_case active_install_transaction
+rm -f "$SOCKET_FILE"
+: > "$INSTALL_LOCK_PATH"
+chmod 0600 "$INSTALL_LOCK_PATH"
+install_lock_inode="$(lock_inode "$INSTALL_LOCK_PATH")"
+write_maintenance_marker 999
+holder_ready="${CASE_DIR}/holder.ready"
+holder_release="${CASE_DIR}/holder.release"
+start_install_lock_holder \
+    "$INSTALL_LOCK_PATH" "$holder_ready" "$holder_release"
+WATCHDOG_THRESHOLD_VALUE=1
+run_once running 1 200 1000
+assert_status watchdog_error
+assert_json '"reason":"install_transaction_active"'
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"install_transaction_active"'
+assert_no_actions
+[ "$(lock_inode "$INSTALL_LOCK_PATH")" = "$install_lock_inode" ] ||
+    fail "active_install_transaction: watchdog replaced the shared lock inode"
+stop_install_lock_holder "$holder_release"
+rm -f "${STATE_DIR}/tailscale-maintenance"
+run_once running 1 215 1015
+[ "$(action_count)" -eq 1 ] ||
+    fail "active_install_transaction: idle successor could not recover"
+grep -qx closed "$RUNTIME_DIR/restart-fd7" ||
+    fail "active_install_transaction: restart child inherited install authority"
+install_lock_is_available ||
+    fail "active_install_transaction: completed restart retained install authority"
+WATCHDOG_THRESHOLD_VALUE=3
+pass "expired lease cannot race a live installer or upgrader transaction"
+
+new_case install_transaction_appears_after_latch
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE="${CASE_DIR}/flock-gate"
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable --once &
+watchdog_launcher_pid=$!
+wait_for_path "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.ready"
+install_lock_inode="$(lock_inode "$INSTALL_LOCK_PATH")"
+holder_ready="${CASE_DIR}/holder.ready"
+holder_release="${CASE_DIR}/holder.release"
+start_install_lock_holder \
+    "$INSTALL_LOCK_PATH" "$holder_ready" "$holder_release"
+: > "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.release"
+wait "$watchdog_launcher_pid"
+assert_no_actions
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"install_transaction_active"'
+grep -qx 'recovery_attempted=0' \
+    "${STATE_DIR}/tailscale-watchdog.memory" ||
+    fail "install_transaction_appears_after_latch: latch was not refunded"
+[ "$(lock_inode "$INSTALL_LOCK_PATH")" = "$install_lock_inode" ] ||
+    fail "install_transaction_appears_after_latch: lock inode changed"
+stop_install_lock_holder "$holder_release"
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE=
+WATCHDOG_THRESHOLD_VALUE=3
+pass "a transaction starting after latch persistence wins the final restart race"
+
+new_case unsafe_install_lock
+unsafe_lock_target="${CASE_DIR}/unsafe-lock-target"
+printf '%s\n' sentinel > "$unsafe_lock_target"
+ln -s "$unsafe_lock_target" "$INSTALL_LOCK_PATH"
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+run_once running 1 200 1000
+assert_status watchdog_error
+assert_json '"reason":"install_lock_invalid"'
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_no_actions
+[ "$(cat "$unsafe_lock_target")" = "sentinel" ] ||
+    fail "unsafe_install_lock: watchdog followed the lock symlink"
+WATCHDOG_THRESHOLD_VALUE=3
+pass "an unsafe shared install-lock object suppresses recovery"
+
+new_case install_lock_replaced_after_latch
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE="${CASE_DIR}/flock-gate"
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable --once &
+watchdog_launcher_pid=$!
+wait_for_path "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.ready"
+mv "$INSTALL_LOCK_PATH" "${INSTALL_LOCK_PATH}.replaced"
+: > "$INSTALL_LOCK_PATH"
+chmod 0600 "$INSTALL_LOCK_PATH"
+: > "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.release"
+wait "$watchdog_launcher_pid"
+assert_no_actions
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"install_lock_invalid"'
+grep -qx 'recovery_attempted=0' \
+    "${STATE_DIR}/tailscale-watchdog.memory" ||
+    fail "install_lock_replaced_after_latch: latch was not refunded"
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE=
+WATCHDOG_THRESHOLD_VALUE=3
+pass "shared install-lock inode replacement invalidates final restart authority"
+
+new_case install_lock_replaced_during_flock
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_FLOCK_REPLACE_AFTER_LATCH_PATH_VALUE="$INSTALL_LOCK_PATH"
+run_once running 1 200 1000
+assert_no_actions
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"install_lock_invalid"'
+grep -qx 'recovery_attempted=0' \
+    "${STATE_DIR}/tailscale-watchdog.memory" ||
+    fail "install_lock_replaced_during_flock: latch was not refunded"
+[ -f "${INSTALL_LOCK_PATH}.swapped" ] &&
+    [ -f "${INSTALL_LOCK_PATH}.orphaned" ] ||
+    fail "install_lock_replaced_during_flock: race hook did not replace the lock"
+MOCK_FLOCK_REPLACE_AFTER_LATCH_PATH_VALUE=
+WATCHDOG_THRESHOLD_VALUE=3
+pass "post-flock inode rejoin rejects path replacement during acquisition"
+
+new_case transaction_completes_before_final_lock
+rm -f "$SOCKET_FILE"
+WATCHDOG_THRESHOLD_VALUE=1
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE="${CASE_DIR}/flock-gate"
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable --once &
+watchdog_launcher_pid=$!
+wait_for_path "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.ready"
+write_process_generation 5252 11000
+: > "${MOCK_FLOCK_GATE_AFTER_LATCH_VALUE}.release"
+wait "$watchdog_launcher_pid"
+assert_no_actions
+assert_json '"recovery_attempted":0'
+assert_json '"recovery_count":0'
+assert_json '"recovery_state":"restart_generation_changed"'
+grep -qx 'recovery_attempted=0' \
+    "${STATE_DIR}/tailscale-watchdog.memory" ||
+    fail "transaction_completes_before_final_lock: latch was not refunded"
+install_lock_is_available ||
+    fail "transaction_completes_before_final_lock: final proof retained lock"
+MOCK_FLOCK_GATE_AFTER_LATCH_VALUE=
+WATCHDOG_THRESHOLD_VALUE=3
+pass "final mutable proofs run only after shared install authority is held"
+
 new_case ordinary_persistence_failure
 run_once running 1 200 1000
 assert_status running
@@ -1665,6 +2287,12 @@ grep -qx 'recovery_attempted=1' \
     fail "restart_latch_survives_sigkill: action preceded durable latch"
 kill -KILL "$watchdog_pid"
 wait "$watchdog_launcher_pid" 2>/dev/null || true
+if install_lock_is_available; then
+    fail "restart_latch_survives_sigkill: timeout guardian lost the install lock"
+fi
+grep -qx closed "$RUNTIME_DIR/restart-fd7" ||
+    fail "restart_latch_survives_sigkill: restart child inherited install authority"
+wait_for_install_lock_available
 MOCK_RESTART_MODE_VALUE=complete
 MOCK_TIMEOUT_DELAY_VALUE=0.5
 run_once running 1 215 1015
@@ -1675,6 +2303,56 @@ assert_json '"recovery_state":"recovery_cooldown"'
 WATCHDOG_THRESHOLD_VALUE=3
 MOCK_REQUIRE_DURABLE_LATCH_VALUE=0
 pass "SIGKILL during restart leaves the successor in durable cooldown"
+
+new_case signal_restart_and_logger_term
+rm -f "$SOCKET_FILE"
+run_once running 1 200 1000
+assert_no_actions
+WATCHDOG_THRESHOLD_VALUE=2
+MOCK_RESTART_MODE_VALUE=hang
+MOCK_LOGGER_MODE_VALUE=hang
+MOCK_REQUIRE_DURABLE_LATCH_VALUE=1
+MOCK_TIMEOUT_DELAY_VALUE=10
+WATCHDOG_MONO_VALUE=215
+WATCHDOG_EPOCH_VALUE=1015
+watchdog_env running 1 reachable --once &
+watchdog_launcher_pid=$!
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+wait_for_path "$RUNTIME_DIR/restart-hang-pid"
+wait_for_path "$RUNTIME_DIR/logger-hang-pid"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+restart_pid="$(cat "$RUNTIME_DIR/restart-hang-pid")"
+logger_pid="$(cat "$RUNTIME_DIR/logger-hang-pid")"
+restart_logger_inode="$(lock_inode "$LOCK_PATH")"
+kill -0 "$watchdog_pid" 2>/dev/null &&
+    kill -0 "$restart_pid" 2>/dev/null &&
+    kill -0 "$logger_pid" 2>/dev/null ||
+    fail "signal_restart_and_logger_term: both tracked children were not live"
+if grep -Fvx bounded "$RUNTIME_DIR/logger-bounds" | grep -q . ||
+   grep -Fvx closed "$RUNTIME_DIR/logger-fd9" | grep -q .; then
+    fail "signal_restart_and_logger_term: logger escaped deadline or inherited fd9"
+fi
+kill -TERM "$watchdog_pid"
+wait_for_pid_exit "$watchdog_pid" "watchdog after restart/logger TERM"
+wait_for_pid_exit "$restart_pid" "restart after watchdog TERM"
+wait_for_pid_exit "$logger_pid" "logger after watchdog TERM"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+install_lock_is_available ||
+    fail "signal_restart_and_logger_term: TERM retained install authority"
+grep -Fvx closed "$RUNTIME_DIR/restart-fd7" | grep -q . &&
+    fail "signal_restart_and_logger_term: restart inherited install authority"
+MOCK_RESTART_MODE_VALUE=complete
+MOCK_LOGGER_MODE_VALUE=normal
+MOCK_REQUIRE_DURABLE_LATCH_VALUE=0
+MOCK_TIMEOUT_DELAY_VALUE=0.5
+run_once running 1 230 1030
+[ "$(action_count)" -eq 1 ] ||
+    fail "signal_restart_and_logger_term: successor repeated the restart"
+[ "$(lock_inode "$LOCK_PATH")" = "$restart_logger_inode" ] ||
+    fail "signal_restart_and_logger_term: successor replaced the lock inode"
+WATCHDOG_THRESHOLD_VALUE=3
+pass "TERM reaps restart children and releases shared install authority"
 
 new_case rearm_after_five
 run_once hang 1 200 1000
@@ -1975,6 +2653,155 @@ assert_status running
     fail "sigkill_lock_release: successor replaced the persistent lock inode"
 pass "SIGKILL releases ownership even while a detached query child survives"
 
+new_case signal_logger_term
+MOCK_TIMEOUT_DELAY_VALUE=10
+MOCK_LOGGER_MODE_VALUE=hang
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable "" &
+watchdog_launcher_pid=$!
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+wait_for_path "$RUNTIME_DIR/logger-hang-pid"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+logger_pid="$(cat "$RUNTIME_DIR/logger-hang-pid")"
+signal_logger_inode="$(lock_inode "$LOCK_PATH")"
+kill -0 "$watchdog_pid" 2>/dev/null &&
+    kill -0 "$logger_pid" 2>/dev/null ||
+    fail "signal_logger_term: deterministic logger hang was not live"
+grep -qx bounded "$RUNTIME_DIR/logger-bounds" ||
+    fail "signal_logger_term: logger did not run below a deadline"
+grep -qx closed "$RUNTIME_DIR/logger-fd9" ||
+    fail "signal_logger_term: logger inherited the singleton descriptor"
+kill -TERM "$watchdog_pid"
+wait_for_pid_exit "$watchdog_pid" "watchdog after logger TERM"
+wait_for_pid_exit "$logger_pid" "logger after watchdog TERM"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+MOCK_LOGGER_MODE_VALUE=normal
+MOCK_TIMEOUT_DELAY_VALUE=0.5
+run_once running 1 215 1015
+assert_status running
+[ "$(lock_inode "$LOCK_PATH")" = "$signal_logger_inode" ] ||
+    fail "signal_logger_term: successor replaced the lock inode"
+pass "TERM during diagnostic logging reaps it and preserves singleton recovery"
+
+new_case sigkill_logger_lock_release
+MOCK_TIMEOUT_DELAY_VALUE=10
+MOCK_LOGGER_MODE_VALUE=hang
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable "" &
+watchdog_launcher_pid=$!
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+wait_for_path "$RUNTIME_DIR/logger-hang-pid"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+logger_pid="$(cat "$RUNTIME_DIR/logger-hang-pid")"
+logger_parent_pid="$(
+    ps -o ppid= -p "$logger_pid" 2>/dev/null | tr -d ' \r\n'
+)"
+sigkill_logger_inode="$(lock_inode "$LOCK_PATH")"
+kill -KILL "$watchdog_pid"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+kill -0 "$logger_pid" 2>/dev/null ||
+    fail "sigkill_logger_lock_release: logger did not survive parent SIGKILL"
+MOCK_LOGGER_MODE_VALUE=normal
+MOCK_TIMEOUT_DELAY_VALUE=0.5
+run_once running 1 215 1015
+assert_status running
+[ "$(lock_inode "$LOCK_PATH")" = "$sigkill_logger_inode" ] ||
+    fail "sigkill_logger_lock_release: successor replaced the lock inode"
+[ "$(sed -n 's/^pid=//p' "$LOCK_PATH")" != "$watchdog_pid" ] ||
+    fail "sigkill_logger_lock_release: successor did not own metadata"
+case "$logger_parent_pid" in
+    ""|*[!0-9]*)
+        kill -TERM "$logger_pid" 2>/dev/null || true
+        ;;
+    *)
+        kill -TERM "$logger_parent_pid" 2>/dev/null || true
+        wait_for_pid_exit "$logger_parent_pid" \
+            "orphan logger timeout wrapper after successor proof"
+        ;;
+esac
+wait_for_pid_exit "$logger_pid" "orphan logger after successor proof"
+pass "SIGKILL during diagnostic logging cannot leak fd9 into the successor"
+
+new_case signal_projection_term
+MOCK_TIMEOUT_DELAY_VALUE=10
+MOCK_JSONFILTER_MODE_VALUE=hang
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable "" &
+watchdog_launcher_pid=$!
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+wait_for_path "$RUNTIME_DIR/jsonfilter-hang-pid"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+parser_pid="$(cat "$RUNTIME_DIR/jsonfilter-hang-pid")"
+signal_projection_inode="$(lock_inode "$LOCK_PATH")"
+kill -0 "$watchdog_pid" 2>/dev/null &&
+    kill -0 "$parser_pid" 2>/dev/null ||
+    fail "signal_projection_term: deterministic parser hang was not live"
+kill -TERM "$watchdog_pid"
+wait_for_pid_exit "$watchdog_pid" "watchdog after parser TERM"
+wait_for_pid_exit "$parser_pid" "parser after watchdog TERM"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+assert_no_raw_status_artifacts
+MOCK_JSONFILTER_MODE_VALUE=normal
+MOCK_TIMEOUT_DELAY_VALUE=0.5
+run_once running 1 215 1015
+assert_status running
+[ "$(lock_inode "$LOCK_PATH")" = "$signal_projection_inode" ] ||
+    fail "signal_projection_term: successor replaced the lock inode"
+pass "TERM during parser projection reaps it, clears secrets, and preserves singleton recovery"
+
+new_case sigkill_projection_lock_release
+MOCK_TIMEOUT_DELAY_VALUE=10
+MOCK_JSONFILTER_MODE_VALUE=hang
+WATCHDOG_MONO_VALUE=200
+WATCHDOG_EPOCH_VALUE=1000
+watchdog_env running 1 reachable "" &
+watchdog_launcher_pid=$!
+LOCK_PATH="${STATE_DIR}/tailscale-watchdog.lock"
+wait_for_lock_pid "$LOCK_PATH"
+wait_for_path "$RUNTIME_DIR/jsonfilter-hang-pid"
+watchdog_pid="$(sed -n 's/^pid=//p' "$LOCK_PATH")"
+parser_pid="$(cat "$RUNTIME_DIR/jsonfilter-hang-pid")"
+parser_parent_pid="$(
+    ps -o ppid= -p "$parser_pid" 2>/dev/null | tr -d ' \r\n'
+)"
+sigkill_projection_inode="$(lock_inode "$LOCK_PATH")"
+kill -KILL "$watchdog_pid"
+wait "$watchdog_launcher_pid" 2>/dev/null || true
+kill -0 "$parser_pid" 2>/dev/null ||
+    fail "sigkill_projection_lock_release: parser did not survive parent SIGKILL"
+if ! find "$STATE_DIR" -maxdepth 1 \
+    \( -name 'tailscale-status.*' \
+    -o -name 'tailscale-status-error.*' \
+    -o -name 'tailscale-status-projection.*' \) \
+    -print -quit | grep -q .; then
+    fail "sigkill_projection_lock_release: no stale crash artifact was created"
+fi
+MOCK_JSONFILTER_MODE_VALUE=normal
+MOCK_TIMEOUT_DELAY_VALUE=0.5
+run_once running 1 215 1015
+assert_status running
+[ "$(lock_inode "$LOCK_PATH")" = "$sigkill_projection_inode" ] ||
+    fail "sigkill_projection_lock_release: successor replaced the lock inode"
+[ "$(sed -n 's/^pid=//p' "$LOCK_PATH")" != "$watchdog_pid" ] ||
+    fail "sigkill_projection_lock_release: successor did not own metadata"
+assert_no_raw_status_artifacts
+kill -TERM "$parser_pid" 2>/dev/null || true
+wait_for_pid_exit "$parser_pid" "orphan parser after successor proof"
+case "$parser_parent_pid" in
+    ""|*[!0-9]*) ;;
+    *)
+        wait_for_pid_exit "$parser_parent_pid" \
+            "orphan timeout wrapper after successor proof"
+        ;;
+esac
+pass "SIGKILL during parser projection cannot leak fd9 or stale secrets into the successor"
+
 new_case signal_status
 MOCK_TIMEOUT_DELAY_VALUE=5
 WATCHDOG_MONO_VALUE=200
@@ -2019,10 +2846,23 @@ pass "TERM during interval sleep reaps the active child and exits"
 if [ "$(grep -Fc '9>&-' "$WATCHDOG")" -lt 4 ]; then
     fail "watchdog long-lived children do not all close the singleton descriptor"
 fi
+if [ "$(grep -Fc '7>&-' "$WATCHDOG")" -lt 7 ]; then
+    fail "watchdog children do not close shared install authority"
+fi
 if grep -Eq 'rm -f .*LOCK_FILE|rm -f .*tailscale-watchdog\\.lock' "$WATCHDOG"; then
     fail "watchdog removes the persistent kernel-lock inode"
 fi
-pass "all potentially surviving watchdog children close the persistent lock descriptor"
+if grep -Eq 'rm -f .*INSTALL_LOCK_FILE|rm -f .*router-install\\.lock' \
+    "$WATCHDOG"; then
+    fail "watchdog removes the shared router-install lock inode"
+fi
+grep -Fq 'router-install.lock' "$WATCHDOG" &&
+    grep -Fq 'router-install.lock' \
+        "${REPO_DIR}/router/install-jammonitor-router.sh" &&
+    grep -Fq 'router-install.lock' \
+        "${REPO_DIR}/router/upgrade-tailscale-arm64.sh" ||
+    fail "watchdog, installer, and upgrader do not share one exact lock path"
+pass "all child and shared-lock descriptor inheritance is explicit"
 
 if rg -n 'tailscale[[:space:]].*(down|up|logout)|rm .*tailscaled\\.state' \
     "${REPO_DIR}/router/tailscale.init" \

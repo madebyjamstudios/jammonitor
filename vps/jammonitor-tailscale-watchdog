@@ -30,6 +30,7 @@ FLOCK_CMD="${WATCHDOG_FLOCK_CMD:-/usr/bin/flock}"
 MV_CMD="${WATCHDOG_MV_CMD:-/usr/bin/mv}"
 DD_CMD="${WATCHDOG_DD_CMD:-/usr/bin/dd}"
 STAT_CMD="${WATCHDOG_STAT_CMD:-/usr/bin/stat}"
+UPTIME_FILE="${WATCHDOG_UPTIME_FILE:-/proc/uptime}"
 EXPECTED_ROOT_UID="${WATCHDOG_EXPECTED_ROOT_UID:-0}"
 EXPECTED_ROOT_GID="${WATCHDOG_EXPECTED_ROOT_GID:-0}"
 
@@ -351,11 +352,12 @@ if [ -e "$LOCK_FILE" ] && [ ! -f "$LOCK_FILE" ]; then
     exit 1
 fi
 
-# The lock lives on the open file description inherited by flock and this
-# shell. It is released by the kernel on every process exit, including
-# SIGKILL. The persistent inode is deliberately never unlinked, so a successor
-# can never lock a replacement inode while this invocation still holds the
-# original.
+# The lock lives on an open file description. The bounded restart guardian is
+# its only deliberately long-lived inheritor. The kernel releases it after the
+# last inheriting process closes its reference or exits. Thus SIGKILL of this
+# shell cannot release authority while a restart is still in flight. The
+# persistent inode is deliberately never unlinked, so a successor can never
+# lock a replacement inode while this invocation or its guardian holds it.
 exec 9>>"$LOCK_FILE"
 chmod 0600 "$LOCK_FILE" 2>/dev/null || exit 1
 "$FLOCK_CMD" -n 9 || exit 0
@@ -441,6 +443,53 @@ now_monotonic() {
     else
         printf '0'
     fi
+}
+
+command_monotonic() {
+    _command_uptime=""
+    IFS=' ' read -r _command_uptime _command_ignored \
+        2>/dev/null <"$UPTIME_FILE" || {
+        printf '0'
+        return
+    }
+
+    case "$_command_uptime" in
+        *.*)
+            _command_seconds="${_command_uptime%%.*}"
+            _command_fraction="${_command_uptime#*.}"
+            case "$_command_fraction" in
+                ""|*[!0-9]*|*.*)
+                    printf '0'
+                    return
+                    ;;
+            esac
+            ;;
+        *)
+            _command_seconds="$_command_uptime"
+            _command_fraction="0"
+            ;;
+    esac
+    if ! is_uint "$_command_seconds" ||
+       [ "${#_command_seconds}" -gt 15 ]; then
+        printf '0'
+        return
+    fi
+    _command_hundredths="$(
+        printf '%s00' "$_command_fraction" | cut -c1-2
+    )"
+    case "$_command_hundredths" in
+        [0-9][0-9]) ;;
+        *)
+            printf '0'
+            return
+            ;;
+    esac
+    _command_tens="${_command_hundredths%?}"
+    _command_ones="${_command_hundredths#?}"
+    # Keep hundredths so a short signal or command-owned rc=124 across a
+    # whole-second boundary cannot be mistaken for a timeout deadline.
+    printf '%s' "$((_command_seconds * 100 +
+        _command_tens * 10 + _command_ones))"
 }
 
 read_memory() {
@@ -1124,6 +1173,7 @@ observe_localapi() {
         return
     fi
 
+    STATUS_STARTED_CENTISECONDS="$(command_monotonic)"
     "$TIMEOUT_CMD" --signal=TERM --kill-after=2 "$STATUS_TIMEOUT" \
         /bin/sh -c \
         'ulimit -f "$1" || exit 125; shift; exec "$@"' \
@@ -1135,18 +1185,30 @@ observe_localapi() {
     wait "$ACTIVE_CHILD"
     _status_rc=$?
     ACTIVE_CHILD=""
+    STATUS_FINISHED_CENTISECONDS="$(command_monotonic)"
+    STATUS_DEADLINE_REACHED="false"
+    if is_uint "$STATUS_STARTED_CENTISECONDS" &&
+       is_uint "$STATUS_FINISHED_CENTISECONDS" &&
+       [ "$STATUS_STARTED_CENTISECONDS" -gt 0 ] &&
+       [ "$STATUS_FINISHED_CENTISECONDS" -ge \
+           "$STATUS_STARTED_CENTISECONDS" ] &&
+       [ $((STATUS_FINISHED_CENTISECONDS -
+               STATUS_STARTED_CENTISECONDS)) -ge \
+           $((STATUS_TIMEOUT * 100)) ]; then
+        STATUS_DEADLINE_REACHED="true"
+    fi
 
     case "$_status_rc" in
-        124)
-            STATUS="localapi_timeout"
-            REASON="localapi_timeout"
-            ELIGIBLE_FAILURE="true"
-            return
-            ;;
-        137|143)
-            # GNU timeout reserves 124 for a proven deadline. Signal-derived
-            # statuses are ambiguous with OOM or external termination and
-            # cannot authorize a daemon restart.
+        124|137|143)
+            if [ "$STATUS_DEADLINE_REACHED" = "true" ]; then
+                STATUS="localapi_timeout"
+                REASON="localapi_timeout"
+                ELIGIBLE_FAILURE="true"
+                return
+            fi
+            # A wrapped command may itself exit 124, and an early 137 or 143
+            # may come from OOM or external termination. Without an observed
+            # monotonic deadline, none can authorize a daemon restart.
             STATUS="command_error"
             REASON="localapi_command_failed"
             return
@@ -1596,32 +1658,38 @@ elif [ "$ELIGIBLE_FAILURE" = "true" ]; then
             clear_continuity_break || true
             _supervisor_generation_current=0
             _late_maintenance=0
-            if supervisor_observation_still_current 1; then
+            # Cooperating maintenance publishers must hold this watchdog's
+            # singleton lock from marker publication through their bounded
+            # action. Recheck the marker before the final autonomous systemd
+            # generation proof; the generation proof must be the last
+            # external-state observation before the restart spawn.
+            if maintenance_is_active; then
+                MAINTENANCE_ACTIVE="true"
+                _late_maintenance=1
+            elif supervisor_observation_still_current 1; then
                 _supervisor_generation_current=1
-                # This is the final external observation before the restart
-                # spawn. A maintenance marker published while the final
-                # systemd identity join was running must suppress recovery.
-                if maintenance_is_active; then
-                    MAINTENANCE_ACTIVE="true"
-                    _late_maintenance=1
+                ACTION="restart_requested"
+                "$TIMEOUT_CMD" --signal=TERM --kill-after=2 "$RESTART_TIMEOUT" \
+                    /bin/sh -c 'exec 9>&-; exec "$@"' \
+                    jammonitor-vps-watchdog-restart \
+                    "$SYSTEMCTL_CMD" restart "$TAILSCALED_UNIT" \
+                    >/dev/null 2>&1 &
+                ACTIVE_CHILD=$!
+                # timeout deliberately retains fd 9 as a bounded lock
+                # guardian. Its actual systemctl child closes the
+                # descriptor before exec. If this process is SIGKILLed,
+                # no successor can overlap the in-flight restart.
+                # No external-state observation is allowed between the final
+                # systemd generation proof and this bounded spawn.
+                log_event "recovery_requested_${STATUS}"
+                wait "$ACTIVE_CHILD"
+                _restart_rc=$?
+                ACTIVE_CHILD=""
+                if [ "$_restart_rc" -ne 0 ]; then
+                    ACTION="restart_failed"
+                    log_event "recovery_failed_${STATUS}"
                 else
-                    ACTION="restart_requested"
-                    "$TIMEOUT_CMD" --signal=TERM --kill-after=2 "$RESTART_TIMEOUT" \
-                        "$SYSTEMCTL_CMD" restart "$TAILSCALED_UNIT" \
-                        >/dev/null 2>&1 9>&- &
-                    ACTIVE_CHILD=$!
-                    # No external command is allowed between the final
-                    # maintenance proof and spawning this bounded action.
-                    log_event "recovery_requested_${STATUS}"
-                    wait "$ACTIVE_CHILD"
-                    _restart_rc=$?
-                    ACTIVE_CHILD=""
-                    if [ "$_restart_rc" -ne 0 ]; then
-                        ACTION="restart_failed"
-                        log_event "recovery_failed_${STATUS}"
-                    else
-                        log_event "recovery_completed_${STATUS}"
-                    fi
+                    log_event "recovery_completed_${STATUS}"
                 fi
             fi
             if [ "$_supervisor_generation_current" -eq 0 ] ||

@@ -19,9 +19,10 @@ It can request a bounded supervised restart episode in any of these cases:
 1. `tailscaled.service` remains inactive for three consecutive observations.
 2. The service is active but `/run/tailscale/tailscaled.sock` is absent or is
    not a Unix socket for three consecutive observations.
-3. GNU `timeout` returns exactly 124 for
-   `tailscale status --json --peers=false` in three consecutive observations
-   while the service is active.
+3. `tailscale status --json --peers=false` returns a timeout-compatible
+   status, and `/proc/uptime` proves that the configured GNU `timeout`
+   deadline elapsed, in three consecutive observations while the service is
+   active.
 
 The first attempt occurs at the configured failure threshold. If the same
 proven failure remains, attempt two is allowed only after a 60-second monotonic
@@ -60,11 +61,16 @@ The following conditions are observable but never authorize a restart:
 - malformed or future status schemas
 - peer or ACL failures
 
-GNU `timeout` reserves 124 for its own deadline. Exit 137 or 143 is ambiguous
-with OOM termination, an external signal, or a terminated wrapper, so the VPS
-watchdog reports it as a generic command error and never counts it toward
-recovery. A timeout or signal while querying `systemctl show` is likewise
-observable but never restart-eligible.
+The wrapped command can itself exit 124, and exit 137 or 143 can come from OOM
+termination or an external signal. The watchdog therefore treats 124, 137,
+and 143 as restart evidence only when independent monotonic timestamps from
+`/proc/uptime`, kept to hundredths of a second, show that the configured
+deadline elapsed. A fast command-owned 124 or signal exit is a generic command
+error and never counts toward recovery. GNU `timeout --kill-after` can return
+137 after its deadline if it must send `SIGKILL`, so elapsed 137 and 143 exits
+remain timeout-compatible. An unreadable or malformed uptime source fails
+closed and suppresses timeout recovery. A timeout or signal while querying
+`systemctl show` is likewise observable but never restart-eligible.
 
 An explicitly disabled or masked `tailscaled.service` is also an
 operator-authoritative state and is never restarted. Only an inactive or
@@ -106,10 +112,12 @@ watchdog process or bounded child cannot persist those private runtime bytes in
 a core dump.
 
 Each run holds a nonblocking kernel `flock` on the persistent `watchdog.lock`
-inode. The inode is never unlinked during normal or signal cleanup. The kernel
-releases the held file-description lock on every exit, including `SIGKILL`, so
-stale PID text and PID reuse cannot suppress later timer runs and concurrent
-starts cannot lock different replacement inodes.
+inode. The inode is never unlinked during normal or signal cleanup. Observation
+children close the descriptor; only the bounded restart timeout deliberately
+inherits it as a guardian. The kernel releases the lock after the final holder
+closes or exits, so `SIGKILL` cannot allow an overlapping restart, stale PID
+text cannot suppress later runs, and concurrent starts cannot lock different
+replacement inodes.
 
 Because systemd can recover a short process crash entirely between 15-second
 samples, `status.json` publishes systemd's numeric `NRestarts`, current
@@ -725,26 +733,109 @@ action, create a marker containing the creation and expiry Unix epochs. The
 expiry must be later than creation and the interval must not exceed one hour:
 
 ```bash
-sudo install -d -m 0700 -o root -g root \
-  /run/jammonitor-tailscale-watchdog
-NOW_EPOCH="$(date +%s)"
-case "$NOW_EPOCH" in ""|*[!0-9]*) exit 1 ;; esac
-MAINTENANCE=/run/jammonitor-tailscale-watchdog/maintenance-until
-sudo test ! -e "$MAINTENANCE"
-sudo test ! -L "$MAINTENANCE"
-sudo sh -c '
-  set -C
+set -eu
+STATE_DIR=/run/jammonitor-tailscale-watchdog
+WATCHDOG_LOCK="$STATE_DIR/watchdog.lock"
+sudo install -d -m 0700 -o root -g root "$STATE_DIR"
+sudo test -d "$STATE_DIR"
+sudo test ! -L "$STATE_DIR"
+[ "$(sudo stat -c '%U:%G:%a' "$STATE_DIR")" = 'root:root:700' ]
+sudo test ! -L "$WATCHDOG_LOCK"
+if ! sudo test -e "$WATCHDOG_LOCK"; then
+  sudo sh -c '
+    set -C
+    umask 077
+    : >"$1"
+    chown root:root "$1"
+    chmod 0600 "$1"
+  ' sh "$WATCHDOG_LOCK"
+fi
+sudo test -f "$WATCHDOG_LOCK"
+[ "$(sudo stat -c '%U:%G:%a:%h' "$WATCHDOG_LOCK")" = \
+  'root:root:600:1' ]
+
+# flock is the guardian. Its child publishes the lease, performs the bounded
+# action, and removes only the exact marker it owns before the lock is released.
+sudo /usr/bin/flock -n "$WATCHDOG_LOCK" /bin/sh -c '
+  set -eu
   umask 077
-  printf "%s %s\n" "$1" "$2" > "$3"
-' sh "$NOW_EPOCH" "$((NOW_EPOCH + 600))" "$MAINTENANCE"
+  MAINTENANCE="$1/maintenance-until"
+  NOW_EPOCH="$(date +%s)"
+  case "$NOW_EPOCH" in
+    0|[1-9]|[1-9][0-9]*) [ "${#NOW_EPOCH}" -le 18 ] ;;
+    *) exit 1 ;;
+  esac
+  EXPIRES_EPOCH=$((NOW_EPOCH + 600))
+  MARKER_EXPECTED_BYTES=$((
+    ${#NOW_EPOCH} + 1 + ${#EXPIRES_EPOCH} + 1
+  ))
+  MARKER_TEMP="${MAINTENANCE}.tmp.$$"
+  MARKER_PUBLISHED=0
+  REMOVE_MARKER_ON_EXIT=0
+  marker_is_owned() {
+    [ "$MARKER_PUBLISHED" -eq 1 ] &&
+      [ -f "$MAINTENANCE" ] &&
+      [ ! -L "$MAINTENANCE" ] &&
+      [ "$(stat -c "%U:%G:%a:%h" "$MAINTENANCE")" = \
+        "root:root:600:1" ] &&
+      [ "$(wc -c <"$MAINTENANCE" | tr -d " \r\n")" = \
+        "$MARKER_EXPECTED_BYTES" ] &&
+      [ "$(cat "$MAINTENANCE")" = \
+        "$NOW_EPOCH $EXPIRES_EPOCH" ]
+  }
+  cleanup() {
+    CLEANUP_RC=$?
+    trap - EXIT HUP INT TERM
+    if [ "$REMOVE_MARKER_ON_EXIT" -eq 1 ] && marker_is_owned; then
+      rm -f -- "$MAINTENANCE"
+    fi
+    if [ -f "$MARKER_TEMP" ] && [ ! -L "$MARKER_TEMP" ]; then
+      rm -f -- "$MARKER_TEMP"
+    fi
+    exit "$CLEANUP_RC"
+  }
+  trap cleanup EXIT HUP INT TERM
+  [ ! -e "$MAINTENANCE" ] && [ ! -L "$MAINTENANCE" ]
+  [ ! -e "$MARKER_TEMP" ] && [ ! -L "$MARKER_TEMP" ]
+  (set -C; printf "%s %s\n" "$NOW_EPOCH" "$EXPIRES_EPOCH" \
+    >"$MARKER_TEMP")
+  chown root:root "$MARKER_TEMP"
+  chmod 0600 "$MARKER_TEMP"
+  mv -f -- "$MARKER_TEMP" "$MAINTENANCE"
+  MARKER_PUBLISHED=1
+  marker_is_owned
+
+  /usr/bin/timeout --signal=TERM --kill-after=2 30 \
+    systemctl restart tailscaled.service &
+  ACTION_PID=$!
+  wait "$ACTION_PID"
+  /usr/bin/timeout --signal=TERM --kill-after=2 10 \
+    systemctl is-active --quiet tailscaled.service
+
+  marker_is_owned
+  REMOVE_MARKER_ON_EXIT=1
+  rm -f -- "$MAINTENANCE"
+  MARKER_PUBLISHED=0
+  trap - EXIT HUP INT TERM
+' sh "$STATE_DIR"
+
+# Start a fresh observation only after flock has closed the singleton fd.
+sudo systemctl start jammonitor-tailscale-watchdog.service
 ```
 
-Remove the marker after maintenance. If the operator process crashes, the
-absolute expiry prevents indefinite suppression. An invalid, expired, future
-created, or more-than-one-hour marker fails open for recovery and is reported
-as a bounded `maintenance_state` enum in `status.json`. Invalid marker content
-is retained for operator diagnosis but is never copied into status or logs.
-A symlink or any other non-regular maintenance path is
+Every manual marker/service action must take the watchdog's same-boot
+singleton `flock` before publishing the marker and retain it through the
+bounded action and owned-marker cleanup. This serializes an already-running
+watchdog with the operator in both directions. Run the fresh observation only
+after the lock guardian exits. If the operator shell crashes, any inherited
+bounded guardian retains the lock until it exits; the kernel then releases it,
+and the absolute expiry prevents indefinite suppression. A failed or timed out
+service action deliberately leaves its exact marker to expire instead of
+prematurely granting automatic restart authority. An invalid, expired,
+future-created, or more-than-one-hour marker fails open for recovery and is
+reported as a bounded `maintenance_state` enum in `status.json`. Invalid marker
+content is retained for operator diagnosis but is never copied into status or
+logs. A symlink or any other non-regular maintenance path is
 `maintenance_state=invalid_type`; it is never followed and never suppresses
 recovery.
 
@@ -777,16 +868,73 @@ BEFORE_OBSERVED_AT="$(sudo jq -r '.observed_at' "$STATUS")"
 
 STATE_DIR=/run/jammonitor-tailscale-watchdog
 MAINTENANCE="$STATE_DIR/maintenance-until"
-NOW_EPOCH="$(date +%s)"
-sudo install -d -m 0700 -o root -g root "$STATE_DIR"
-printf '%s %s\n' "$NOW_EPOCH" "$((NOW_EPOCH + 300))" |
-  sudo tee "$MAINTENANCE" >/dev/null
-sudo chmod 0600 "$MAINTENANCE"
-trap 'sudo rm -f "$MAINTENANCE"' EXIT HUP INT TERM
-sudo systemctl restart tailscaled.service
-sudo systemctl is-active --quiet tailscaled.service
-sudo rm -f "$MAINTENANCE"
-trap - EXIT HUP INT TERM
+WATCHDOG_LOCK="$STATE_DIR/watchdog.lock"
+sudo test -f "$WATCHDOG_LOCK"
+sudo test ! -L "$WATCHDOG_LOCK"
+[ "$(sudo stat -c '%U:%G:%a:%h' "$WATCHDOG_LOCK")" = \
+  'root:root:600:1' ]
+sudo /usr/bin/flock -n "$WATCHDOG_LOCK" /bin/sh -c '
+  set -eu
+  umask 077
+  MAINTENANCE="$1"
+  NOW_EPOCH="$(date +%s)"
+  case "$NOW_EPOCH" in
+    0|[1-9]|[1-9][0-9]*) [ "${#NOW_EPOCH}" -le 18 ] ;;
+    *) exit 1 ;;
+  esac
+  EXPIRES_EPOCH=$((NOW_EPOCH + 300))
+  MARKER_EXPECTED_BYTES=$((
+    ${#NOW_EPOCH} + 1 + ${#EXPIRES_EPOCH} + 1
+  ))
+  MARKER_TEMP="${MAINTENANCE}.tmp.$$"
+  MARKER_PUBLISHED=0
+  REMOVE_MARKER_ON_EXIT=0
+  marker_is_owned() {
+    [ "$MARKER_PUBLISHED" -eq 1 ] &&
+      [ -f "$MAINTENANCE" ] &&
+      [ ! -L "$MAINTENANCE" ] &&
+      [ "$(stat -c "%U:%G:%a:%h" "$MAINTENANCE")" = \
+        "root:root:600:1" ] &&
+      [ "$(wc -c <"$MAINTENANCE" | tr -d " \r\n")" = \
+        "$MARKER_EXPECTED_BYTES" ] &&
+      [ "$(cat "$MAINTENANCE")" = \
+        "$NOW_EPOCH $EXPIRES_EPOCH" ]
+  }
+  cleanup() {
+    CLEANUP_RC=$?
+    trap - EXIT HUP INT TERM
+    if [ "$REMOVE_MARKER_ON_EXIT" -eq 1 ] && marker_is_owned; then
+      rm -f -- "$MAINTENANCE"
+    fi
+    if [ -f "$MARKER_TEMP" ] && [ ! -L "$MARKER_TEMP" ]; then
+      rm -f -- "$MARKER_TEMP"
+    fi
+    exit "$CLEANUP_RC"
+  }
+  trap cleanup EXIT HUP INT TERM
+  [ ! -e "$MAINTENANCE" ] && [ ! -L "$MAINTENANCE" ]
+  [ ! -e "$MARKER_TEMP" ] && [ ! -L "$MARKER_TEMP" ]
+  (set -C; printf "%s %s\n" "$NOW_EPOCH" "$EXPIRES_EPOCH" \
+    >"$MARKER_TEMP")
+  chown root:root "$MARKER_TEMP"
+  chmod 0600 "$MARKER_TEMP"
+  mv -f -- "$MARKER_TEMP" "$MAINTENANCE"
+  MARKER_PUBLISHED=1
+  marker_is_owned
+
+  /usr/bin/timeout --signal=TERM --kill-after=2 30 \
+    systemctl restart tailscaled.service &
+  ACTION_PID=$!
+  wait "$ACTION_PID"
+  /usr/bin/timeout --signal=TERM --kill-after=2 10 \
+    systemctl is-active --quiet tailscaled.service
+
+  marker_is_owned
+  REMOVE_MARKER_ON_EXIT=1
+  rm -f -- "$MAINTENANCE"
+  MARKER_PUBLISHED=0
+  trap - EXIT HUP INT TERM
+' sh "$MAINTENANCE"
 
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 do

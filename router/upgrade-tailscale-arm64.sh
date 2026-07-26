@@ -39,6 +39,21 @@ PEER_COMMAND_TIMEOUT="${TS_UPGRADE_PEER_COMMAND_TIMEOUT:-5}"
 SERVICE_TIMEOUT="${TS_UPGRADE_SERVICE_TIMEOUT:-30}"
 QUIESCE_ATTEMPTS="${TS_UPGRADE_QUIESCE_ATTEMPTS:-10}"
 QUIESCE_DELAY="${TS_UPGRADE_QUIESCE_DELAY:-1}"
+# Every bounded subprocess gets this additional TERM-to-KILL window.
+TIMEOUT_KILL_GRACE=2
+# One capture obtains LocalAPI JSON and one consolidated jsonfilter capture
+# validates and extracts every required field.
+RUNNING_STATUS_CAPTURE_COUNT=2
+ROLLBACK_STATUS_ATTEMPTS=5
+MAINTENANCE_ROLLBACK_STATUS_WAITS=3
+MAINTENANCE_ROLLBACK_DIRECT_STATUS_QUERIES=1
+MAINTENANCE_STANDALONE_SERVICE_COMMANDS=7
+MAINTENANCE_QUIESCE_WAITS=2
+MAINTENANCE_SYNC_COMMANDS=15
+MAINTENANCE_PEER_COMMANDS=2
+MAINTENANCE_STORAGE_AUTHORITY_READS=64
+STORAGE_AUTHORITY_CAPTURES_PER_READ=2
+MAINTENANCE_FIXED_MARGIN=120
 TMP_BASE="${TS_UPGRADE_TMPDIR:-/tmp}"
 PROC_ROOT="${TS_UPGRADE_PROC_ROOT:-/proc}"
 SYS_CLASS_BLOCK="${TS_UPGRADE_SYS_CLASS_BLOCK:-${ROOT_PREFIX}/sys/class/block}"
@@ -49,12 +64,20 @@ TEST_INTERRUPT_AFTER_FENCE="${TS_UPGRADE_TEST_INTERRUPT_AFTER_FENCE:-0}"
 TEST_INTERRUPT_AFTER_DAEMON="${TS_UPGRADE_TEST_INTERRUPT_AFTER_DAEMON:-0}"
 TEST_INTERRUPT_AFTER_LIVE_SYNC="${TS_UPGRADE_TEST_INTERRUPT_AFTER_LIVE_SYNC:-0}"
 TEST_INTERRUPT_AFTER_COMMIT_FENCE="${TS_UPGRADE_TEST_INTERRUPT_AFTER_COMMIT_FENCE:-0}"
+TEST_INTERRUPT_AFTER_LOCAL_CLEAR="${TS_UPGRADE_TEST_INTERRUPT_AFTER_LOCAL_CLEAR:-0}"
 TEST_INTERRUPT_AFTER_USB_CLEAR="${TS_UPGRADE_TEST_INTERRUPT_AFTER_USB_CLEAR:-0}"
 TEST_RESTART_DAEMON_AFTER_CLI="${TS_UPGRADE_TEST_RESTART_DAEMON_AFTER_CLI:-0}"
 TEST_HOLD_LOCK_FILE="${TS_UPGRADE_TEST_HOLD_LOCK_FILE:-}"
 TEST_INVALIDATE_MOUNT_PHASE="${TS_UPGRADE_TEST_INVALIDATE_MOUNT_PHASE:-none}"
 TEST_TAMPER_DURABLE_AFTER_CLI="${TS_UPGRADE_TEST_TAMPER_DURABLE_AFTER_CLI:-0}"
+TEST_TAMPER_LIVE_PHASE="${TS_UPGRADE_TEST_TAMPER_LIVE_PHASE:-none}"
+TEST_TERM_FENCE_PHASE="${TS_UPGRADE_TEST_TERM_FENCE_PHASE:-none}"
 TEST_SWAP_STORAGE_PHASE="${TS_UPGRADE_TEST_SWAP_STORAGE_PHASE:-none}"
+TEST_FAIL_RESERVATION_PHASE="${TS_UPGRADE_TEST_FAIL_RESERVATION_PHASE:-none}"
+TEST_KILL_RESERVATION_PHASE="${TS_UPGRADE_TEST_KILL_RESERVATION_PHASE:-none}"
+TEST_KILL_ROLLBACK_PHASE="${TS_UPGRADE_TEST_KILL_ROLLBACK_PHASE:-none}"
+TEST_NOW_EPOCH="${TS_UPGRADE_TEST_NOW_EPOCH:-}"
+TEST_NOW_EPOCH_FILE="${TS_UPGRADE_TEST_NOW_EPOCH_FILE:-}"
 # POSIX ulimit -f uses 512-byte blocks. Keep raw LocalAPI output at 64 KiB.
 STATUS_FILE_BLOCKS=128
 STORAGE_CAPTURE_BLOCKS=128
@@ -64,6 +87,10 @@ ARCHIVE_LISTING_BLOCKS=256
 ARCHIVE_MAX_BYTES=67108864
 ARCHIVE_MAX_MEMBERS=16
 ARCHIVE_MAX_EXPANDED_BYTES=134217728
+LIVE_BINARY_MAX_BYTES=134217728
+STATE_FILE_MAX_BYTES=16777216
+DURABLE_MANIFEST_MAX_BYTES=4096
+DURABLE_MARKER_MAX_BYTES=1024
 
 if [ "$TESTING" != "1" ]; then
     [ -z "$ROOT_PREFIX$PACKAGE_SOURCE_DIR$UNAME_OVERRIDE" ] ||
@@ -104,11 +131,18 @@ if [ "$TESTING" != "1" ]; then
     [ "$TEST_INTERRUPT_AFTER_DAEMON" = "0" ] &&
     [ "$TEST_INTERRUPT_AFTER_LIVE_SYNC" = "0" ] &&
     [ "$TEST_INTERRUPT_AFTER_COMMIT_FENCE" = "0" ] &&
+    [ "$TEST_INTERRUPT_AFTER_LOCAL_CLEAR" = "0" ] &&
     [ "$TEST_INTERRUPT_AFTER_USB_CLEAR" = "0" ] &&
     [ "$TEST_RESTART_DAEMON_AFTER_CLI" = "0" ] &&
     [ "$TEST_INVALIDATE_MOUNT_PHASE" = "none" ] &&
     [ "$TEST_TAMPER_DURABLE_AFTER_CLI" = "0" ] &&
+    [ "$TEST_TAMPER_LIVE_PHASE" = "none" ] &&
+    [ "$TEST_TERM_FENCE_PHASE" = "none" ] &&
     [ "$TEST_SWAP_STORAGE_PHASE" = "none" ] &&
+    [ "$TEST_FAIL_RESERVATION_PHASE" = "none" ] &&
+    [ "$TEST_KILL_RESERVATION_PHASE" = "none" ] &&
+    [ "$TEST_KILL_ROLLBACK_PHASE" = "none" ] &&
+    [ -z "$TEST_NOW_EPOCH$TEST_NOW_EPOCH_FILE" ] &&
     [ -z "$TEST_HOLD_LOCK_FILE" ] ||
         {
             printf '%s\n' "ERROR: test-only command or timing override refused" >&2
@@ -122,6 +156,16 @@ rooted() {
 
 TAILSCALE_BIN="$(rooted /usr/sbin/tailscale)"
 TAILSCALED_BIN="$(rooted /usr/sbin/tailscaled)"
+ROLLBACK_CLI_LOGICAL="/usr/sbin/.jammonitor-tailscale-rollback-tailscale"
+ROLLBACK_DAEMON_LOGICAL="/usr/sbin/.jammonitor-tailscale-rollback-tailscaled"
+ROLLBACK_STATE_LOGICAL="/etc/tailscale/.jammonitor-tailscale-rollback-state"
+FORWARD_CLI_LOGICAL="/usr/sbin/.jammonitor-tailscale-forward-tailscale"
+FORWARD_DAEMON_LOGICAL="/usr/sbin/.jammonitor-tailscale-forward-tailscaled"
+ROLLBACK_CLI_RESERVATION="$(rooted "$ROLLBACK_CLI_LOGICAL")"
+ROLLBACK_DAEMON_RESERVATION="$(rooted "$ROLLBACK_DAEMON_LOGICAL")"
+ROLLBACK_STATE_RESERVATION="$(rooted "$ROLLBACK_STATE_LOGICAL")"
+FORWARD_CLI_TEMP="$(rooted "$FORWARD_CLI_LOGICAL")"
+FORWARD_DAEMON_TEMP="$(rooted "$FORWARD_DAEMON_LOGICAL")"
 INIT_SCRIPT="$(rooted /etc/init.d/tailscale)"
 ROUTER_MANIFEST="$(rooted /usr/share/jammonitor/router-files.sha256)"
 ROUTER_MANIFEST_DIGEST="$(rooted /usr/share/jammonitor/router-files.sha256.sha256)"
@@ -140,8 +184,11 @@ UPGRADE_FENCE="$(rooted /etc/jammonitor/tailscale-upgrade-fence)"
 UPGRADE_FENCE_TEMP=""
 UPGRADE_FENCE_TOKEN=""
 UPGRADE_FENCE_SHA256=""
+UPGRADE_FENCE_TEMP_SHA256=""
 UPGRADE_FENCE_CREATED=0
+UPGRADE_FENCE_PUBLISHING=0
 UPGRADE_FENCE_PHASE=""
+FENCE_PUBLICATION_RECONCILE_FAILED=0
 STORAGE_CAPTURE=""
 STORAGE_PINNED=0
 STORAGE_SOURCE_LOGICAL=""
@@ -151,13 +198,26 @@ STORAGE_MOUNT_IDENTITY=""
 STORAGE_UUID=""
 STORAGE_PARTITION_PATH=""
 STORAGE_PARENT_PATH=""
+STORAGE_AUTHORITY_READ_COUNT=0
+BIN_PARENT_IDENTITY=""
+STATE_PARENT_IDENTITY=""
 
 WORK_DIR=""
 BACKUP_DIR=""
 TARGET_TEMP=""
+ROLLBACK_CLI_READY=0
+ROLLBACK_DAEMON_READY=0
+ROLLBACK_STATE_READY=0
+ROLLBACK_CLI_OWNED=0
+ROLLBACK_DAEMON_OWNED=0
+ROLLBACK_STATE_OWNED=0
+FORWARD_CLI_OWNED=0
+FORWARD_DAEMON_OWNED=0
+FORWARD_TEMP_CLEANUP_FAILED=0
 INSTALL_LOCK_HELD=0
 MAINTENANCE_CREATED=0
 MAINTENANCE_EXPECTED_EXPIRY=""
+MAINTENANCE_MUTATION_MIN_REMAINING=""
 MAINTENANCE_TEMP=""
 TRANSACTION_ACTIVE=0
 TRANSACTION_COMMITTED=0
@@ -177,6 +237,9 @@ STOP_REQUESTED=0
 QUIESCENCE_PROVEN=0
 BACKUP_READY=0
 MUTATION_STARTED=0
+CLI_MUTATED=0
+DAEMON_MUTATED=0
+STATE_MAY_HAVE_CHANGED=0
 ROLLBACK_INCOMPLETE=0
 PRESERVE_WORK_DIR=0
 PRE_STOP_STATE_SHA256=""
@@ -198,9 +261,55 @@ warn() {
 
 is_uint() {
     case "${1:-}" in
-        ""|*[!0-9]*) return 1 ;;
-        *) return 0 ;;
+        0|[1-9]|[1-9][0-9]*)
+            [ "${#1}" -le 18 ]
+            ;;
+        *)
+            return 1
+            ;;
     esac
+}
+
+current_epoch() {
+    if [ "$TESTING" = "1" ] && [ -n "$TEST_NOW_EPOCH_FILE" ]; then
+        [ -z "$TEST_NOW_EPOCH" ] &&
+            [ -f "$TEST_NOW_EPOCH_FILE" ] &&
+            [ ! -L "$TEST_NOW_EPOCH_FILE" ] ||
+            return 1
+        test_epoch_size="$(
+            "$STAT_CMD" -c '%s' "$TEST_NOW_EPOCH_FILE" 2>/dev/null
+        )" || return 1
+        test_epoch_value="$(cat "$TEST_NOW_EPOCH_FILE" 2>/dev/null)" ||
+            return 1
+        is_uint "$test_epoch_size" &&
+            is_uint "$test_epoch_value" &&
+            [ "$test_epoch_size" -eq $((${#test_epoch_value} + 1)) ] ||
+            return 1
+        printf '%s\n' "$test_epoch_value"
+        return 0
+    fi
+    if [ "$TESTING" = "1" ] && [ -n "$TEST_NOW_EPOCH" ]; then
+        is_uint "$TEST_NOW_EPOCH" || return 1
+        printf '%s\n' "$TEST_NOW_EPOCH"
+        return 0
+    fi
+    date +%s
+}
+
+bounded_regular_file() {
+    bounded_path="$1"
+    bounded_max_bytes="$2"
+    is_uint "$bounded_max_bytes" &&
+        [ "$bounded_max_bytes" -gt 0 ] &&
+        [ -f "$bounded_path" ] &&
+        [ ! -L "$bounded_path" ] ||
+        return 1
+    bounded_size="$(
+        "$STAT_CMD" -c '%s' "$bounded_path" 2>/dev/null
+    )" || return 1
+    is_uint "$bounded_size" &&
+        [ "$bounded_size" -gt 0 ] &&
+        [ "$bounded_size" -le "$bounded_max_bytes" ]
 }
 
 is_sha256() {
@@ -446,7 +555,7 @@ run_bounded_capture() {
     : > "$capture_output" || return 1
     (
         exec 7>&- 9>&-
-        "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" "$STATUS_TIMEOUT" \
             /bin/sh -c \
             'ulimit -f "$1" || exit 125; shift; exec "$@"' \
             jammonitor-bounded-capture "$capture_blocks" "$@"
@@ -484,6 +593,13 @@ logical_device_path() {
 }
 
 read_storage_authority() {
+    if [ -n "$MAINTENANCE_EXPECTED_EXPIRY" ]; then
+        STORAGE_AUTHORITY_READ_COUNT=$((STORAGE_AUTHORITY_READ_COUNT + 1))
+        [ "$STORAGE_AUTHORITY_READ_COUNT" -le \
+          "$MAINTENANCE_STORAGE_AUTHORITY_READS" ] ||
+            return 1
+    fi
+
     mount_table="$PROC_ROOT/mounts"
     [ -r "$mount_table" ] || return 1
     storage_mount_record="$(
@@ -685,14 +801,16 @@ read_storage_authority() {
     esac
     [ "${#storage_fstab_uuid}" -le 128 ] || return 1
 
+    # Capture block metadata once for the whole authority snapshot. Parsing
+    # the same bounded 64 KiB file for every sysfs candidate prevents the
+    # number of removable partitions from multiplying external timeouts.
     run_bounded_capture "$STORAGE_CAPTURE" "$STORAGE_CAPTURE_BLOCKS" \
-        "$BLOCK_CMD" info "$storage_source_path" ||
+        "$BLOCK_CMD" info ||
         return 1
     storage_block_record="$(
         awk -v expected="$storage_source_path" '
-            NR > 1 { exit 2 }
-            {
-                if ($1 != expected ":") exit 2
+            $1 == expected ":" {
+                record_count++
                 for (i = 2; i <= NF; i++) {
                     if ($i ~ /^UUID="[^"]+"$/) {
                         uuid_count++
@@ -707,7 +825,7 @@ read_storage_authority() {
                 }
             }
             END {
-                if (NR != 1 || uuid_count != 1 ||
+                if (record_count != 1 || uuid_count != 1 ||
                     mount_count != 1 || mount_value != "/mnt/data" ||
                     type_count != 1 || type_value != "ext4") exit 1
                 print uuid
@@ -753,14 +871,10 @@ read_storage_authority() {
         else
             [ -b "$storage_candidate_path" ] || return 1
         fi
-        run_bounded_capture "$STORAGE_CAPTURE" "$STORAGE_CAPTURE_BLOCKS" \
-            "$BLOCK_CMD" info "$storage_candidate_path" ||
-            return 1
         storage_candidate_uuid="$(
             awk -v expected="$storage_candidate_path" '
-                NR > 1 { exit 2 }
-                {
-                    if ($1 != expected ":") exit 2
+                $1 == expected ":" {
+                    record_count++
                     for (i = 2; i <= NF; i++) {
                         if ($i ~ /^UUID="[^"]+"$/) {
                             count++
@@ -769,7 +883,7 @@ read_storage_authority() {
                     }
                 }
                 END {
-                    if (NR != 1 || count != 1) exit 1
+                    if (record_count != 1 || count != 1) exit 1
                     print uuid
                 }
             ' "$STORAGE_CAPTURE"
@@ -930,7 +1044,8 @@ prepare_durable_root() {
 sync_durable_storage() {
     (
         exec 7>&- 9>&-
-        "$TIMEOUT_CMD" -s TERM -k 2 "$SYNC_TIMEOUT" "$SYNC_CMD"
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+            "$SYNC_TIMEOUT" "$SYNC_CMD"
     )
 }
 
@@ -986,36 +1101,18 @@ clear_owned_durable_bundle() {
     [ "$clear_failed" -eq 0 ]
 }
 
-json_value() {
-    file="$1"
-    expression="$2"
-    "$JSONFILTER_CMD" -i "$file" -e "$expression" 2>/dev/null |
-        head -n 1
-}
-
-json_type() {
-    file="$1"
-    expression="$2"
-    "$JSONFILTER_CMD" -i "$file" -t "$expression" 2>/dev/null |
-        head -n 1
-}
-
-tailscale_ip_array_has_only_string_members() {
-    file="$1"
-    ip_types="$(
-        "$JSONFILTER_CMD" -i "$file" \
-            -t '@.Self.TailscaleIPs[*]' 2>/dev/null
-    )" || return 1
+parse_ip_member_types() {
+    parsed_ip_types="$1"
     IP_MEMBER_COUNT=0
-    while [ -n "$ip_types" ]; do
-        case "$ip_types" in
+    while [ -n "$parsed_ip_types" ]; do
+        case "$parsed_ip_types" in
             string)
                 IP_MEMBER_COUNT=$((IP_MEMBER_COUNT + 1))
-                ip_types=""
+                parsed_ip_types=""
                 ;;
             string\\\ *)
                 IP_MEMBER_COUNT=$((IP_MEMBER_COUNT + 1))
-                ip_types="${ip_types#string\\ }"
+                parsed_ip_types="${parsed_ip_types#string\\ }"
                 ;;
             *)
                 return 1
@@ -1023,6 +1120,275 @@ tailscale_ip_array_has_only_string_members() {
         esac
         [ "$IP_MEMBER_COUNT" -le 100 ] || return 1
     done
+    [ "$IP_MEMBER_COUNT" -gt 0 ]
+}
+
+parse_status_capture() {
+    status_input="$1"
+    status_parse_file="$(
+        mktemp "$WORK_DIR/status-parse.XXXXXX"
+    )" || return 1
+    [ -f "$status_parse_file" ] && [ ! -L "$status_parse_file" ] || {
+        rm -f -- "$status_parse_file" 2>/dev/null || true
+        return 1
+    }
+
+    status_parse_valid=1
+    if run_bounded_capture \
+        "$status_parse_file" "$STATUS_FILE_BLOCKS" \
+        "$JSONFILTER_CMD" -i "$status_input" \
+        -t '@.BackendState' \
+        -t '@.Version' \
+        -t '@.Self.ID' \
+        -t '@.AuthURL' \
+        -t '@.TUN' \
+        -t '@.Self.TailscaleIPs' \
+        -t '@' \
+        -t '@.Self.TailscaleIPs[*]' \
+        -e '@.BackendState' \
+        -e '@.Version' \
+        -e '@.Self.ID' \
+        -e '@.TUN' \
+        -e '@.AuthURL' \
+        -e '@.Self.TailscaleIPs' \
+        -e '@.Self.TailscaleIPs[*]'; then
+        status_parse_rc=0
+    else
+        status_parse_rc=$?
+    fi
+    case "$status_parse_rc" in
+        0|1) ;;
+        *) status_parse_valid=0 ;;
+    esac
+
+    if [ "$status_parse_valid" -eq 1 ]; then
+        status_parse_size="$(
+            wc -c < "$status_parse_file" 2>/dev/null |
+                tr -d ' \r\n'
+        )" || status_parse_valid=0
+        if [ "$status_parse_valid" -eq 1 ]; then
+            is_uint "$status_parse_size" &&
+                [ "$status_parse_size" -gt 0 ] &&
+                [ "$status_parse_size" -le 65536 ] ||
+                status_parse_valid=0
+        fi
+    fi
+
+    OBSERVED_BACKEND=""
+    OBSERVED_VERSION=""
+    OBSERVED_STABLE_ID=""
+    OBSERVED_TUN=""
+    OBSERVED_AUTH_URL=""
+    OBSERVED_TAILSCALE_IP=""
+    OBSERVED_TAILSCALE_IP_KEYS=""
+    OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+    IP_MEMBER_COUNT=0
+    parsed_ip_count=0
+    serialized_ip_array=""
+
+    if [ "$status_parse_valid" -eq 1 ]; then
+        {
+            IFS= read -r backend_type &&
+                IFS= read -r version_type &&
+                IFS= read -r stable_id_type &&
+                IFS= read -r auth_url_type &&
+                IFS= read -r tun_type &&
+                IFS= read -r ip_array_type ||
+                status_parse_valid=0
+
+            if [ "$status_parse_valid" -eq 1 ]; then
+                [ "$backend_type" = "string" ] &&
+                    [ "$version_type" = "string" ] &&
+                    [ "$stable_id_type" = "string" ] &&
+                    [ "$auth_url_type" = "string" ] &&
+                    [ "$tun_type" = "boolean" ] ||
+                    status_parse_valid=0
+                case "$ip_array_type" in
+                    array|null) ;;
+                    *) status_parse_valid=0 ;;
+                esac
+            fi
+
+            parse_phase="root_boundary"
+            scalar_index=0
+            while [ "$status_parse_valid" -eq 1 ] &&
+                  IFS= read -r status_parse_line; do
+                if [ "$parse_phase" = "root_boundary" ]; then
+                    [ "$status_parse_line" = "object" ] ||
+                        status_parse_valid=0
+                    parse_phase="after_boundary"
+                    continue
+                fi
+
+                if [ "$parse_phase" = "after_boundary" ]; then
+                    if [ "$ip_array_type" = "array" ]; then
+                        case "$status_parse_line" in
+                            string|string\\\ *)
+                                parse_ip_member_types "$status_parse_line" ||
+                                    status_parse_valid=0
+                                parse_phase="scalars"
+                                continue
+                                ;;
+                            boolean*|array*|object*|null*|int*|double*)
+                                status_parse_valid=0
+                                continue
+                                ;;
+                        esac
+                    fi
+                    parse_phase="scalars"
+                fi
+
+                case "$parse_phase" in
+                    scalars)
+                        scalar_index=$((scalar_index + 1))
+                        case "$scalar_index" in
+                            1)
+                                OBSERVED_BACKEND="$status_parse_line"
+                                if [ "$OBSERVED_BACKEND" = "Running" ]; then
+                                    OBSERVED_ALL_TAILSCALE_IPS_VALID=1
+                                fi
+                                ;;
+                            2) OBSERVED_VERSION="$status_parse_line" ;;
+                            3) OBSERVED_STABLE_ID="$status_parse_line" ;;
+                            4) OBSERVED_TUN="$status_parse_line" ;;
+                            5)
+                                OBSERVED_AUTH_URL="$status_parse_line"
+                                if [ "$ip_array_type" = "array" ]; then
+                                    parse_phase="serialized_array"
+                                else
+                                    parse_phase="done"
+                                fi
+                                ;;
+                            *) status_parse_valid=0 ;;
+                        esac
+                        ;;
+                    serialized_array)
+                        serialized_ip_array="$status_parse_line"
+                        if [ "$IP_MEMBER_COUNT" -gt 0 ]; then
+                            parse_phase="ip_members"
+                        else
+                            parse_phase="done"
+                        fi
+                        ;;
+                    ip_members)
+                        parsed_ip_count=$((parsed_ip_count + 1))
+                        [ "$parsed_ip_count" -le "$IP_MEMBER_COUNT" ] ||
+                            status_parse_valid=0
+                        if [ "$status_parse_valid" -eq 1 ] &&
+                           [ "$OBSERVED_BACKEND" = "Running" ]; then
+                            case "$status_parse_line" in
+                                *[!0-9A-Fa-f:.]*|"")
+                                    OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+                                    ;;
+                                *)
+                                    if is_tailscale_ip "$status_parse_line"; then
+                                        parsed_ip_key="$(
+                                            tailscale_ip_key "$status_parse_line"
+                                        )" || status_parse_valid=0
+                                        if [ "$parsed_ip_count" -eq 1 ]; then
+                                            OBSERVED_TAILSCALE_IP="$status_parse_line"
+                                        fi
+                                        OBSERVED_TAILSCALE_IP_KEYS="${OBSERVED_TAILSCALE_IP_KEYS}${parsed_ip_key} "
+                                    else
+                                        OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+                                    fi
+                                    ;;
+                            esac
+                        fi
+                        if [ "$parsed_ip_count" -eq "$IP_MEMBER_COUNT" ]; then
+                            parse_phase="done"
+                        fi
+                        ;;
+                    done)
+                        status_parse_valid=0
+                        ;;
+                    *)
+                        status_parse_valid=0
+                        ;;
+                esac
+            done
+        } < "$status_parse_file"
+    fi
+
+    if [ "$status_parse_valid" -eq 1 ]; then
+        [ "$scalar_index" -eq 5 ] &&
+            [ "$parse_phase" = "done" ] ||
+            status_parse_valid=0
+    fi
+    if [ "$status_parse_valid" -eq 1 ]; then
+        case "$ip_array_type" in
+            null)
+                [ "$status_parse_rc" -eq 1 ] &&
+                    [ "$OBSERVED_BACKEND" = "NeedsLogin" ] &&
+                    [ "$IP_MEMBER_COUNT" -eq 0 ] &&
+                    [ "$parsed_ip_count" -eq 0 ] ||
+                    status_parse_valid=0
+                ;;
+            array)
+                case "$serialized_ip_array" in
+                    \[*\]) ;;
+                    *) status_parse_valid=0 ;;
+                esac
+                if [ "$IP_MEMBER_COUNT" -eq 0 ]; then
+                    compact_ip_array="$(
+                        printf '%s' "$serialized_ip_array" |
+                            tr -d ' \r\n\t'
+                    )" || status_parse_valid=0
+                    [ "$status_parse_rc" -eq 1 ] &&
+                        [ "$compact_ip_array" = "[]" ] ||
+                        status_parse_valid=0
+                else
+                    [ "$status_parse_rc" -eq 0 ] &&
+                        [ "$parsed_ip_count" -eq "$IP_MEMBER_COUNT" ] ||
+                        status_parse_valid=0
+                fi
+                ;;
+        esac
+    fi
+
+    if [ "$status_parse_valid" -eq 1 ]; then
+        case "$OBSERVED_BACKEND" in
+            ""|*[!A-Za-z]*) status_parse_valid=0 ;;
+        esac
+        case "$OBSERVED_VERSION" in
+            ""|*[!0-9A-Za-z.+_~-]*) status_parse_valid=0 ;;
+        esac
+        case "$OBSERVED_STABLE_ID" in
+            *[!0-9A-Za-z_-]*) status_parse_valid=0 ;;
+        esac
+        case "$OBSERVED_TUN" in
+            true|false) ;;
+            *) status_parse_valid=0 ;;
+        esac
+        case "$OBSERVED_AUTH_URL" in
+            *[!0-9A-Za-z/:?\&=._%+#@~-]*) status_parse_valid=0 ;;
+        esac
+        [ "${#OBSERVED_BACKEND}" -le 64 ] &&
+            [ "${#OBSERVED_VERSION}" -le 128 ] &&
+            [ "${#OBSERVED_STABLE_ID}" -le 128 ] &&
+            [ "${#OBSERVED_AUTH_URL}" -le 4096 ] ||
+            status_parse_valid=0
+    fi
+
+    if [ "$status_parse_valid" -eq 1 ] &&
+       [ "$OBSERVED_BACKEND" = "Running" ]; then
+        invalid_serialized_bytes="$(
+            LC_ALL=C printf '%s' "$serialized_ip_array" |
+                tr -d '0123456789abcdefABCDEF:.,[]" '
+                )" || status_parse_valid=0
+        [ -z "$invalid_serialized_bytes" ] ||
+            OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+        [ "$IP_MEMBER_COUNT" -gt 0 ] &&
+            [ "$parsed_ip_count" -eq "$IP_MEMBER_COUNT" ] ||
+            OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+        [ -n "$OBSERVED_TAILSCALE_IP" ] ||
+            OBSERVED_ALL_TAILSCALE_IPS_VALID=0
+    fi
+
+    rm -f -- "$status_parse_file" || status_parse_valid=0
+    [ ! -e "$status_parse_file" ] && [ ! -L "$status_parse_file" ] ||
+        status_parse_valid=0
+    [ "$status_parse_valid" -eq 1 ]
 }
 
 query_status() {
@@ -1030,7 +1396,7 @@ query_status() {
     : > "$output"
     if (
         exec 7>&- 9>&-
-        "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" "$STATUS_TIMEOUT" \
             /bin/sh -c \
             'ulimit -f "$1" || exit 125; shift; exec "$@"' \
             jammonitor-status-limit "$STATUS_FILE_BLOCKS" "$TAILSCALE_BIN" \
@@ -1050,27 +1416,23 @@ query_status() {
         return 1
     is_uint "$status_size" && [ "$status_size" -le 65536 ] || return 1
 
-    [ "$(json_type "$output" '@.BackendState')" = "string" ] &&
-        [ "$(json_type "$output" '@.Version')" = "string" ] &&
-        [ "$(json_type "$output" '@.Self.ID')" = "string" ] &&
-        [ "$(json_type "$output" '@.AuthURL')" = "string" ] &&
-        [ "$(json_type "$output" '@.TUN')" = "boolean" ] &&
-        [ "$(json_type "$output" '@.Self.TailscaleIPs')" = "array" ] &&
-        tailscale_ip_array_has_only_string_members "$output" ||
+    # A decoded NUL can be truncated by BusyBox jsonfilter. Refuse the raw
+    # JSON escape before any extracted identity or address can be trusted.
+    if LC_ALL=C grep -Fqi '\u0000' "$output"; then
         return 1
-
-    OBSERVED_BACKEND="$(json_value "$output" '@.BackendState')"
-    OBSERVED_VERSION="$(json_value "$output" '@.Version')"
-    OBSERVED_STABLE_ID="$(json_value "$output" '@.Self.ID')"
-    OBSERVED_TUN="$(json_value "$output" '@.TUN')"
-    OBSERVED_TAILSCALE_IP="$(json_value "$output" '@.Self.TailscaleIPs[0]')"
-    OBSERVED_AUTH_URL="$(json_value "$output" '@.AuthURL')"
-    [ -n "$OBSERVED_BACKEND" ] || return 1
-    if [ "$OBSERVED_BACKEND" = "Running" ]; then
-        [ "$IP_MEMBER_COUNT" -gt 0 ] &&
-            [ "$(json_type "$output" '@.Self.TailscaleIPs[0]')" = "string" ] ||
-            return 1
     fi
+    parse_status_capture "$output" || return 1
+    case "$OBSERVED_BACKEND" in
+        Running)
+            [ "$IP_MEMBER_COUNT" -gt 0 ] || return 1
+            ;;
+        NeedsLogin)
+            ;;
+        *)
+            # Starting and other safe tokens remain structurally observable so
+            # bounded retry loops can reject them semantically.
+            ;;
+    esac
 }
 
 status_has_required_semantics() {
@@ -1079,6 +1441,7 @@ status_has_required_semantics() {
         Running)
             [ "$OBSERVED_BACKEND" = "Running" ] &&
                 [ "$OBSERVED_TUN" = "true" ] &&
+                [ "$OBSERVED_ALL_TAILSCALE_IPS_VALID" = "1" ] &&
                 is_tailscale_ip "$OBSERVED_TAILSCALE_IP"
             ;;
         NeedsLogin)
@@ -1152,18 +1515,9 @@ load_required_critical_peer() {
         [ -r "$CRITICAL_PEER_FILE" ] ||
         return 1
     critical_peer_key="$(tailscale_ip_key "$critical_peer")" || return 1
-    if "$JSONFILTER_CMD" -i "$status_file" \
-        -e '@.Self.TailscaleIPs[*]' 2>/dev/null |
-        (
-            while IFS= read -r self_ip; do
-                self_ip_key="$(tailscale_ip_key "$self_ip")" || continue
-                [ "$self_ip_key" = "$critical_peer_key" ] && exit 0
-            done
-            exit 1
-        )
-    then
-        return 1
-    fi
+    for self_ip_key in $OBSERVED_TAILSCALE_IP_KEYS; do
+        [ "$self_ip_key" = "$critical_peer_key" ] && return 1
+    done
     CRITICAL_PEER="$critical_peer"
 }
 
@@ -1171,7 +1525,8 @@ critical_peer_is_reachable() {
     [ -n "$CRITICAL_PEER" ] || return 1
     (
         exec 7>&- 9>&-
-        "$TIMEOUT_CMD" -s TERM -k 2 "$PEER_COMMAND_TIMEOUT" \
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+            "$PEER_COMMAND_TIMEOUT" \
             "$TAILSCALE_BIN" --socket="$SOCKET_FILE" ping \
             --tsmp --c=1 --timeout=3s --until-direct=false -- \
             "$CRITICAL_PEER"
@@ -1179,9 +1534,7 @@ critical_peer_is_reachable() {
 }
 
 state_file_is_safe() {
-    [ -f "$STATE_FILE" ] &&
-        [ ! -L "$STATE_FILE" ] &&
-        [ -s "$STATE_FILE" ]
+    bounded_regular_file "$STATE_FILE" "$STATE_FILE_MAX_BYTES"
 }
 
 recovery_state_matches_authorized_hash() {
@@ -1258,13 +1611,15 @@ service_command() {
         (
             exec 7>&- 9>&-
             JAMMONITOR_TAILSCALE_UPGRADE_FENCE_TOKEN="$UPGRADE_FENCE_TOKEN" \
-                "$TIMEOUT_CMD" -s TERM -k 2 "$SERVICE_TIMEOUT" \
+                "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                    "$SERVICE_TIMEOUT" \
                 "$INIT_SCRIPT" "$action"
         ) >/dev/null 2>&1
     else
         (
             exec 7>&- 9>&-
-            "$TIMEOUT_CMD" -s TERM -k 2 "$SERVICE_TIMEOUT" \
+            "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                "$SERVICE_TIMEOUT" \
                 "$INIT_SCRIPT" "$action"
         ) >/dev/null 2>&1
     fi
@@ -1331,47 +1686,505 @@ wait_for_quiescence() {
     return 1
 }
 
+trusted_regular_file_matches() {
+    trusted_path="$1"
+    trusted_mode="$2"
+    trusted_max_bytes="$3"
+    trusted_sha256="$4"
+
+    bounded_regular_file "$trusted_path" "$trusted_max_bytes" &&
+        [ "$("$STAT_CMD" -c '%u:%g:%a:%h' \
+            "$trusted_path" 2>/dev/null)" = \
+          "${EXPECTED_ROOT_UID}:${EXPECTED_ROOT_GID}:${trusted_mode}:1" ] &&
+        [ "$(sha256_file "$trusted_path")" = "$trusted_sha256" ]
+}
+
+trusted_regular_file_metadata_matches() {
+    metadata_path="$1"
+    metadata_mode="$2"
+    metadata_max_bytes="$3"
+
+    bounded_regular_file "$metadata_path" "$metadata_max_bytes" &&
+        [ "$("$STAT_CMD" -c '%u:%g:%a:%h' \
+            "$metadata_path" 2>/dev/null)" = \
+          "${EXPECTED_ROOT_UID}:${EXPECTED_ROOT_GID}:${metadata_mode}:1" ]
+}
+
+trusted_parent_identity() {
+    parent_path="$1"
+    [ -d "$parent_path" ] && [ ! -L "$parent_path" ] || return 1
+    parent_metadata="$(
+        "$STAT_CMD" -c '%d:%i:%u:%g:%a' "$parent_path" 2>/dev/null
+    )" || return 1
+    parent_old_ifs="$IFS"
+    IFS=:
+    set -- $parent_metadata
+    IFS="$parent_old_ifs"
+    [ "$#" -eq 5 ] || return 1
+    is_uint "$1" && is_uint "$2" &&
+        [ "$3" = "$EXPECTED_ROOT_UID" ] &&
+        [ "$4" = "$EXPECTED_ROOT_GID" ] ||
+        return 1
+    case "$5" in
+        7[0145][0145])
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    printf '%s:%s\n' "$1" "$2"
+}
+
+capture_local_parent_identities() {
+    BIN_PARENT_IDENTITY="$(trusted_parent_identity "${TAILSCALE_BIN%/*}")" &&
+        STATE_PARENT_IDENTITY="$(
+            trusted_parent_identity "${STATE_FILE%/*}"
+        )" &&
+        [ -n "$BIN_PARENT_IDENTITY" ] &&
+        [ -n "$STATE_PARENT_IDENTITY" ]
+}
+
+local_parent_identities_match() {
+    [ -n "$BIN_PARENT_IDENTITY" ] &&
+        [ -n "$STATE_PARENT_IDENTITY" ] &&
+        [ "$(trusted_parent_identity "${TAILSCALE_BIN%/*}")" = \
+          "$BIN_PARENT_IDENTITY" ] &&
+        [ "$(trusted_parent_identity "${STATE_FILE%/*}")" = \
+          "$STATE_PARENT_IDENTITY" ]
+}
+
+local_path_is_mountpoint() {
+    mountpoint_candidate="$1"
+    [ -r "$PROC_ROOT/mounts" ] || return 0
+    awk -v expected_mountpoint="$mountpoint_candidate" '
+        $2 == expected_mountpoint {
+            found = 1
+            exit
+        }
+        END {
+            exit(found == 1 ? 0 : 1)
+        }
+    ' "$PROC_ROOT/mounts"
+}
+
+local_transaction_parent_matches_pin() {
+    transaction_target="$1"
+    transaction_parent="${transaction_target%/*}"
+    case "$transaction_parent" in
+        "${TAILSCALE_BIN%/*}")
+            [ "$(trusted_parent_identity "$transaction_parent")" = \
+              "$BIN_PARENT_IDENTITY" ]
+            ;;
+        "${STATE_FILE%/*}")
+            [ "$(trusted_parent_identity "$transaction_parent")" = \
+              "$STATE_PARENT_IDENTITY" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+rename_local_transaction_file() {
+    rename_source="$1"
+    rename_target="$2"
+    rename_test_mode="${3:-normal}"
+
+    [ "${rename_source%/*}" = "${rename_target%/*}" ] &&
+        local_transaction_parent_matches_pin "$rename_target" &&
+        ! local_path_is_mountpoint "$rename_source" &&
+        ! local_path_is_mountpoint "$rename_target" ||
+        return 1
+    if [ "$TESTING" = "1" ] &&
+       [ "$rename_test_mode" = "force-mv-failure" ]; then
+        # Invoke the real mv after every production topology check. A fresh
+        # regular blocker in the isolated test work directory makes its child
+        # destination deterministically fail with ENOTDIR without risking
+        # either rollback authority.
+        rename_test_blocker="$WORK_DIR/.jammonitor-forced-rename-failure.$$"
+        [ -d "$WORK_DIR" ] && [ ! -L "$WORK_DIR" ] &&
+            [ ! -e "$rename_test_blocker" ] &&
+            [ ! -L "$rename_test_blocker" ] ||
+            return 1
+        (
+            set -C
+            umask 077
+            printf 'test blocker\n' > "$rename_test_blocker"
+        ) || return 1
+        [ -f "$rename_test_blocker" ] &&
+            [ ! -L "$rename_test_blocker" ] ||
+            return 1
+
+        if mv -f -- \
+            "$rename_source" \
+            "$rename_test_blocker/child"; then
+            rm -f -- "$rename_test_blocker" 2>/dev/null || true
+            return 1
+        else
+            rename_test_mv_status=$?
+        fi
+        rm -f -- "$rename_test_blocker" 2>/dev/null || true
+        return "$rename_test_mv_status"
+    fi
+    [ "$rename_test_mode" = "normal" ] || return 1
+    mv -f -- "$rename_source" "$rename_target"
+}
+
+rollback_reservation_matches() {
+    reservation_path="$1"
+    reservation_target="$2"
+    reservation_mode="$3"
+    reservation_max_bytes="$4"
+    reservation_sha256="$5"
+
+    [ "${reservation_path%/*}" = "${reservation_target%/*}" ] &&
+        local_transaction_parent_matches_pin "$reservation_target" &&
+        ! local_path_is_mountpoint "$reservation_path" &&
+        ! local_path_is_mountpoint "$reservation_target" &&
+        trusted_regular_file_matches \
+            "$reservation_path" "$reservation_mode" \
+            "$reservation_max_bytes" "$reservation_sha256"
+}
+
+preflight_local_transaction_paths() {
+    for transaction_path in \
+        "$ROLLBACK_CLI_RESERVATION" \
+        "$ROLLBACK_DAEMON_RESERVATION" \
+        "$ROLLBACK_STATE_RESERVATION" \
+        "$FORWARD_CLI_TEMP" \
+        "$FORWARD_DAEMON_TEMP"
+    do
+        [ ! -e "$transaction_path" ] && [ ! -L "$transaction_path" ] ||
+            die "an unresolved local Tailscale transaction file requires operator recovery"
+    done
+}
+
+stage_rollback_reservation() {
+    reservation_source="$1"
+    reservation_path="$2"
+    reservation_target="$3"
+    reservation_mode="$4"
+    reservation_max_bytes="$5"
+    reservation_sha256="$6"
+    reservation_phase="$7"
+
+    [ "${reservation_path%/*}" = "${reservation_target%/*}" ] ||
+        return 1
+    local_transaction_parent_matches_pin "$reservation_target" &&
+        ! local_path_is_mountpoint "$reservation_source" &&
+        ! local_path_is_mountpoint "$reservation_path" &&
+        ! local_path_is_mountpoint "$reservation_target" ||
+        return 1
+    [ ! -e "$reservation_path" ] && [ ! -L "$reservation_path" ] ||
+        return 1
+    bounded_regular_file \
+        "$reservation_source" "$reservation_max_bytes" &&
+        [ "$(sha256_file "$reservation_source")" = "$reservation_sha256" ] ||
+        return 1
+
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = "$reservation_phase-copy" ]; then
+        printf '%s\n' partial > "$reservation_path" 2>/dev/null || true
+        return 1
+    fi
+    (
+        exec 7>&- 9>&-
+        set -C
+        umask 077
+        cat -- "$reservation_source" > "$reservation_path"
+    ) || return 1
+    chmod "$reservation_mode" "$reservation_path" || return 1
+    if [ "$TESTING" != "1" ]; then
+        chown 0:0 "$reservation_path" || return 1
+    fi
+    rollback_reservation_matches \
+        "$reservation_path" "$reservation_target" "$reservation_mode" \
+        "$reservation_max_bytes" "$reservation_sha256" &&
+        bounded_regular_file \
+            "$reservation_source" "$reservation_max_bytes" &&
+        [ "$(sha256_file "$reservation_source")" = "$reservation_sha256" ]
+}
+
+binary_rollback_reservations_are_safe() {
+    [ "$ROLLBACK_CLI_READY" -eq 1 ] &&
+        [ "$ROLLBACK_DAEMON_READY" -eq 1 ] &&
+        rollback_reservation_matches \
+            "$ROLLBACK_CLI_RESERVATION" "$TAILSCALE_BIN" 755 \
+            "$LIVE_BINARY_MAX_BYTES" "$PRE_CLI_SHA256" &&
+        rollback_reservation_matches \
+            "$ROLLBACK_DAEMON_RESERVATION" "$TAILSCALED_BIN" 755 \
+            "$LIVE_BINARY_MAX_BYTES" "$PRE_DAEMON_SHA256"
+}
+
+state_rollback_reservation_is_safe() {
+    [ "$ROLLBACK_STATE_READY" -eq 1 ] &&
+        is_sha256 "$PRE_STATE_SHA256" &&
+        rollback_reservation_matches \
+            "$ROLLBACK_STATE_RESERVATION" "$STATE_FILE" 600 \
+            "$STATE_FILE_MAX_BYTES" "$PRE_STATE_SHA256"
+}
+
+all_rollback_reservations_are_safe() {
+    binary_rollback_reservations_are_safe &&
+        state_rollback_reservation_is_safe
+}
+
+prepare_binary_rollback_reservations() {
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = "prepared-extra-state" ]; then
+        printf '%s\n' unexpected \
+            > "$DURABLE_PENDING/tailscaled.state"
+    fi
+    durable_bundle_is_safe prepared_before_stop ||
+        die "durable recovery bundle is unavailable before local rollback allocation"
+
+    ROLLBACK_CLI_OWNED=1
+    stage_rollback_reservation \
+        "$BACKUP_DIR/tailscale" "$ROLLBACK_CLI_RESERVATION" \
+        "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$PRE_CLI_SHA256" binary-cli ||
+        die "could not allocate the local tailscale rollback reservation"
+    ROLLBACK_CLI_READY=1
+    if [ "$TEST_KILL_RESERVATION_PHASE" = "after-cli" ]; then
+        kill -KILL "$$"
+        die "test CLI reservation interruption did not terminate the upgrader"
+    fi
+
+    ROLLBACK_DAEMON_OWNED=1
+    stage_rollback_reservation \
+        "$BACKUP_DIR/tailscaled" "$ROLLBACK_DAEMON_RESERVATION" \
+        "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$PRE_DAEMON_SHA256" binary-daemon ||
+        die "could not allocate the local tailscaled rollback reservation"
+    ROLLBACK_DAEMON_READY=1
+    if [ "$TEST_KILL_RESERVATION_PHASE" = "after-daemon" ]; then
+        kill -KILL "$$"
+        die "test daemon reservation interruption did not terminate the upgrader"
+    fi
+
+    if [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
+        ROLLBACK_STATE_OWNED=1
+        stage_rollback_reservation \
+            "$RECOVERY_STATE_BACKUP" "$ROLLBACK_STATE_RESERVATION" \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$RECOVERY_STATE_SHA256" state ||
+            die "could not allocate the operator-authorized state rollback reservation"
+        ROLLBACK_STATE_READY=1
+    fi
+
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "binary-sync" ]; then
+        die "could not sync the local binary rollback reservations"
+    fi
+    sync_durable_storage ||
+        die "could not sync the local binary rollback reservations"
+    if [ "$TEST_KILL_RESERVATION_PHASE" = "after-binary-sync" ]; then
+        kill -KILL "$$"
+        die "test binary reservation sync interruption did not terminate the upgrader"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "binary-tamper" ]; then
+        chmod 0666 "$ROLLBACK_DAEMON_RESERVATION" ||
+            die "test binary reservation tamper failed"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "binary-content-tamper" ]; then
+        printf '%s\n' tampered >> "$ROLLBACK_CLI_RESERVATION" ||
+            die "test binary reservation content tamper failed"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "binary-hardlink-tamper" ]; then
+        ln "$ROLLBACK_CLI_RESERVATION" \
+            "$ROLLBACK_CLI_RESERVATION.test-hardlink" ||
+            die "test binary reservation hardlink tamper failed"
+    fi
+    binary_rollback_reservations_are_safe &&
+        trusted_regular_file_matches \
+            "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+            "$PRE_CLI_SHA256" &&
+        trusted_regular_file_matches \
+            "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+            "$PRE_DAEMON_SHA256" &&
+        local_parent_identities_match &&
+        durable_bundle_is_safe prepared_before_stop ||
+        die "local binary rollback reservations changed after synchronization"
+    if [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
+        rollback_reservation_matches \
+            "$ROLLBACK_STATE_RESERVATION" "$STATE_FILE" 600 \
+            "$STATE_FILE_MAX_BYTES" "$RECOVERY_STATE_SHA256" &&
+            recovery_state_matches_authorized_hash ||
+            die "operator-authorized state reservation changed after synchronization"
+    fi
+}
+
+prepare_state_rollback_reservation() {
+    is_sha256 "$PRE_STATE_SHA256" &&
+        trusted_regular_file_matches \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$PRE_STATE_SHA256" &&
+        local_parent_identities_match &&
+        durable_bundle_is_safe prepared_before_stop ||
+        die "quiescent state is not stable before local rollback allocation"
+
+    if [ "$ROLLBACK_STATE_READY" -eq 1 ]; then
+        [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ] &&
+            [ "$PRE_STATE_SHA256" = "$RECOVERY_STATE_SHA256" ] &&
+            state_rollback_reservation_is_safe ||
+            die "preallocated recovery state does not match the quiescent state"
+    else
+        ROLLBACK_STATE_OWNED=1
+        stage_rollback_reservation \
+            "$STATE_FILE" "$ROLLBACK_STATE_RESERVATION" \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$PRE_STATE_SHA256" state ||
+            die "could not allocate the local state rollback reservation"
+        ROLLBACK_STATE_READY=1
+    fi
+    if [ "$TEST_KILL_RESERVATION_PHASE" = "after-state" ]; then
+        kill -KILL "$$"
+        die "test state reservation interruption did not terminate the upgrader"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "state-sync" ]; then
+        die "could not sync the local state rollback reservation"
+    fi
+    sync_durable_storage ||
+        die "could not sync the local state rollback reservation"
+    if [ "$TEST_KILL_RESERVATION_PHASE" = "after-state-sync" ]; then
+        kill -KILL "$$"
+        die "test state reservation sync interruption did not terminate the upgrader"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "state-tamper" ]; then
+        chmod 0666 "$ROLLBACK_STATE_RESERVATION" ||
+            die "test state reservation tamper failed"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "state-delete-tamper" ]; then
+        rm -f -- "$ROLLBACK_STATE_RESERVATION" ||
+            die "test state reservation deletion failed"
+    fi
+    if [ "$TEST_FAIL_RESERVATION_PHASE" = "state-symlink-tamper" ]; then
+        rm -f -- "$ROLLBACK_STATE_RESERVATION" &&
+            ln -s "$STATE_FILE" "$ROLLBACK_STATE_RESERVATION" ||
+            die "test state reservation symlink tamper failed"
+    fi
+    all_rollback_reservations_are_safe &&
+        trusted_regular_file_matches \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$PRE_STATE_SHA256" &&
+        local_parent_identities_match &&
+        durable_bundle_is_safe prepared_before_stop ||
+        die "local rollback reservations changed after final synchronization"
+}
+
+discard_forward_transaction_files() {
+    discard_failed=0
+
+    if [ "$FORWARD_CLI_OWNED" -eq 1 ]; then
+        if [ -e "$FORWARD_CLI_TEMP" ] || [ -L "$FORWARD_CLI_TEMP" ]; then
+            rm -f -- "$FORWARD_CLI_TEMP" || discard_failed=1
+        fi
+        if [ ! -e "$FORWARD_CLI_TEMP" ] &&
+           [ ! -L "$FORWARD_CLI_TEMP" ]; then
+            FORWARD_CLI_OWNED=0
+        else
+            discard_failed=1
+        fi
+    fi
+    if [ "$FORWARD_DAEMON_OWNED" -eq 1 ]; then
+        if [ -e "$FORWARD_DAEMON_TEMP" ] || [ -L "$FORWARD_DAEMON_TEMP" ]; then
+            rm -f -- "$FORWARD_DAEMON_TEMP" || discard_failed=1
+        fi
+        if [ ! -e "$FORWARD_DAEMON_TEMP" ] &&
+           [ ! -L "$FORWARD_DAEMON_TEMP" ]; then
+            FORWARD_DAEMON_OWNED=0
+        else
+            discard_failed=1
+        fi
+    fi
+    TARGET_TEMP=""
+    [ "$discard_failed" -eq 0 ]
+}
+
 atomic_install() {
     source="$1"
     target="$2"
     mode="$3"
-    mutation_guard="${4:-}"
-    target_dir="$(dirname -- "$target")"
+    max_bytes="$4"
+    mutation_guard="${5:-}"
     ATOMIC_INSTALL_GUARD_FAILED=0
+    case "$target" in
+        "$TAILSCALE_BIN")
+            TARGET_TEMP="$FORWARD_CLI_TEMP"
+            forward_phase="forward-cli"
+            ;;
+        "$TAILSCALED_BIN")
+            TARGET_TEMP="$FORWARD_DAEMON_TEMP"
+            forward_phase="forward-daemon"
+            ;;
+        *)
+            TARGET_TEMP=""
+            return 1
+            ;;
+    esac
 
-    mkdir -p "$target_dir" || return 1
-    TARGET_TEMP="$(mktemp "$target_dir/.tailscale-upgrade.XXXXXX")" ||
+    bounded_regular_file "$source" "$max_bytes" || return 1
+    source_size="$("$STAT_CMD" -c '%s' "$source" 2>/dev/null)" || return 1
+    source_sha256="$(sha256_file "$source")" || return 1
+    is_sha256 "$source_sha256" || return 1
+    [ ! -e "$TARGET_TEMP" ] && [ ! -L "$TARGET_TEMP" ] || return 1
+    local_transaction_parent_matches_pin "$target" &&
+        ! local_path_is_mountpoint "$source" &&
+        ! local_path_is_mountpoint "$TARGET_TEMP" &&
+        ! local_path_is_mountpoint "$target" ||
         return 1
-    if ! cp -- "$source" "$TARGET_TEMP"; then
-        rm -f -- "$TARGET_TEMP"
-        TARGET_TEMP=""
+    case "$target" in
+        "$TAILSCALE_BIN") FORWARD_CLI_OWNED=1 ;;
+        "$TAILSCALED_BIN") FORWARD_DAEMON_OWNED=1 ;;
+    esac
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = "$forward_phase-copy" ]; then
+        printf '%s\n' partial > "$TARGET_TEMP" 2>/dev/null || true
         return 1
     fi
+    (
+        exec 7>&- 9>&-
+        set -C
+        umask 077
+        cat -- "$source" > "$TARGET_TEMP"
+    ) 2>/dev/null || return 1
     if ! chmod "$mode" "$TARGET_TEMP"; then
-        rm -f -- "$TARGET_TEMP"
-        TARGET_TEMP=""
+        discard_forward_transaction_files || true
         return 1
     fi
     if [ "$TESTING" != "1" ]; then
         if ! chown 0:0 "$TARGET_TEMP" 2>/dev/null; then
-            rm -f -- "$TARGET_TEMP"
-            TARGET_TEMP=""
+            discard_forward_transaction_files || true
             return 1
         fi
     fi
+    trusted_regular_file_matches \
+        "$TARGET_TEMP" "$mode" "$max_bytes" "$source_sha256" &&
+        [ "$("$STAT_CMD" -c '%s' "$TARGET_TEMP" 2>/dev/null)" = \
+          "$source_size" ] &&
+        [ "$(sha256_file "$source")" = "$source_sha256" ] || {
+            discard_forward_transaction_files || true
+            return 1
+        }
     if [ "$mutation_guard" = "live-binary" ] &&
-       ! prove_live_mutation_guard; then
+       ! prove_live_mutation_guard "$target"; then
         ATOMIC_INSTALL_GUARD_FAILED=1
-        rm -f -- "$TARGET_TEMP"
-        TARGET_TEMP=""
+        discard_forward_transaction_files || true
         return 1
     fi
-    if ! mv -f -- "$TARGET_TEMP" "$target"; then
-        rm -f -- "$TARGET_TEMP"
-        TARGET_TEMP=""
+    case "$target" in
+        "$TAILSCALE_BIN") CLI_MUTATED=1 ;;
+        "$TAILSCALED_BIN") DAEMON_MUTATED=1 ;;
+    esac
+    if ! rename_local_transaction_file "$TARGET_TEMP" "$target"; then
         return 1
     fi
+    case "$target" in
+        "$TAILSCALE_BIN") FORWARD_CLI_OWNED=0 ;;
+        "$TAILSCALED_BIN") FORWARD_DAEMON_OWNED=0 ;;
+    esac
     TARGET_TEMP=""
+    trusted_regular_file_matches \
+        "$target" "$mode" "$max_bytes" "$source_sha256"
 }
 
 wait_for_expected_state() {
@@ -1420,7 +2233,7 @@ wait_for_expected_state() {
 
 wait_for_rollback_state() {
     expected="$1"
-    attempts=5
+    attempts="$ROLLBACK_STATUS_ATTEMPTS"
     status_file="$WORK_DIR/rollback-status.json"
 
     while [ "$attempts" -gt 0 ]; do
@@ -1461,8 +2274,81 @@ wait_for_rollback_state() {
     return 1
 }
 
+target_matches_expected_old_file() {
+    expected_target="$1"
+    expected_mode="$2"
+    expected_max_bytes="$3"
+    expected_sha256="$4"
+
+    trusted_regular_file_matches \
+        "$expected_target" "$expected_mode" \
+        "$expected_max_bytes" "$expected_sha256"
+}
+
+publish_rollback_reservation() {
+    publish_reservation="$1"
+    publish_target="$2"
+    publish_mode="$3"
+    publish_max_bytes="$4"
+    publish_sha256="$5"
+    publish_phase="$6"
+
+    target_matches_expected_old_file \
+        "$publish_target" "$publish_mode" \
+        "$publish_max_bytes" "$publish_sha256" &&
+        return 0
+    rollback_reservation_matches \
+        "$publish_reservation" "$publish_target" "$publish_mode" \
+        "$publish_max_bytes" "$publish_sha256" ||
+        return 1
+    publish_rename_test_mode=normal
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = "$publish_phase-rename" ]; then
+        publish_rename_test_mode=force-mv-failure
+    fi
+    rename_local_transaction_file \
+        "$publish_reservation" "$publish_target" \
+        "$publish_rename_test_mode" &&
+        target_matches_expected_old_file \
+            "$publish_target" "$publish_mode" \
+            "$publish_max_bytes" "$publish_sha256"
+}
+
 restore_previous_state() {
-    atomic_install "$BACKUP_DIR/tailscaled.state" "$STATE_FILE" 0600
+    publish_rollback_reservation \
+        "$ROLLBACK_STATE_RESERVATION" "$STATE_FILE" 600 \
+        "$STATE_FILE_MAX_BYTES" "$PRE_STATE_SHA256" rollback-state ||
+        return 1
+    if [ ! -e "$ROLLBACK_STATE_RESERVATION" ] &&
+       [ ! -L "$ROLLBACK_STATE_RESERVATION" ]; then
+        ROLLBACK_STATE_READY=0
+        ROLLBACK_STATE_OWNED=0
+    fi
+}
+
+render_expected_durable_manifest() {
+    render_phase="$1"
+    render_state_sha256="$2"
+
+    printf 'format=jammonitor-tailscale-upgrade-recovery-v1\n'
+    printf 'phase=%s\n' "$render_phase"
+    printf 'tailscale_path=/usr/sbin/tailscale\n'
+    printf 'tailscaled_path=/usr/sbin/tailscaled\n'
+    printf 'state_path=/etc/tailscale/tailscaled.state\n'
+    printf 'rollback_cli_path=%s\n' "$ROLLBACK_CLI_LOGICAL"
+    printf 'rollback_cli_sha256=%s\n' "$PRE_CLI_SHA256"
+    printf 'rollback_daemon_path=%s\n' "$ROLLBACK_DAEMON_LOGICAL"
+    printf 'rollback_daemon_sha256=%s\n' "$PRE_DAEMON_SHA256"
+    printf 'rollback_state_path=%s\n' "$ROLLBACK_STATE_LOGICAL"
+    printf 'rollback_state_sha256=%s\n' "$render_state_sha256"
+    printf 'forward_cli_path=%s\n' "$FORWARD_CLI_LOGICAL"
+    printf 'forward_daemon_path=%s\n' "$FORWARD_DAEMON_LOGICAL"
+    printf 'pre_backend_state=%s\n' "$PRE_BACKEND_STATE"
+    printf 'pre_daemon_version=%s\n' "$PRE_DAEMON_VERSION"
+    printf 'pre_cli_sha256=%s\n' "$PRE_CLI_SHA256"
+    printf 'pre_daemon_sha256=%s\n' "$PRE_DAEMON_SHA256"
+    printf 'pre_stop_state_sha256=%s\n' "$PRE_STOP_STATE_SHA256"
+    printf 'quiescent_state_sha256=%s\n' "$render_state_sha256"
 }
 
 write_durable_manifest() {
@@ -1470,42 +2356,86 @@ write_durable_manifest() {
     manifest_state_sha256="$2"
     manifest_tmp="$DURABLE_PENDING/.manifest.tmp.$$"
 
-    {
-        printf 'format=jammonitor-tailscale-upgrade-recovery-v1\n'
-        printf 'phase=%s\n' "$manifest_phase"
-        printf 'tailscale_path=/usr/sbin/tailscale\n'
-        printf 'tailscaled_path=/usr/sbin/tailscaled\n'
-        printf 'state_path=/etc/tailscale/tailscaled.state\n'
-        printf 'pre_backend_state=%s\n' "$PRE_BACKEND_STATE"
-        printf 'pre_daemon_version=%s\n' "$PRE_DAEMON_VERSION"
-        printf 'pre_cli_sha256=%s\n' "$PRE_CLI_SHA256"
-        printf 'pre_daemon_sha256=%s\n' "$PRE_DAEMON_SHA256"
-        printf 'pre_stop_state_sha256=%s\n' "$PRE_STOP_STATE_SHA256"
-        printf 'quiescent_state_sha256=%s\n' "$manifest_state_sha256"
-    } > "$manifest_tmp" ||
+    render_expected_durable_manifest \
+        "$manifest_phase" "$manifest_state_sha256" > "$manifest_tmp" ||
         return 1
     chmod 0600 "$manifest_tmp" ||
         return 1
     mv -f -- "$manifest_tmp" "$DURABLE_PENDING/manifest"
 }
 
+durable_bundle_has_only_expected_entries() {
+    inventory_phase="$1"
+    case "$inventory_phase" in
+        prepared_before_stop|ready_for_binary_mutation)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    # Expand visible names plus both portable classes of dot names. Literal
+    # unmatched patterns are skipped; dangling symlinks are still inspected.
+    for inventory_path in \
+        "$DURABLE_PENDING"/* \
+        "$DURABLE_PENDING"/.[!.]* \
+        "$DURABLE_PENDING"/..?*
+    do
+        [ -e "$inventory_path" ] || [ -L "$inventory_path" ] || continue
+        inventory_name="${inventory_path##*/}"
+        case "$inventory_name" in
+            tailscale|tailscaled|tailscaled.state.before-stop|\
+manifest|RECOVERY_REQUIRED)
+                ;;
+            tailscaled.state)
+                [ "$inventory_phase" = "ready_for_binary_mutation" ] ||
+                    return 1
+                ;;
+            recovery-authorized-tailscaled.state)
+                [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ] || return 1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+}
+
 durable_bundle_is_safe() {
     expected_phase="$1"
+    case "$expected_phase" in
+        prepared_before_stop)
+            expected_manifest_state_sha256=""
+            ;;
+        ready_for_binary_mutation)
+            is_sha256 "$PRE_STATE_SHA256" || return 1
+            expected_manifest_state_sha256="$PRE_STATE_SHA256"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
     [ "$DURABLE_PENDING" = "$DURABLE_ROOT/pending" ] &&
         [ -d "$DURABLE_PENDING" ] &&
         [ ! -L "$DURABLE_PENDING" ] ||
         return 1
+    durable_bundle_has_only_expected_entries "$expected_phase" || return 1
 
-    for durable_file in \
-        "$DURABLE_PENDING/tailscale" \
-        "$DURABLE_PENDING/tailscaled" \
-        "$DURABLE_PENDING/tailscaled.state.before-stop" \
-        "$DURABLE_PENDING/manifest" \
-        "$DURABLE_PENDING/RECOVERY_REQUIRED"
-    do
-        [ -f "$durable_file" ] && [ ! -L "$durable_file" ] ||
-            return 1
-    done
+    trusted_regular_file_metadata_matches \
+        "$DURABLE_PENDING/tailscale" 700 "$LIVE_BINARY_MAX_BYTES" &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/tailscaled" 700 \
+            "$LIVE_BINARY_MAX_BYTES" &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/tailscaled.state.before-stop" 600 \
+            "$STATE_FILE_MAX_BYTES" &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/manifest" 600 \
+            "$DURABLE_MANIFEST_MAX_BYTES" &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/RECOVERY_REQUIRED" 600 \
+            "$DURABLE_MARKER_MAX_BYTES" ||
+        return 1
 
     [ "$(sha256_file "$DURABLE_PENDING/tailscale")" = "$PRE_CLI_SHA256" ] &&
         [ "$(sha256_file "$DURABLE_PENDING/tailscaled")" = "$PRE_DAEMON_SHA256" ] &&
@@ -1513,14 +2443,19 @@ durable_bundle_is_safe() {
           "$PRE_STOP_STATE_SHA256" ] ||
         return 1
 
-    grep -Fqx 'format=jammonitor-tailscale-upgrade-recovery-v1' \
-        "$DURABLE_PENDING/manifest" &&
-        grep -Fqx "phase=$expected_phase" "$DURABLE_PENDING/manifest" ||
+    render_expected_durable_manifest \
+        "$expected_phase" "$expected_manifest_state_sha256" |
+        cmp -s - "$DURABLE_PENDING/manifest" ||
+        return 1
+    printf '%s\n' \
+        'An interrupted Tailscale upgrade requires explicit operator recovery.' |
+        cmp -s - "$DURABLE_PENDING/RECOVERY_REQUIRED" ||
         return 1
 
     if [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
-        [ -f "$DURABLE_PENDING/recovery-authorized-tailscaled.state" ] &&
-            [ ! -L "$DURABLE_PENDING/recovery-authorized-tailscaled.state" ] &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/recovery-authorized-tailscaled.state" 600 \
+            "$STATE_FILE_MAX_BYTES" &&
             [ "$(sha256_file \
                 "$DURABLE_PENDING/recovery-authorized-tailscaled.state")" = \
               "$RECOVERY_STATE_SHA256" ] ||
@@ -1528,17 +2463,33 @@ durable_bundle_is_safe() {
     fi
 
     if [ "$expected_phase" = "ready_for_binary_mutation" ]; then
-        [ -f "$DURABLE_PENDING/tailscaled.state" ] &&
-            [ ! -L "$DURABLE_PENDING/tailscaled.state" ] &&
+        trusted_regular_file_metadata_matches \
+            "$DURABLE_PENDING/tailscaled.state" 600 \
+            "$STATE_FILE_MAX_BYTES" &&
             [ "$(sha256_file "$DURABLE_PENDING/tailscaled.state")" = \
-              "$PRE_STATE_SHA256" ] &&
-            grep -Fqx "quiescent_state_sha256=$PRE_STATE_SHA256" \
-                "$DURABLE_PENDING/manifest" ||
+              "$PRE_STATE_SHA256" ] ||
             return 1
     fi
 }
 
 prepare_durable_write_ahead_bundle() {
+    trusted_regular_file_matches \
+        "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$PRE_CLI_SHA256" &&
+        trusted_regular_file_matches \
+            "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+            "$PRE_DAEMON_SHA256" &&
+        trusted_regular_file_metadata_matches \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" ||
+        die "live Tailscale files changed or became unsafe before recovery staging"
+    local_parent_identities_match &&
+        ! local_path_is_mountpoint "$TAILSCALE_BIN" &&
+        ! local_path_is_mountpoint "$TAILSCALED_BIN" &&
+        ! local_path_is_mountpoint "$STATE_FILE" ||
+        die "live Tailscale parent topology changed before recovery staging"
+    storage_authority_matches_pin ||
+        die "persistent recovery storage changed before recovery staging"
+
     DURABLE_STAGING="$DURABLE_ROOT/.staging.$$"
     [ ! -e "$DURABLE_STAGING" ] && [ ! -L "$DURABLE_STAGING" ] ||
         die "durable recovery staging path already exists"
@@ -1558,6 +2509,14 @@ prepare_durable_write_ahead_bundle() {
         die "could not protect durable recovery binaries"
     chmod 0600 "$DURABLE_STAGING/tailscaled.state.before-stop" ||
         die "could not protect durable recovery state"
+    bounded_regular_file \
+        "$DURABLE_STAGING/tailscale" "$LIVE_BINARY_MAX_BYTES" &&
+        bounded_regular_file \
+            "$DURABLE_STAGING/tailscaled" "$LIVE_BINARY_MAX_BYTES" &&
+        bounded_regular_file \
+            "$DURABLE_STAGING/tailscaled.state.before-stop" \
+            "$STATE_FILE_MAX_BYTES" ||
+        die "durable pre-stop recovery copy exceeded its verified size limits"
 
     PRE_STOP_STATE_SHA256="$(
         sha256_file "$DURABLE_STAGING/tailscaled.state.before-stop"
@@ -1581,19 +2540,8 @@ prepare_durable_write_ahead_bundle() {
             die "could not protect the operator-authorized recovery state"
     fi
 
-    {
-        printf 'format=jammonitor-tailscale-upgrade-recovery-v1\n'
-        printf 'phase=prepared_before_stop\n'
-        printf 'tailscale_path=/usr/sbin/tailscale\n'
-        printf 'tailscaled_path=/usr/sbin/tailscaled\n'
-        printf 'state_path=/etc/tailscale/tailscaled.state\n'
-        printf 'pre_backend_state=%s\n' "$PRE_BACKEND_STATE"
-        printf 'pre_daemon_version=%s\n' "$PRE_DAEMON_VERSION"
-        printf 'pre_cli_sha256=%s\n' "$PRE_CLI_SHA256"
-        printf 'pre_daemon_sha256=%s\n' "$PRE_DAEMON_SHA256"
-        printf 'pre_stop_state_sha256=%s\n' "$PRE_STOP_STATE_SHA256"
-        printf 'quiescent_state_sha256=\n'
-    } > "$DURABLE_STAGING/manifest" ||
+    render_expected_durable_manifest \
+        prepared_before_stop "" > "$DURABLE_STAGING/manifest" ||
         die "could not write the durable recovery manifest"
     printf '%s\n' \
         'An interrupted Tailscale upgrade requires explicit operator recovery.' \
@@ -1618,16 +2566,29 @@ prepare_durable_write_ahead_bundle() {
     fi
     sync_durable_storage ||
         die "could not durably publish the recovery bundle"
+    storage_authority_matches_pin ||
+        die "persistent recovery storage changed while publishing the recovery bundle"
     durable_bundle_is_safe prepared_before_stop ||
         die "published durable recovery bundle failed verification"
 }
 
 finalize_durable_quiescent_backup() {
+    all_rollback_reservations_are_safe &&
+        trusted_regular_file_matches \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$PRE_STATE_SHA256" &&
+        local_parent_identities_match ||
+        die "local rollback authority changed before finalizing the USB manifest"
     state_tmp="$DURABLE_PENDING/.tailscaled.state.tmp.$$"
-    cp -p -- "$STATE_FILE" "$state_tmp" ||
+    (
+        exec 7>&- 9>&-
+        cp -p -- "$STATE_FILE" "$state_tmp"
+    ) ||
         die "could not copy quiescent state into durable recovery"
     chmod 0600 "$state_tmp" ||
         die "could not protect the durable quiescent state"
+    bounded_regular_file "$state_tmp" "$STATE_FILE_MAX_BYTES" ||
+        die "durable quiescent state exceeded its verified size limit"
     [ "$(sha256_file "$state_tmp")" = "$PRE_STATE_SHA256" ] ||
         die "durable quiescent state copy verification failed"
     mv -f -- "$state_tmp" "$DURABLE_PENDING/tailscaled.state" ||
@@ -1636,14 +2597,20 @@ finalize_durable_quiescent_backup() {
         die "could not publish the durable recovery manifest"
     sync_durable_storage ||
         die "could not durably flush the quiescent recovery bundle"
-    durable_bundle_is_safe ready_for_binary_mutation ||
+    durable_bundle_is_safe ready_for_binary_mutation &&
+        all_rollback_reservations_are_safe &&
+        trusted_regular_file_matches \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$PRE_STATE_SHA256" ||
         die "durable recovery bundle is incomplete before binary mutation"
     sync_durable_storage ||
         die "could not complete the write-ahead recovery barrier"
     [ -d "$PERSISTENT_MOUNT" ] && [ ! -L "$PERSISTENT_MOUNT" ] &&
         persistent_mount_is_ext4_rw ||
         die "persistent recovery mount changed before binary mutation"
-    durable_bundle_is_safe ready_for_binary_mutation ||
+    durable_bundle_is_safe ready_for_binary_mutation &&
+        all_rollback_reservations_are_safe &&
+        local_parent_identities_match ||
         die "durable recovery bundle changed before binary mutation"
     BACKUP_READY=1
 }
@@ -1710,11 +2677,45 @@ upgrade_fence_matches_expected() {
     [ "$fence_matches" -eq 0 ]
 }
 
+reconcile_upgrade_fence_publication() {
+    [ "$UPGRADE_FENCE_PUBLISHING" -eq 1 ] || return 0
+    is_sha256 "$UPGRADE_FENCE_TEMP_SHA256" || return 1
+
+    if [ -e "$UPGRADE_FENCE" ] || [ -L "$UPGRADE_FENCE" ]; then
+        [ ! -e "$UPGRADE_FENCE_TEMP" ] &&
+            [ ! -L "$UPGRADE_FENCE_TEMP" ] ||
+            return 1
+        UPGRADE_FENCE_CREATED=1
+        UPGRADE_FENCE_PHASE="ready_for_binary_mutation"
+        upgrade_fence_matches_expected &&
+            [ "$(sha256_file "$UPGRADE_FENCE")" = \
+              "$UPGRADE_FENCE_TEMP_SHA256" ] ||
+            return 1
+        UPGRADE_FENCE_SHA256="$UPGRADE_FENCE_TEMP_SHA256"
+        UPGRADE_FENCE_TEMP=""
+        UPGRADE_FENCE_PUBLISHING=0
+        return 0
+    fi
+
+    trusted_regular_file_matches \
+        "$UPGRADE_FENCE_TEMP" 600 "$DURABLE_MARKER_MAX_BYTES" \
+        "$UPGRADE_FENCE_TEMP_SHA256" ||
+        return 1
+    rm -f -- "$UPGRADE_FENCE_TEMP" || return 1
+    [ ! -e "$UPGRADE_FENCE_TEMP" ] && [ ! -L "$UPGRADE_FENCE_TEMP" ] ||
+        return 1
+    UPGRADE_FENCE_TEMP=""
+    UPGRADE_FENCE_TEMP_SHA256=""
+    UPGRADE_FENCE_PUBLISHING=0
+    return 0
+}
+
 publish_upgrade_fence() {
     [ "$BACKUP_READY" -eq 1 ] &&
         durable_bundle_is_safe ready_for_binary_mutation &&
+        all_rollback_reservations_are_safe &&
         storage_authority_matches_pin ||
-        die "trusted USB recovery bundle is unavailable for the boot fence"
+        die "trusted USB and local rollback files are unavailable for the boot fence"
     [ ! -e "$UPGRADE_FENCE" ] && [ ! -L "$UPGRADE_FENCE" ] ||
         die "an existing Tailscale upgrade boot fence requires operator recovery"
     generate_fence_token ||
@@ -1750,18 +2751,34 @@ publish_upgrade_fence() {
         chown 0:0 "$UPGRADE_FENCE_TEMP" ||
             die "could not assign the Tailscale upgrade fence to root"
     fi
+    UPGRADE_FENCE_TEMP_SHA256="$(sha256_file "$UPGRADE_FENCE_TEMP")"
+    is_sha256 "$UPGRADE_FENCE_TEMP_SHA256" ||
+        die "could not fingerprint the staged Tailscale upgrade boot fence"
     storage_authority_matches_pin ||
         die "persistent recovery authority changed before fence publication"
+    UPGRADE_FENCE_PUBLISHING=1
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_TERM_FENCE_PHASE" = "before-rename" ]; then
+        kill -TERM "$$"
+        die "test pre-rename fence signal did not terminate the upgrader"
+    fi
     mv -f -- "$UPGRADE_FENCE_TEMP" "$UPGRADE_FENCE" ||
         die "could not publish the Tailscale upgrade boot fence"
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_TERM_FENCE_PHASE" = "after-rename" ]; then
+        kill -TERM "$$"
+        die "test post-rename fence signal did not terminate the upgrader"
+    fi
     UPGRADE_FENCE_TEMP=""
     UPGRADE_FENCE_CREATED=1
     UPGRADE_FENCE_PHASE="ready_for_binary_mutation"
     upgrade_fence_matches_expected ||
         die "published Tailscale upgrade boot fence failed exact verification"
     UPGRADE_FENCE_SHA256="$(sha256_file "$UPGRADE_FENCE")"
-    is_sha256 "$UPGRADE_FENCE_SHA256" ||
+    is_sha256 "$UPGRADE_FENCE_SHA256" &&
+        [ "$UPGRADE_FENCE_SHA256" = "$UPGRADE_FENCE_TEMP_SHA256" ] ||
         die "could not fingerprint the published Tailscale upgrade boot fence"
+    UPGRADE_FENCE_PUBLISHING=0
     sync_durable_storage ||
         die "could not durably publish the Tailscale upgrade boot fence"
     upgrade_fence_matches_expected ||
@@ -1778,19 +2795,27 @@ clear_upgrade_fence() {
     [ ! -e "$UPGRADE_FENCE" ] && [ ! -L "$UPGRADE_FENCE" ] || return 1
     sync_durable_storage || return 1
     UPGRADE_FENCE_CREATED=0
+    UPGRADE_FENCE_PUBLISHING=0
     UPGRADE_FENCE_PHASE=""
     UPGRADE_FENCE_TOKEN=""
     UPGRADE_FENCE_SHA256=""
+    UPGRADE_FENCE_TEMP_SHA256=""
 }
 
 restore_recovery_authorized_state() {
-    [ "$RECOVERY_STATE_BACKUP_READY" -eq 1 ] || return 1
-    [ -f "$RECOVERY_STATE_BACKUP" ] &&
-        [ ! -L "$RECOVERY_STATE_BACKUP" ] &&
-        [ "$(sha256_file "$RECOVERY_STATE_BACKUP")" = "$RECOVERY_STATE_SHA256" ] ||
+    [ "$RECOVERY_STATE_BACKUP_READY" -eq 1 ] &&
+        [ "$ROLLBACK_STATE_READY" -eq 1 ] ||
         return 1
-    atomic_install "$RECOVERY_STATE_BACKUP" "$STATE_FILE" 0600 &&
-        recovery_state_matches_authorized_hash
+    publish_rollback_reservation \
+        "$ROLLBACK_STATE_RESERVATION" "$STATE_FILE" 600 \
+        "$STATE_FILE_MAX_BYTES" "$RECOVERY_STATE_SHA256" rollback-state &&
+        recovery_state_matches_authorized_hash ||
+        return 1
+    if [ ! -e "$ROLLBACK_STATE_RESERVATION" ] &&
+       [ ! -L "$ROLLBACK_STATE_RESERVATION" ]; then
+        ROLLBACK_STATE_READY=0
+        ROLLBACK_STATE_OWNED=0
+    fi
 }
 
 mark_rollback_incomplete() {
@@ -1851,17 +2876,110 @@ sync_and_verify_restored_live_targets() {
     sync_durable_storage ||
         return 1
 
-    [ -f "$TAILSCALE_BIN" ] && [ ! -L "$TAILSCALE_BIN" ] &&
-        [ "$(sha256_file "$TAILSCALE_BIN")" = "$PRE_CLI_SHA256" ] &&
-        [ -f "$TAILSCALED_BIN" ] && [ ! -L "$TAILSCALED_BIN" ] &&
-        [ "$(sha256_file "$TAILSCALED_BIN")" = "$PRE_DAEMON_SHA256" ] &&
-        state_file_is_safe &&
-        [ "$(sha256_file "$STATE_FILE")" = "$expected_live_state_sha256" ]
+    target_matches_expected_old_file \
+        "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$PRE_CLI_SHA256" &&
+        target_matches_expected_old_file \
+            "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+            "$PRE_DAEMON_SHA256" &&
+        target_matches_expected_old_file \
+            "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+            "$expected_live_state_sha256"
 }
 
 force_preupgrade_service_state() {
     service_command start || return 1
     wait_for_rollback_state "$PRE_BACKEND_STATE"
+}
+
+clear_owned_rollback_reservations() {
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = "reservation-cleanup" ]; then
+        return 1
+    fi
+    reservation_cleanup_failed=0
+
+    if [ "$ROLLBACK_CLI_READY" -eq 1 ] &&
+       ! rollback_reservation_matches \
+            "$ROLLBACK_CLI_RESERVATION" "$TAILSCALE_BIN" 755 \
+            "$LIVE_BINARY_MAX_BYTES" "$PRE_CLI_SHA256"; then
+        return 1
+    fi
+    if [ "$ROLLBACK_DAEMON_READY" -eq 1 ] &&
+       ! rollback_reservation_matches \
+            "$ROLLBACK_DAEMON_RESERVATION" "$TAILSCALED_BIN" 755 \
+            "$LIVE_BINARY_MAX_BYTES" "$PRE_DAEMON_SHA256"; then
+        return 1
+    fi
+    if [ "$ROLLBACK_STATE_READY" -eq 1 ]; then
+        cleanup_state_sha256="$PRE_STATE_SHA256"
+        if ! is_sha256 "$cleanup_state_sha256" &&
+           [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
+            cleanup_state_sha256="$RECOVERY_STATE_SHA256"
+        fi
+        is_sha256 "$cleanup_state_sha256" &&
+            rollback_reservation_matches \
+                "$ROLLBACK_STATE_RESERVATION" "$STATE_FILE" 600 \
+                "$STATE_FILE_MAX_BYTES" "$cleanup_state_sha256" ||
+            return 1
+    fi
+
+    if [ "$ROLLBACK_CLI_OWNED" -eq 1 ]; then
+        rm -f -- "$ROLLBACK_CLI_RESERVATION" ||
+            reservation_cleanup_failed=1
+        if [ ! -e "$ROLLBACK_CLI_RESERVATION" ] &&
+           [ ! -L "$ROLLBACK_CLI_RESERVATION" ]; then
+            ROLLBACK_CLI_OWNED=0
+            ROLLBACK_CLI_READY=0
+        else
+            reservation_cleanup_failed=1
+        fi
+    fi
+    if [ "$TESTING" = "1" ] &&
+       [ "$TEST_FAIL_RESERVATION_PHASE" = \
+         "reservation-cleanup-after-cli" ]; then
+        return 1
+    fi
+    if [ "$ROLLBACK_DAEMON_OWNED" -eq 1 ]; then
+        rm -f -- "$ROLLBACK_DAEMON_RESERVATION" ||
+            reservation_cleanup_failed=1
+        if [ ! -e "$ROLLBACK_DAEMON_RESERVATION" ] &&
+           [ ! -L "$ROLLBACK_DAEMON_RESERVATION" ]; then
+            ROLLBACK_DAEMON_OWNED=0
+            ROLLBACK_DAEMON_READY=0
+        else
+            reservation_cleanup_failed=1
+        fi
+    fi
+    if [ "$ROLLBACK_STATE_OWNED" -eq 1 ]; then
+        rm -f -- "$ROLLBACK_STATE_RESERVATION" ||
+            reservation_cleanup_failed=1
+        if [ ! -e "$ROLLBACK_STATE_RESERVATION" ] &&
+           [ ! -L "$ROLLBACK_STATE_RESERVATION" ]; then
+            ROLLBACK_STATE_OWNED=0
+            ROLLBACK_STATE_READY=0
+        else
+            reservation_cleanup_failed=1
+        fi
+    fi
+
+    [ "$reservation_cleanup_failed" -eq 0 ] || return 1
+    sync_durable_storage || return 1
+    [ ! -e "$ROLLBACK_CLI_RESERVATION" ] &&
+        [ ! -L "$ROLLBACK_CLI_RESERVATION" ] &&
+        [ ! -e "$ROLLBACK_DAEMON_RESERVATION" ] &&
+        [ ! -L "$ROLLBACK_DAEMON_RESERVATION" ] &&
+        [ ! -e "$ROLLBACK_STATE_RESERVATION" ] &&
+        [ ! -L "$ROLLBACK_STATE_RESERVATION" ]
+}
+
+run_test_rollback_kill_hook() {
+    rollback_kill_phase="$1"
+    [ "$TESTING" = "1" ] || return 0
+    if [ "$TEST_KILL_ROLLBACK_PHASE" = "$rollback_kill_phase" ]; then
+        kill -KILL "$$"
+        die "test rollback interruption did not terminate the upgrader"
+    fi
 }
 
 rollback_upgrade() {
@@ -1870,6 +2988,14 @@ rollback_upgrade() {
 
     warn "upgrade transaction failed; restoring the previous verified state"
     rollback_failed=0
+    if [ "$FENCE_PUBLICATION_RECONCILE_FAILED" -ne 0 ]; then
+        warn "could not reconcile an interrupted boot-fence publication"
+        rollback_failed=1
+    fi
+    if [ "$FORWARD_TEMP_CLEANUP_FAILED" -ne 0 ]; then
+        warn "could not remove an in-progress forward binary before rollback"
+        rollback_failed=1
+    fi
 
     if [ "$MUTATION_STARTED" -eq 1 ]; then
         if ! durable_bundle_is_safe ready_for_binary_mutation; then
@@ -1883,31 +3009,61 @@ rollback_upgrade() {
             warn "could not prove quiescence before rollback restore"
             rollback_failed=1
         else
-            if ! atomic_install "$BACKUP_DIR/tailscale" "$TAILSCALE_BIN" 0755; then
-                warn "could not restore the previous tailscale binary"
-                rollback_failed=1
+            if [ "$CLI_MUTATED" -eq 1 ]; then
+                if ! publish_rollback_reservation \
+                    "$ROLLBACK_CLI_RESERVATION" "$TAILSCALE_BIN" 755 \
+                    "$LIVE_BINARY_MAX_BYTES" "$PRE_CLI_SHA256" \
+                    rollback-cli; then
+                    warn "could not restore the previous tailscale binary"
+                    rollback_failed=1
+                elif [ ! -e "$ROLLBACK_CLI_RESERVATION" ] &&
+                     [ ! -L "$ROLLBACK_CLI_RESERVATION" ]; then
+                    ROLLBACK_CLI_READY=0
+                    ROLLBACK_CLI_OWNED=0
+                fi
+                [ "$rollback_failed" -ne 0 ] ||
+                    run_test_rollback_kill_hook after-cli
             fi
-            if ! atomic_install "$BACKUP_DIR/tailscaled" "$TAILSCALED_BIN" 0755; then
-                warn "could not restore the previous tailscaled binary"
-                rollback_failed=1
+            if [ "$DAEMON_MUTATED" -eq 1 ]; then
+                if ! publish_rollback_reservation \
+                    "$ROLLBACK_DAEMON_RESERVATION" "$TAILSCALED_BIN" 755 \
+                    "$LIVE_BINARY_MAX_BYTES" "$PRE_DAEMON_SHA256" \
+                    rollback-daemon; then
+                    warn "could not restore the previous tailscaled binary"
+                    rollback_failed=1
+                elif [ ! -e "$ROLLBACK_DAEMON_RESERVATION" ] &&
+                     [ ! -L "$ROLLBACK_DAEMON_RESERVATION" ]; then
+                    ROLLBACK_DAEMON_READY=0
+                    ROLLBACK_DAEMON_OWNED=0
+                fi
+                [ "$rollback_failed" -ne 0 ] ||
+                    run_test_rollback_kill_hook after-daemon
             fi
-            if ! restore_previous_state; then
+            if [ "$STATE_MAY_HAVE_CHANGED" -eq 1 ] &&
+               ! restore_previous_state; then
                 warn "could not restore the previous Tailscale state"
                 rollback_failed=1
             fi
+            if [ "$STATE_MAY_HAVE_CHANGED" -eq 1 ] &&
+               [ "$rollback_failed" -eq 0 ]; then
+                run_test_rollback_kill_hook after-state
+            fi
 
-            [ -f "$TAILSCALE_BIN" ] &&
-                [ "$(sha256_file "$TAILSCALE_BIN")" = "$PRE_CLI_SHA256" ] || {
+            target_matches_expected_old_file \
+                "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                "$PRE_CLI_SHA256" || {
                     warn "restored tailscale binary hash verification failed"
                     rollback_failed=1
                 }
-            [ -f "$TAILSCALED_BIN" ] &&
-                [ "$(sha256_file "$TAILSCALED_BIN")" = "$PRE_DAEMON_SHA256" ] || {
+            target_matches_expected_old_file \
+                "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                "$PRE_DAEMON_SHA256" || {
                     warn "restored tailscaled binary hash verification failed"
                     rollback_failed=1
                 }
-            [ -f "$STATE_FILE" ] &&
-                [ "$(sha256_file "$STATE_FILE")" = "$PRE_STATE_SHA256" ] || {
+            target_matches_expected_old_file \
+                "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+                "$PRE_STATE_SHA256" || {
                     warn "restored state hash verification failed"
                     rollback_failed=1
                 }
@@ -1976,6 +3132,17 @@ rollback_upgrade() {
         mark_rollback_incomplete
         return 1
     fi
+    if ! clear_owned_rollback_reservations; then
+        warn "could not durably clear local rollback reservations"
+        mark_rollback_incomplete
+        return 1
+    fi
+    run_test_rollback_kill_hook after-local-cleanup
+    if ! sync_and_verify_restored_live_targets; then
+        warn "could not reverify live Tailscale targets after local rollback cleanup"
+        mark_rollback_incomplete
+        return 1
+    fi
     if ! clear_upgrade_fence; then
         warn "could not durably clear the verified Tailscale boot fence"
         mark_rollback_incomplete
@@ -1993,6 +3160,12 @@ rollback_upgrade() {
 cleanup() {
     exit_status=$?
     trap - EXIT HUP INT TERM
+    if ! reconcile_upgrade_fence_publication; then
+        FENCE_PUBLICATION_RECONCILE_FAILED=1
+    fi
+    if ! discard_forward_transaction_files; then
+        FORWARD_TEMP_CLEANUP_FAILED=1
+    fi
     rollback_upgrade || true
     if [ "$MAINTENANCE_CREATED" -eq 1 ] &&
        [ "$ROLLBACK_INCOMPLETE" -eq 0 ]; then
@@ -2002,16 +3175,14 @@ cleanup() {
         rm -f -- "$MAINTENANCE_TEMP"
         MAINTENANCE_TEMP=""
     fi
-    if [ -n "$UPGRADE_FENCE_TEMP" ]; then
+    if [ -n "$UPGRADE_FENCE_TEMP" ] &&
+       [ "$UPGRADE_FENCE_PUBLISHING" -eq 0 ]; then
         rm -f -- "$UPGRADE_FENCE_TEMP"
         UPGRADE_FENCE_TEMP=""
     fi
     if [ -n "$STORAGE_CAPTURE" ]; then
         rm -f -- "$STORAGE_CAPTURE"
         STORAGE_CAPTURE=""
-    fi
-    if [ -n "$TARGET_TEMP" ]; then
-        rm -f -- "$TARGET_TEMP"
     fi
     if [ "$INSTALL_LOCK_HELD" -eq 1 ]; then
         # Closing descriptor 9 is the only ownership transition. The shared
@@ -2092,16 +3263,61 @@ acquire_install_lock() {
 }
 
 create_maintenance_marker() {
-    now_epoch="$(date +%s)" || die "could not read the current time"
+    now_epoch="$(current_epoch)" || die "could not read the current time"
     is_uint "$now_epoch" || die "current time is not a Unix epoch"
-    quiesce_budget=$((QUIESCE_ATTEMPTS * (SERVICE_TIMEOUT + QUIESCE_DELAY)))
-    postcheck_budget=$((STATUS_ATTEMPTS * (STATUS_TIMEOUT + STATUS_DELAY)))
-    rollback_status_budget=$((5 * (STATUS_TIMEOUT + 1)))
-    required_remaining=$(( \
-        SERVICE_TIMEOUT + quiesce_budget + postcheck_budget + \
-        SERVICE_TIMEOUT + quiesce_budget + SERVICE_TIMEOUT + \
-        rollback_status_budget + 120 \
+    STORAGE_AUTHORITY_READ_COUNT=0
+    status_capture_budget=$((STATUS_TIMEOUT + TIMEOUT_KILL_GRACE))
+    status_query_budget=$((
+        RUNNING_STATUS_CAPTURE_COUNT * status_capture_budget
     ))
+    service_command_budget=$((SERVICE_TIMEOUT + TIMEOUT_KILL_GRACE))
+    sync_command_budget=$((SYNC_TIMEOUT + TIMEOUT_KILL_GRACE))
+    peer_command_budget=$((PEER_COMMAND_TIMEOUT + TIMEOUT_KILL_GRACE))
+
+    # Two quiescence loops each run one bounded init status command per
+    # attempt. The extra delay per attempt is conservative because the final
+    # successful or exhausted attempt does not sleep.
+    quiesce_budget=$((
+        MAINTENANCE_QUIESCE_WAITS * QUIESCE_ATTEMPTS *
+        (service_command_budget + QUIESCE_DELAY)
+    ))
+    postcheck_budget=$((
+        STATUS_ATTEMPTS * (status_query_budget + STATUS_DELAY)
+    ))
+    # The longest rollback path has three five-attempt status waits and one
+    # final direct proof query. Each wait sleeps at most four times; budgeting
+    # one delay per attempt deliberately leaves three additional seconds.
+    rollback_status_budget=$((
+        MAINTENANCE_ROLLBACK_STATUS_WAITS *
+        ROLLBACK_STATUS_ATTEMPTS * (status_query_budget + 1) +
+        MAINTENANCE_ROLLBACK_DIRECT_STATUS_QUERIES * status_query_budget
+    ))
+    standalone_service_budget=$((
+        MAINTENANCE_STANDALONE_SERVICE_COMMANDS * service_command_budget
+    ))
+    sync_budget=$((
+        MAINTENANCE_SYNC_COMMANDS * sync_command_budget
+    ))
+    peer_budget=$((
+        MAINTENANCE_PEER_COMMANDS * peer_command_budget
+    ))
+    storage_authority_budget=$((
+        MAINTENANCE_STORAGE_AUTHORITY_READS *
+        STORAGE_AUTHORITY_CAPTURES_PER_READ *
+        status_capture_budget
+    ))
+    required_remaining=$(( \
+        standalone_service_budget + quiesce_budget + postcheck_budget + \
+        rollback_status_budget + sync_budget + peer_budget + \
+        storage_authority_budget + \
+        MAINTENANCE_FIXED_MARGIN \
+    ))
+    MAINTENANCE_MUTATION_MIN_REMAINING=$((
+        required_remaining - MAINTENANCE_FIXED_MARGIN
+    ))
+    is_uint "$MAINTENANCE_MUTATION_MIN_REMAINING" &&
+        [ "$MAINTENANCE_MUTATION_MIN_REMAINING" -gt 0 ] ||
+        die "calculated maintenance mutation floor is invalid"
     [ "$required_remaining" -le 3600 ] ||
         die "calculated maintenance window exceeds the watchdog safety limit"
 
@@ -2164,10 +3380,20 @@ maintenance_marker_matches_expected() {
 }
 
 maintenance_lease_is_owned_and_live() {
+    maintenance_lease_has_remaining 1
+}
+
+maintenance_lease_has_remaining() {
+    minimum_remaining="$1"
+    is_uint "$minimum_remaining" &&
+        [ "$minimum_remaining" -gt 0 ] ||
+        return 1
     maintenance_marker_matches_expected || return 1
-    lease_now="$(date +%s)" || return 1
+    lease_now="$(current_epoch)" || return 1
     is_uint "$lease_now" || return 1
-    [ "$MAINTENANCE_EXPECTED_EXPIRY" -gt "$lease_now" ]
+    lease_remaining=$((MAINTENANCE_EXPECTED_EXPIRY - lease_now))
+    [ "$lease_remaining" -ge "$minimum_remaining" ] &&
+        [ "$lease_remaining" -le 3600 ]
 }
 
 remove_owned_maintenance_marker() {
@@ -2179,6 +3405,7 @@ remove_owned_maintenance_marker() {
 }
 
 prove_live_mutation_guard() {
+    guarded_target="$1"
     if [ ! -d "$PERSISTENT_MOUNT" ] ||
        [ -L "$PERSISTENT_MOUNT" ] ||
        ! persistent_mount_is_ext4_rw; then
@@ -2189,12 +3416,55 @@ prove_live_mutation_guard() {
         warn "durable recovery bundle changed immediately before binary replacement"
         return 1
     fi
+    if ! all_rollback_reservations_are_safe; then
+        warn "local rollback reservations changed immediately before binary replacement"
+        return 1
+    fi
+    if ! local_parent_identities_match; then
+        warn "live Tailscale parent identity changed immediately before binary replacement"
+        return 1
+    fi
+    case "$guarded_target" in
+        "$TAILSCALE_BIN")
+            trusted_regular_file_matches \
+                "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                "$PRE_CLI_SHA256" &&
+                trusted_regular_file_matches \
+                    "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                    "$PRE_DAEMON_SHA256" &&
+                trusted_regular_file_matches \
+                    "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+                    "$PRE_STATE_SHA256" || {
+                        warn "old live Tailscale targets changed before the first binary replacement"
+                        return 1
+                    }
+            ;;
+        "$TAILSCALED_BIN")
+            trusted_regular_file_matches \
+                "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                "$NEW_CLI_SHA256" &&
+                trusted_regular_file_matches \
+                    "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+                    "$PRE_DAEMON_SHA256" &&
+                trusted_regular_file_matches \
+                    "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+                    "$PRE_STATE_SHA256" || {
+                        warn "live Tailscale targets changed between binary replacements"
+                        return 1
+                    }
+            ;;
+        *)
+            warn "unexpected binary replacement target"
+            return 1
+            ;;
+    esac
     if ! is_quiescent; then
         warn "Tailscale quiescence was lost before binary replacement"
         return 1
     fi
-    if ! maintenance_lease_is_owned_and_live; then
-        warn "maintenance lease ownership or validity was lost before binary replacement"
+    if ! maintenance_lease_has_remaining \
+        "$MAINTENANCE_MUTATION_MIN_REMAINING"; then
+        warn "maintenance lease ownership or validity was lost, or the bounded rollback envelope no longer fits before binary replacement"
         return 1
     fi
 }
@@ -2216,9 +3486,43 @@ run_test_binary_boundary_hook() {
             > "$PROC_ROOT/mounts"
     fi
     if [ "$hook_phase" = "after-cli" ] &&
-       [ "$TEST_TAMPER_DURABLE_AFTER_CLI" = "1" ]; then
-        printf '%s\n' tampered > "$DURABLE_PENDING/manifest"
+       [ "$TEST_TAMPER_DURABLE_AFTER_CLI" != "0" ]; then
+        case "$TEST_TAMPER_DURABLE_AFTER_CLI" in
+            1)
+                printf '%s\n' tampered=1 >> "$DURABLE_PENDING/manifest"
+                ;;
+            2)
+                printf '%s\n' unexpected \
+                    > "$DURABLE_PENDING/unlisted-recovery-artifact"
+                ;;
+            3)
+                printf '%s\n' unexpected \
+                    > "$DURABLE_PENDING/.unlisted-recovery-artifact"
+                ;;
+            4)
+                mkdir "$DURABLE_PENDING/unlisted-recovery-directory"
+                ;;
+            5)
+                ln -s missing-recovery-target \
+                    "$DURABLE_PENDING/unlisted-recovery-symlink"
+                ;;
+            6)
+                printf '%s\n' unauthorized \
+                    > "$DURABLE_PENDING/recovery-authorized-tailscaled.state"
+                ;;
+        esac
     fi
+    case "$TEST_TAMPER_LIVE_PHASE:$hook_phase" in
+        cli-before-cli:before-cli|cli-after-cli:after-cli)
+            printf '%s\n' '# test live CLI drift' >> "$TAILSCALE_BIN"
+            ;;
+        daemon-before-cli:before-cli|daemon-after-cli:after-cli)
+            printf '%s\n' '# test live daemon drift' >> "$TAILSCALED_BIN"
+            ;;
+        state-before-cli:before-cli|state-after-cli:after-cli)
+            printf '%s\n' 'TEST_LIVE_STATE_DRIFT' > "$STATE_FILE"
+            ;;
+    esac
 }
 
 validate_safe_init() {
@@ -2294,7 +3598,8 @@ fetch_file() {
     if [ -n "$PACKAGE_SOURCE_DIR" ]; then
         (
             exec 7>&- 9>&-
-            "$TIMEOUT_CMD" -s TERM -k 2 "$FETCH_TIMEOUT" \
+            "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                "$FETCH_TIMEOUT" \
                 /bin/sh -c \
                 'ulimit -f "$1" || exit 125; shift; exec "$@"' \
                 jammonitor-fetch-limit "$file_blocks" cp -- \
@@ -2303,7 +3608,8 @@ fetch_file() {
     elif command -v uclient-fetch >/dev/null 2>&1; then
         (
             exec 7>&- 9>&-
-            "$TIMEOUT_CMD" -s TERM -k 2 "$FETCH_TIMEOUT" \
+            "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                "$FETCH_TIMEOUT" \
                 /bin/sh -c \
                 'ulimit -f "$1" || exit 125; shift; exec "$@"' \
                 jammonitor-fetch-limit "$file_blocks" \
@@ -2312,7 +3618,8 @@ fetch_file() {
     elif command -v wget >/dev/null 2>&1; then
         (
             exec 7>&- 9>&-
-            "$TIMEOUT_CMD" -s TERM -k 2 "$FETCH_TIMEOUT" \
+            "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                "$FETCH_TIMEOUT" \
                 /bin/sh -c \
                 'ulimit -f "$1" || exit 125; shift; exec "$@"' \
                 jammonitor-fetch-limit "$file_blocks" \
@@ -2321,7 +3628,8 @@ fetch_file() {
     elif command -v curl >/dev/null 2>&1; then
         (
             exec 7>&- 9>&-
-            "$TIMEOUT_CMD" -s TERM -k 2 "$FETCH_TIMEOUT" \
+            "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+                "$FETCH_TIMEOUT" \
                 /bin/sh -c \
                 'ulimit -f "$1" || exit 125; shift; exec "$@"' \
                 jammonitor-fetch-limit "$file_blocks" curl \
@@ -2417,14 +3725,16 @@ validate_new_binaries() {
     chmod 0755 "$new_cli" "$new_daemon"
 
     if new_cli_version="$(
-        "$TIMEOUT_CMD" -s TERM -k 2 10 "$new_cli" version 2>/dev/null |
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+            10 "$new_cli" version 2>/dev/null |
         head -n 1 | tr -d '\r\n')"; then
         :
     else
         die "new tailscale binary could not execute"
     fi
     if new_daemon_version="$(
-        "$TIMEOUT_CMD" -s TERM -k 2 10 "$new_daemon" --version 2>/dev/null |
+        "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+            10 "$new_daemon" --version 2>/dev/null |
         head -n 1 | tr -d '\r\n')"; then
         :
     else
@@ -2522,8 +3832,8 @@ is_uint "$QUIESCE_ATTEMPTS" && [ "$QUIESCE_ATTEMPTS" -gt 0 ] ||
     die "quiescence attempts must be a positive integer"
 is_uint "$QUIESCE_DELAY" ||
     die "quiescence delay must be a nonnegative integer"
-case "$TEST_INTERRUPT_AFTER_CLI:$TEST_INTERRUPT_AFTER_FENCE:$TEST_INTERRUPT_AFTER_DAEMON:$TEST_INTERRUPT_AFTER_LIVE_SYNC:$TEST_INTERRUPT_AFTER_COMMIT_FENCE:$TEST_INTERRUPT_AFTER_USB_CLEAR:$TEST_RESTART_DAEMON_AFTER_CLI:$TEST_TAMPER_DURABLE_AFTER_CLI" in
-    [01]:[01]:[01]:[01]:[01]:[01]:[01]:[01])
+case "$TEST_INTERRUPT_AFTER_CLI:$TEST_INTERRUPT_AFTER_FENCE:$TEST_INTERRUPT_AFTER_DAEMON:$TEST_INTERRUPT_AFTER_LIVE_SYNC:$TEST_INTERRUPT_AFTER_COMMIT_FENCE:$TEST_INTERRUPT_AFTER_LOCAL_CLEAR:$TEST_INTERRUPT_AFTER_USB_CLEAR:$TEST_RESTART_DAEMON_AFTER_CLI:$TEST_TAMPER_DURABLE_AFTER_CLI" in
+    [01]:[01]:[01]:[01]:[01]:[01]:[01]:[01]:[0123456])
         ;;
     *)
         die "test-only selector is invalid"
@@ -2543,6 +3853,48 @@ case "$TEST_SWAP_STORAGE_PHASE" in
         die "test-only storage-swap selector is invalid"
         ;;
 esac
+case "$TEST_TAMPER_LIVE_PHASE" in
+    none|cli-before-cli|daemon-before-cli|state-before-cli|\
+cli-after-cli|daemon-after-cli|state-after-cli)
+        ;;
+    *)
+        die "test-only live-target tamper selector is invalid"
+        ;;
+esac
+case "$TEST_TERM_FENCE_PHASE" in
+    none|before-rename|after-rename)
+        ;;
+    *)
+        die "test-only fence signal selector is invalid"
+        ;;
+esac
+case "$TEST_FAIL_RESERVATION_PHASE" in
+    none|prepared-extra-state|binary-cli-copy|binary-daemon-copy|state-copy|\
+binary-sync|state-sync|\
+binary-tamper|binary-content-tamper|binary-hardlink-tamper|\
+state-tamper|state-delete-tamper|state-symlink-tamper|\
+forward-cli-copy|forward-daemon-copy|rollback-cli-rename|\
+rollback-daemon-rename|rollback-state-rename|reservation-cleanup|\
+reservation-cleanup-after-cli)
+        ;;
+    *)
+        die "test-only reservation failure selector is invalid"
+        ;;
+esac
+case "$TEST_KILL_RESERVATION_PHASE" in
+    none|after-cli|after-daemon|after-binary-sync|after-state|after-state-sync)
+        ;;
+    *)
+        die "test-only reservation interruption selector is invalid"
+        ;;
+esac
+case "$TEST_KILL_ROLLBACK_PHASE" in
+    none|after-cli|after-daemon|after-state|after-local-cleanup)
+        ;;
+    *)
+        die "test-only rollback interruption selector is invalid"
+        ;;
+esac
 
 require_command "$TIMEOUT_CMD"
 require_command "$JSONFILTER_CMD"
@@ -2551,6 +3903,7 @@ require_command "$FLOCK_CMD"
 require_command "$UCI_CMD"
 require_command "$BLOCK_CMD"
 require_command awk
+require_command cat
 require_command cmp
 require_command dd
 require_command grep
@@ -2570,15 +3923,32 @@ preflight_locked_installer_recovery_evidence
 [ ! -e "$UPGRADE_FENCE" ] && [ ! -L "$UPGRADE_FENCE" ] ||
     die "an unresolved prior Tailscale upgrade boot fence requires operator recovery"
 prepare_durable_root
+preflight_local_transaction_paths
+capture_local_parent_identities ||
+    die "live Tailscale parent directories are unsafe"
 WORK_DIR="$(mktemp -d "$TMP_BASE/tailscale-upgrade.XXXXXX")"
 
-[ -f "$TAILSCALE_BIN" ] && [ ! -L "$TAILSCALE_BIN" ] &&
-[ -x "$TAILSCALE_BIN" ] || die "current tailscale binary is missing or unsafe"
-[ -f "$TAILSCALED_BIN" ] && [ ! -L "$TAILSCALED_BIN" ] &&
-[ -x "$TAILSCALED_BIN" ] || die "current tailscaled binary is missing or unsafe"
+bounded_regular_file "$TAILSCALE_BIN" "$LIVE_BINARY_MAX_BYTES" ||
+    die "current tailscale binary exceeds the verified size limit"
+trusted_regular_file_metadata_matches \
+    "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" &&
+    [ -x "$TAILSCALE_BIN" ] &&
+    ! local_path_is_mountpoint "$TAILSCALE_BIN" ||
+    die "current tailscale binary metadata or mount topology is unsafe"
+bounded_regular_file "$TAILSCALED_BIN" "$LIVE_BINARY_MAX_BYTES" ||
+    die "current tailscaled binary exceeds the verified size limit"
+trusted_regular_file_metadata_matches \
+    "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" &&
+    [ -x "$TAILSCALED_BIN" ] &&
+    ! local_path_is_mountpoint "$TAILSCALED_BIN" ||
+    die "current tailscaled binary metadata or mount topology is unsafe"
 [ -x "$INIT_SCRIPT" ] || die "Tailscale init script is missing"
-[ -f "$STATE_FILE" ] && [ ! -L "$STATE_FILE" ] &&
-[ -s "$STATE_FILE" ] || die "Tailscale state file is missing, empty, or unsafe"
+state_file_is_safe ||
+    die "Tailscale state file is missing, empty, unsafe, or oversized"
+trusted_regular_file_metadata_matches \
+    "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" &&
+    ! local_path_is_mountpoint "$STATE_FILE" ||
+    die "Tailscale state metadata or mount topology is unsafe"
 
 validate_safe_init
 
@@ -2631,9 +4001,20 @@ PRE_DAEMON_SHA256="$(sha256_file "$TAILSCALED_BIN")"
 is_sha256 "$PRE_CLI_SHA256" &&
     is_sha256 "$PRE_DAEMON_SHA256" ||
     die "could not hash the pre-upgrade binaries"
+trusted_regular_file_matches \
+    "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+    "$PRE_CLI_SHA256" &&
+    trusted_regular_file_matches \
+        "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$PRE_DAEMON_SHA256" &&
+    trusted_regular_file_metadata_matches \
+        "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" &&
+    local_parent_identities_match ||
+    die "live Tailscale files changed during preflight"
 
 if current_cli_version="$(
-    "$TIMEOUT_CMD" -s TERM -k 2 10 "$TAILSCALE_BIN" version 2>/dev/null |
+    "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+        10 "$TAILSCALE_BIN" version 2>/dev/null |
     head -n 1 | tr -d '\r\n')"; then
     :
 else
@@ -2649,7 +4030,8 @@ else
 fi
 
 if installed_daemon_version="$(
-    "$TIMEOUT_CMD" -s TERM -k 2 10 "$TAILSCALED_BIN" --version 2>/dev/null |
+    "$TIMEOUT_CMD" -s TERM -k "$TIMEOUT_KILL_GRACE" \
+        10 "$TAILSCALED_BIN" --version 2>/dev/null |
         head -n 1 | tr -d '\r\n'
 )"; then
     :
@@ -2709,6 +4091,11 @@ create_maintenance_marker
 
 TRANSACTION_ACTIVE=1
 prepare_durable_write_ahead_bundle
+prepare_binary_rollback_reservations
+storage_authority_matches_pin ||
+    die "persistent recovery storage changed before stopping Tailscale"
+maintenance_lease_has_remaining "$MAINTENANCE_MUTATION_MIN_REMAINING" ||
+    die "maintenance lease no longer covers the bounded stop and rollback envelope"
 STOP_REQUESTED=1
 service_command stop ||
     die "Tailscale service did not stop within the bounded timeout"
@@ -2717,15 +4104,21 @@ wait_for_quiescence ||
 
 # State is copied only after the daemon and socket are independently proven
 # quiescent, so the backup is a stable point-in-time recovery artifact.
-[ -f "$STATE_FILE" ] && [ ! -L "$STATE_FILE" ] && [ -s "$STATE_FILE" ] ||
-    die "Tailscale state became missing, empty, or unsafe during shutdown"
+state_file_is_safe ||
+    die "Tailscale state became missing, empty, unsafe, or oversized during shutdown"
 PRE_STATE_SHA256="$(sha256_file "$STATE_FILE")"
 is_sha256 "$PRE_STATE_SHA256" ||
     die "could not hash the quiescent pre-upgrade Tailscale state"
+trusted_regular_file_matches \
+    "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" \
+    "$PRE_STATE_SHA256" &&
+    local_parent_identities_match ||
+    die "quiescent Tailscale state metadata or parent identity changed"
 if [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
     [ "$PRE_STATE_SHA256" = "$RECOVERY_STATE_SHA256" ] ||
         die "quiescent Tailscale state does not match the operator-authorized checksum"
 fi
+prepare_state_rollback_reservation
 finalize_durable_quiescent_backup
 
 publish_upgrade_fence
@@ -2736,7 +4129,7 @@ fi
 MUTATION_STARTED=1
 run_test_binary_boundary_hook before-cli
 if ! atomic_install "$WORK_DIR/extract/$TARGET_DIRECTORY/tailscale" \
-    "$TAILSCALE_BIN" 0755 live-binary; then
+    "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" live-binary; then
     if [ "$ATOMIC_INSTALL_GUARD_FAILED" -eq 1 ]; then
         die "lost maintenance ownership or quiescence before installing tailscale"
     fi
@@ -2747,12 +4140,13 @@ if [ "$TEST_INTERRUPT_AFTER_CLI" = "1" ]; then
     die "test interruption did not terminate the upgrader"
 fi
 if [ "$TEST_RESTART_DAEMON_AFTER_CLI" = "1" ]; then
+    STATE_MAY_HAVE_CHANGED=1
     service_command start ||
         die "test daemon restart hook could not start Tailscale"
 fi
 run_test_binary_boundary_hook after-cli
 if ! atomic_install "$WORK_DIR/extract/$TARGET_DIRECTORY/tailscaled" \
-    "$TAILSCALED_BIN" 0755 live-binary; then
+    "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" live-binary; then
     if [ "$ATOMIC_INSTALL_GUARD_FAILED" -eq 1 ]; then
         die "lost maintenance ownership or quiescence before installing tailscaled"
     fi
@@ -2766,6 +4160,7 @@ fi
     [ "$(sha256_file "$TAILSCALED_BIN")" = "$NEW_DAEMON_SHA256" ] ||
     die "installed Tailscale binary hashes differ from the verified package"
 
+STATE_MAY_HAVE_CHANGED=1
 service_command start ||
     die "Tailscale service did not start within the bounded timeout"
 wait_for_expected_state "$PRE_BACKEND_STATE" ||
@@ -2775,8 +4170,10 @@ if [ "$PRE_BACKEND_STATE" = "Running" ] &&
     die "post-upgrade critical Tailscale peer verification failed"
 fi
 
-state_file_is_safe ||
-    die "Tailscale state file disappeared during upgrade"
+trusted_regular_file_metadata_matches \
+    "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" &&
+    local_parent_identities_match ||
+    die "Tailscale state metadata or parent identity changed during upgrade"
 if [ "$RECOVER_EMPTY_NEEDS_LOGIN" -eq 1 ]; then
     [ "$OBSERVED_BACKEND" = "NeedsLogin" ] &&
         [ -z "$OBSERVED_STABLE_ID" ] &&
@@ -2794,19 +4191,38 @@ sync_durable_storage ||
     die "could not durably flush the verified live Tailscale target"
 [ -d "$PERSISTENT_MOUNT" ] && [ ! -L "$PERSISTENT_MOUNT" ] &&
     persistent_mount_is_ext4_rw &&
-    durable_bundle_is_safe ready_for_binary_mutation ||
-    die "durable recovery evidence changed before live commit"
+    durable_bundle_is_safe ready_for_binary_mutation &&
+    all_rollback_reservations_are_safe &&
+    trusted_regular_file_matches \
+        "$TAILSCALE_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$NEW_CLI_SHA256" &&
+    trusted_regular_file_matches \
+        "$TAILSCALED_BIN" 755 "$LIVE_BINARY_MAX_BYTES" \
+        "$NEW_DAEMON_SHA256" &&
+    trusted_regular_file_metadata_matches \
+        "$STATE_FILE" 600 "$STATE_FILE_MAX_BYTES" &&
+    local_parent_identities_match ||
+    die "live target or durable recovery authority changed before commit"
 if [ "$TEST_INTERRUPT_AFTER_LIVE_SYNC" = "1" ]; then
     kill -KILL "$$"
     die "test live-sync interruption did not terminate the upgrader"
 fi
 
+# The verified, globally synchronized live target set is the commit point.
+# Every remaining operation removes recovery evidence and must never turn a
+# cleanup-durability fault into an attempted rollback of a proven live target.
+TRANSACTION_COMMITTED=1
 clear_upgrade_fence ||
     die "upgrade committed but the durable boot fence could not be cleared"
-TRANSACTION_COMMITTED=1
 if [ "$TEST_INTERRUPT_AFTER_COMMIT_FENCE" = "1" ]; then
     kill -KILL "$$"
     die "test fence-clear interruption did not terminate the upgrader"
+fi
+clear_owned_rollback_reservations ||
+    die "upgrade committed but local rollback reservations could not be cleared"
+if [ "$TEST_INTERRUPT_AFTER_LOCAL_CLEAR" = "1" ]; then
+    kill -KILL "$$"
+    die "test local-cleanup interruption did not terminate the upgrader"
 fi
 clear_owned_durable_bundle ||
     die "upgrade committed but durable recovery evidence could not be cleared"

@@ -745,13 +745,15 @@ run_case_install &
 FIRST_INSTALLER_PID=$!
 _lock_wait=0
 while [ ! -f "${HOLD_AFTER_LOCK_FILE}.ready" ] &&
-      [ "$_lock_wait" -lt 100 ]; do
-    /bin/sleep 0.01
+      [ "$_lock_wait" -lt 500 ]; do
+    kill -0 "$FIRST_INSTALLER_PID" 2>/dev/null || break
+    /bin/sleep 0.02
     _lock_wait=$((_lock_wait + 1))
 done
 [ -f "${HOLD_AFTER_LOCK_FILE}.ready" ] || {
     rm -f "$HOLD_AFTER_LOCK_FILE"
     wait "$FIRST_INSTALLER_PID" 2>/dev/null || true
+    sed -n '1,120p' "$CASE_ERROR" >&2
     fail "first simultaneous installer never acquired its lock"
 }
 HOLD_AFTER_LOCK_FILE=""

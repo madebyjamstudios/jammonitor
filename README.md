@@ -372,13 +372,21 @@ The installer never removes `/etc/tailscale/tailscaled.state`, never runs
 authentication URL. It does not restart `tailscaled`.
 
 Install, `--repair-services`, and the pinned Tailscale upgrader serialize every
-router mutation through the same persistent
+router mutation through the same never-unlinked, same-boot
 `/var/run/jammonitor/router-install.lock` inode. Each process opens that exact
 regular file and takes a nonblocking kernel `flock`; none of them unlinks it
 during cleanup. Closing the held descriptor, including kernel cleanup after
 `SIGKILL`, is the only ownership transition. This prevents PID reuse, stale
-text, and two contenders locking different replacement inodes from allowing
-overlapping file or service changes.
+text, and split lock ownership among the cooperating JamMonitor components,
+which never replace or unlink the inode. The parent directory is root-owned
+mode `0700`; a privileged out-of-band pathname replacement is outside that
+cooperating model and is rejected by the watchdog rather than treated as
+restart authority. The watchdog creates and pins the same inode after a
+reboot. Before any automatic Tailscale restart it acquires the lock, repeats
+its mutable integrity and generation proofs, reinspects the maintenance
+lease, and retains install authority through the bounded restart result. A
+busy, replaced, linked, symlinked, or otherwise untrusted lock suppresses
+recovery without spending the restart latch.
 
 #### Router installer recovery
 
@@ -870,18 +878,50 @@ Schema 1 and unknown future schemas fail closed.
 
 Every router LocalAPI query runs in a bounded child with a 64 KiB output-file
 limit. An attempt to exceed the limit is a command failure, not evidence of a
-daemon deadline, and cannot authorize recovery. A schema-valid response must
+daemon deadline, and cannot authorize recovery. Exactly one separately bounded
+`jsonfilter` projection extracts the complete allowlisted schema. A parser
+timeout, output flood, malformed framing, or process-generation race is
+non-recoverable and cannot enter the restart circuit. Raw status JSON and CLI
+errors are removed immediately after the projection child exits, before
+normalization, peer checks, interval sleep, or publication. Before removal,
+the raw status JSON alone is checked for the unsafe literal NUL escape with
+one fixed-string scan, not a per-line shell loop. The bounded allowlisted
+projection is then removed before publication. A schema-valid response must
 contain `Health` as an array of at most 100 elements, every element must be a
-string, and every string must have length at most 512. Missing, scalar,
-non-string, oversized, or over-count `Health` data becomes
+string, and every string must have length at most 512.
+Missing, scalar, non-string, oversized, or over-count `Health` data becomes
 `health_state_unknown`; it is degraded and unhealthy and never defaults to an
-empty healthy array.
+empty healthy array. The fixed projection type header is capped at 2,048
+bytes, which accommodates both 100-member arrays at their maximum JSON type
+width. Larger pathological type vectors are rejected before interpreted shell
+iteration begins.
 
 Each observation also holds a nonblocking kernel `flock` on the persistent
 same-boot `/var/run/jammonitor/tailscale-watchdog.lock` inode. The watchdog
 never unlinks that inode, and exit closes the lock descriptor atomically even
 after `SIGKILL`; stale PID text cannot suppress a successor or let concurrent
-invocations lock different inodes.
+invocations lock different inodes. Every potentially surviving status, parser,
+timeout, restart, diagnostic-logger, and sleep child closes the lock
+descriptor. Diagnostic logging is best-effort, has its own two-second
+deadline and tracked child slot, and cannot overwrite or detach an active
+restart child. After a hard crash, the next lock owner removes only exact
+PID-suffixed private status, error, and projection artifacts before beginning
+an observation.
+
+Automatic restart also joins the shared router-install lock. The watchdog
+probes it before evaluating supervisor failure and acquires it again before
+every final mutable init-integrity, supervisor-state, and process-generation
+proof. It rejoins the root-owned, single-link device and inode between the
+pathname and open descriptor both before and after `flock` succeeds, so
+pathname replacement during acquisition fails closed. Proof children close
+the descriptor while the waiting watchdog parent retains it. The maintenance
+lease is rechecked under that shared lock; the daemon process generation or
+supervisor-confirmed absence is the final external state proof before the
+restart spawn. The bounded timeout wrapper retains the descriptor if the
+watchdog is killed, while the actual init child closes it before invoking
+procd. A live installer or upgrader therefore cannot overlap a watchdog
+restart, and a stalled post-stop file copy cannot turn lease expiry into a
+mixed-binary restart race.
 
 Only a supervisor-confirmed missing daemon, a missing or non-Unix LocalAPI
 socket for a proven daemon generation, or a bounded LocalAPI query whose
@@ -986,24 +1026,124 @@ the peer ping as a recovery signal.
 Use the maintenance marker before an intentional Tailscale service change:
 
 ```bash
-set -eu
-mkdir -p /var/run/jammonitor
-NOW_EPOCH="$(date +%s)"
-case "$NOW_EPOCH" in ""|*[!0-9]*) exit 1 ;; esac
-MAINTENANCE=/var/run/jammonitor/tailscale-maintenance
-[ ! -e "$MAINTENANCE" ]
-[ ! -L "$MAINTENANCE" ]
-(umask 077; set -C; printf '%s\n' "$((NOW_EPOCH + 600))" \
-  > "$MAINTENANCE")
-chmod 0600 "$MAINTENANCE"
-# Perform the bounded maintenance operation.
-rm -f "$MAINTENANCE"
+(
+  set -eu
+  umask 077
+  STATE_DIR=/var/run/jammonitor
+  INSTALL_LOCK="$STATE_DIR/router-install.lock"
+  MAINTENANCE="$STATE_DIR/tailscale-maintenance"
+  LOCK_CREATED=0
+  MARKER_PUBLISHED=0
+  REMOVE_MARKER_ON_EXIT=0
+  MARKER_TEMP=""
+
+  is_uint() {
+    case "${1:-}" in
+      0|[1-9]|[1-9][0-9]*) [ "${#1}" -le 18 ] ;;
+      *) return 1 ;;
+    esac
+  }
+  marker_is_owned() {
+    [ "$MARKER_PUBLISHED" -eq 1 ] &&
+      [ -f "$MAINTENANCE" ] &&
+      [ ! -L "$MAINTENANCE" ] &&
+      [ "$(stat -c '%u:%g:%a:%h' "$MAINTENANCE" 2>/dev/null)" = \
+        '0:0:600:1' ] &&
+      [ "$(wc -c <"$MAINTENANCE" | tr -d ' \r\n')" -eq \
+        $((${#EXPIRES_EPOCH} + 1)) ] &&
+      [ "$(cat "$MAINTENANCE")" = "$EXPIRES_EPOCH" ]
+  }
+  cleanup() {
+    CLEANUP_RC=$?
+    trap - EXIT HUP INT TERM
+    if [ "$REMOVE_MARKER_ON_EXIT" -eq 1 ] && marker_is_owned; then
+      rm -f -- "$MAINTENANCE"
+    fi
+    if [ -n "$MARKER_TEMP" ] &&
+       [ -f "$MARKER_TEMP" ] &&
+       [ ! -L "$MARKER_TEMP" ]; then
+      rm -f -- "$MARKER_TEMP"
+    fi
+    exec 7>&-
+    exit "$CLEANUP_RC"
+  }
+  trap cleanup EXIT HUP INT TERM
+
+  mkdir -p "$STATE_DIR"
+  [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ]
+  chown 0:0 "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  [ "$(stat -c '%u:%g:%a' "$STATE_DIR")" = '0:0:700' ]
+
+  if [ ! -e "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; then
+    (set -C; : >"$INSTALL_LOCK")
+    LOCK_CREATED=1
+  fi
+  [ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]
+  if [ "$LOCK_CREATED" -eq 1 ]; then
+    chown 0:0 "$INSTALL_LOCK"
+    chmod 0600 "$INSTALL_LOCK"
+  fi
+  LOCK_ID="$(stat -c '%u:%g:%a:%h:%d:%i:%s' "$INSTALL_LOCK")"
+  LOCK_OLD_IFS="$IFS"
+  IFS=:
+  set -- $LOCK_ID
+  IFS="$LOCK_OLD_IFS"
+  [ "$#" -eq 7 ] && [ "$1:$2:$3:$4" = '0:0:600:1' ]
+  is_uint "$5" && is_uint "$6" && is_uint "$7"
+  [ "$7" -le 1024 ]
+  exec 7<>"$INSTALL_LOCK"
+  [ "$(stat -L -c '%u:%g:%a:%h:%d:%i:%s' /proc/self/fd/7)" = \
+    "$LOCK_ID" ]
+  flock -n 7
+  [ "$(stat -c '%u:%g:%a:%h:%d:%i:%s' "$INSTALL_LOCK")" = \
+    "$LOCK_ID" ]
+  [ "$(stat -L -c '%u:%g:%a:%h:%d:%i:%s' /proc/self/fd/7)" = \
+    "$LOCK_ID" ]
+
+  [ ! -e "$MAINTENANCE" ] && [ ! -L "$MAINTENANCE" ]
+  NOW_EPOCH="$(date +%s)"
+  is_uint "$NOW_EPOCH"
+  EXPIRES_EPOCH=$((NOW_EPOCH + 600))
+  MARKER_TEMP="${MAINTENANCE}.tmp.$$"
+  [ ! -e "$MARKER_TEMP" ] && [ ! -L "$MARKER_TEMP" ]
+  (set -C; printf '%s\n' "$EXPIRES_EPOCH" >"$MARKER_TEMP")
+  chown 0:0 "$MARKER_TEMP"
+  chmod 0600 "$MARKER_TEMP"
+  mv -f -- "$MARKER_TEMP" "$MAINTENANCE"
+  MARKER_TEMP=""
+  MARKER_PUBLISHED=1
+  marker_is_owned
+
+  # Replace this bounded action when performing another reviewed operation.
+  # The timeout and this waiting shell retain fd 7. The actual init child
+  # closes it, so a killed operator shell still leaves a bounded guardian.
+  timeout -s TERM -k 2 30 /bin/sh -c \
+    'exec 7>&-; "$1" restart && "$1" running' \
+    jammonitor-manual-maintenance /etc/init.d/tailscale &
+  ACTION_PID=$!
+  wait "$ACTION_PID"
+
+  marker_is_owned
+  REMOVE_MARKER_ON_EXIT=1
+  rm -f -- "$MAINTENANCE"
+  MARKER_PUBLISHED=0
+  exec 7>&-
+  trap - EXIT HUP INT TERM
+)
 ```
 
 The marker contains one absolute Unix expiry epoch. The watchdog accepts only
 an expiry later than the current time and no more than one hour ahead, so a
 crashed maintenance process cannot suppress recovery forever. The marker is
 volatile and intentionally does not survive reboot.
+A manual maintenance process must take the shared install lock before
+publishing the marker and hold it through the action and owned-marker cleanup,
+as above. A bare marker does not close the race with a watchdog that already
+passed its initial observation. If the lock is busy or its exact inode cannot
+be joined, stop instead of running the maintenance command. A failed or timed
+out action deliberately leaves its exact marker to expire instead of
+prematurely granting automatic restart authority.
 A symlink, non-regular file, unreadable file, malformed bytes, or out-of-bounds
 epoch is an invalid maintenance marker. It is surfaced as degraded state and
 never suppresses recovery.
@@ -1093,19 +1233,97 @@ read-only, or unresolved recovery path under:
 It sets the watchdog maintenance marker, copies the current binaries and
 pre-stop state into a root-only staging bundle, hashes them, synchronizes the
 filesystem, atomically publishes that bundle as `pending`, and synchronizes it
-again before stopping the service. After it proves that the supervisor,
-process, and LocalAPI socket are quiescent, it adds and hashes the final
-quiescent state, advances the recovery manifest to
-`ready_for_binary_mutation`, and completes another sync barrier. Only then
-does it atomically install either new binary. This write-ahead ordering leaves
-a complete old binary pair and matching state on persistent ext4 storage even
-if the upgrader is killed between the two binary renames.
+again before stopping the service. It also allocates exact old-binary rollback
+files beside `/usr/sbin/tailscale` and `/usr/sbin/tailscaled`, synchronizes
+them, and rechecks their hashes and metadata before requesting a stop. After
+it proves that the supervisor, process, and LocalAPI socket are quiescent, it
+allocates the exact quiescent state beside the live state file and completes a
+separate sync and recheck. It then adds and hashes the final quiescent state on
+USB, advances the recovery manifest to `ready_for_binary_mutation`, and
+completes another sync barrier. Only then does it publish the boot fence and
+install either new binary.
+
+The local rollback files reserve the actual data blocks and inodes needed for
+automatic restoration before any live target is replaced. Forward installs
+use separate deterministic same-directory files. A failed forward copy is
+removed before rollback, and a changed target is restored only by renaming its
+already allocated old file over it. Rollback never copies a binary or state
+file, creates a temporary target, or depends on a free-space estimate after
+mutation. This ordering handles an OverlayFS lower-layer old binary without
+assuming that replacing it reclaims any writable-layer space.
+
+Before staging, the old CLI and daemon must each be root-owned, mode `0755`,
+single-link regular files, and the state must be root-owned, mode `0600`, and
+single-link. Their size, metadata, and hashes are re-proved after reservation
+staging and at each binary boundary. The upgrader pins the device and inode of
+the root-owned, non-group-writable, non-world-writable `/usr/sbin` and
+`/etc/tailscale` parent directories. It rejects a live target or deterministic
+transaction file that is itself a mountpoint. The rollback source and target
+are therefore in the same re-proved parent, preventing BusyBox `mv` from
+quietly taking a cross-filesystem copy-and-remove path.
+
+The upgrader refuses every pre-existing regular file or symlink at these
+transaction-owned paths instead of overwriting or deleting it:
+
+```text
+/usr/sbin/.jammonitor-tailscale-rollback-tailscale
+/usr/sbin/.jammonitor-tailscale-rollback-tailscaled
+/etc/tailscale/.jammonitor-tailscale-rollback-state
+/usr/sbin/.jammonitor-tailscale-forward-tailscale
+/usr/sbin/.jammonitor-tailscale-forward-tailscaled
+```
+
+The USB write-ahead bundle remains the durable authority across every local
+reservation and binary boundary. A hard kill can leave only a prefix of the
+fixed local files, but the USB manifest records every expected path and hash,
+and any remaining USB or local transaction evidence blocks another upgrade.
+The manifest is rendered as one canonical byte sequence. Verification rejects
+an extra, missing, duplicate, reordered, or conflicting line and also requires
+root ownership, exact modes, one link, and bounded size for every recovery
+artifact. The bundle is a closed-world set: any unlisted visible file, hidden
+file, directory, or dangling symlink is also rejected. The final
+`ready_for_binary_mutation` phase is not published until all three local
+reservations have crossed their sync barrier.
+
+The maintenance lease is calculated before mutation from every bounded status
+and parser capture, service and quiescence command, persistent-storage sync,
+critical-peer probe, storage-authority snapshot, TERM-to-KILL grace period,
+and the longest verified rollback path. Each storage proof uses one bounded
+UCI capture and one bounded global `block info` capture; removable partitions
+are parsed from that single snapshot instead of multiplying external
+timeouts. The upgrader also enforces a maximum of 64 post-marker authority
+proofs. With the production limits in this release the lease is a conservative
+2,953 seconds: 2,833 seconds for the enumerated timeout-wrapped control-flow
+envelope plus a 120-second allowance for bounded-size local file operations.
+Current binaries are capped at 128 MiB each and state at 16 MiB before any
+maintenance marker or copy. After the pre-stop write-ahead bundle is durable,
+the upgrader rechecks that the entire 2,833-second stop-and-rollback envelope
+still remains. The same floor is required immediately before each live binary
+rename. The upgrader fails closed if the calculation exceeds the watchdog's
+3,600-second maximum, live remaining time moves above that maximum after a
+backward clock step, or an existing lease cannot cover the complete calculated
+window. The shared install lock is an independent cross-process barrier if a
+bounded-size local filesystem operation stalls longer than the wall-clock
+allowance.
+
 The `pending` directory is the durable write-ahead log: both its contents and
 the parent-directory rename are synchronized before daemon or binary mutation.
 On commit or verified rollback, the resulting live files are synchronized
 before the exact evidence directory is removed, and the recovery parent is
 synchronized again after removal. A failed barrier preserves evidence and
 blocks retry rather than claiming a durable result.
+
+The commit point is the final successful synchronization and verification of
+the complete live target set while the new service is already in its required
+backend state. Boot-fence removal, local rollback-reservation removal, and USB
+write-ahead-log removal are post-commit cleanup. If the fence is removed but
+its cleanup sync fails, the upgrader keeps the verified new service running
+and preserves both the USB and same-directory rollback blockers. It does not
+replace a fully verified live target with the old version merely because
+cleanup durability is uncertain. On reboot, a persisted fence deletion permits
+the verified target to start; a non-persisted deletion leaves the boot fence to
+block an unsafe start. Either outcome remains operator-visible, and all
+remaining evidence blocks another automatic upgrade.
 
 After installation it starts the service with a timeout. A pre-upgrade
 `Running` state must return to `Running`. A pre-upgrade `NeedsLogin` state must
@@ -1114,11 +1332,32 @@ node. A successful commit or fully verified rollback synchronizes and removes
 only the exact owned pending bundle.
 
 If the post-check fails, the old binaries and the pre-upgrade state file are
-restored as one transaction before the old service is restarted. This prevents
-an older daemon from consuming state migrated by the failed newer daemon. The
-command never runs `tailscale up`,
+restored from the synchronized same-directory reservations before the old
+service is restarted. Unchanged targets are hash-checked and skipped, avoiding
+an unnecessary OverlayFS copy-up or whiteout. Each changed target is restored
+with one same-filesystem rename, then all three live files are hash-checked and
+globally synchronized before any reservation, fence, or USB evidence is
+cleared. This prevents an older daemon from consuming state migrated by the
+failed newer daemon. A read-only remount, I/O error, failed rename, failed
+sync, or pathological exhaustion that prevents filesystem metadata updates
+still makes rollback incomplete; the upgrader preserves the fence, USB
+write-ahead log, and local residue rather than claiming recovery. The command
+never runs `tailscale up`,
 `tailscale down`, `tailscale login`, `tailscale logout`, or removes the state
 file. It does not print status JSON, an AuthURL, node keys, or state contents.
+
+Handled `HUP`, `INT`, or `TERM` immediately before or after boot-fence rename
+is reconciled against the exact staged token and hash. Cleanup removes an
+owned unpublished temporary or adopts the exact published fence before
+rollback. It never treats an unverified fence as absent.
+
+Tailscale can encode `Self.TailscaleIPs` as JSON `null` when no netmap and
+self addresses are available; this was observed live on 1.92.3 in this exact
+expired-node `NeedsLogin` state and remains a valid upstream representation.
+The upgrader accepts `null` only while `BackendState` is exactly `NeedsLogin`.
+It also accepts an empty array only in a non-delivering state. Every nonempty
+array member must be a string. When `Running`, every decoded member must also
+be a valid Tailscale IPv4 or IPv6 address and at least one must be present.
 
 The zero-argument command deliberately refuses a `NeedsLogin` observation
 whose `Self.ID` is already empty. This can occur when an expired node key is
@@ -1185,23 +1424,32 @@ write-ahead bundle, recovery evidence remains at:
 ```text
 /mnt/data/.jammonitor-tailscale-upgrade/pending
 /var/run/jammonitor/tailscale-upgrade-rollback-failed
+/usr/sbin/.jammonitor-tailscale-rollback-tailscale
+/usr/sbin/.jammonitor-tailscale-rollback-tailscaled
+/etc/tailscale/.jammonitor-tailscale-rollback-state
+/usr/sbin/.jammonitor-tailscale-forward-tailscale
+/usr/sbin/.jammonitor-tailscale-forward-tailscaled
 ```
 
 The USB `pending` directory is the durable, authoritative bundle and survives
 reboot when the same filesystem is mounted. The `/var/run` marker is a
 same-boot pointer created when a rollback failure is observed; a hard kill may
-leave only the durable bundle. Any entry, including an unfinished staging
-directory, under `.jammonitor-tailscale-upgrade` blocks another upgrade.
+leave only the durable bundle and deterministic local files. Any entry,
+including an unfinished staging directory, under
+`.jammonitor-tailscale-upgrade` blocks another upgrade. Any local path above
+also blocks another upgrade even when the USB evidence has been moved or
+damaged.
 
 If evidence appears, do not reauthenticate, rerun the upgrader, remove or
 unmount the USB, remove the marker, or start the watchdog. Keep LAN access and
 copy the complete durable directory and any volatile marker to a trusted
 machine. Inspect `manifest`, `RECOVERY_REQUIRED`, the saved old binaries,
 `tailscaled.state.before-stop`, optional quiescent `tailscaled.state`,
-hashes, phase, `ROLLBACK_INCOMPLETE`, and current service state. The phase
-`prepared_before_stop` proves only the pre-stop copy; the phase
-`ready_for_binary_mutation` proves the quiescent state and final write-ahead
-barrier.
+hashes, the deterministic local paths, phase, `ROLLBACK_INCOMPLETE`, and
+current service state. The phase `prepared_before_stop` proves only the
+pre-stop USB copy and does not promise a synchronized local state reservation.
+The phase `ready_for_binary_mutation` proves the quiescent state, all three
+local rollback reservations, and the final write-ahead barrier.
 
 Restore state only while `tailscaled`, its supervisor state, and the LocalAPI
 socket are all proven quiescent. Restore the exact old binary pair and the
@@ -1659,7 +1907,10 @@ connectivity-uptime interval:
 ```bash
 set -eu
 is_uint() {
-  case "${1:-}" in ""|*[!0-9]*) return 1 ;; esac
+  case "${1:-}" in
+    0|[1-9]|[1-9][0-9]*) [ "${#1}" -le 18 ] ;;
+    *) return 1 ;;
+  esac
 }
 
 WATCHDOG_STATUS=/var/run/jammonitor/tailscale-watchdog.json
@@ -1671,14 +1922,76 @@ BEFORE_OBSERVED_AT="$(jsonfilter \
 case "$BEFORE_GENERATION" in *:*) ;; *) exit 1 ;; esac
 is_uint "$BEFORE_OBSERVED_AT"
 
+INSTALL_LOCK=/var/run/jammonitor/router-install.lock
+[ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]
+LOCK_ID="$(stat -c '%u:%g:%a:%h:%d:%i:%s' "$INSTALL_LOCK")"
+LOCK_OLD_IFS="$IFS"
+IFS=:
+set -- $LOCK_ID
+IFS="$LOCK_OLD_IFS"
+[ "$#" -eq 7 ] && [ "$1:$2:$3:$4" = '0:0:600:1' ]
+is_uint "$5" && is_uint "$6" && is_uint "$7"
+[ "$7" -le 1024 ]
+exec 7<>"$INSTALL_LOCK"
+[ "$(stat -L -c '%u:%g:%a:%h:%d:%i:%s' /proc/self/fd/7)" = \
+  "$LOCK_ID" ]
+flock -n 7
+[ "$(stat -c '%u:%g:%a:%h:%d:%i:%s' "$INSTALL_LOCK")" = \
+  "$LOCK_ID" ]
+[ "$(stat -L -c '%u:%g:%a:%h:%d:%i:%s' /proc/self/fd/7)" = \
+  "$LOCK_ID" ]
+
 MAINTENANCE=/var/run/jammonitor/tailscale-maintenance
 NOW_EPOCH="$(date +%s)"
-printf '%s\n' "$((NOW_EPOCH + 300))" > "$MAINTENANCE"
-chmod 0600 "$MAINTENANCE"
-trap 'rm -f "$MAINTENANCE"' EXIT HUP INT TERM
-/etc/init.d/tailscale restart
-/etc/init.d/tailscale running
-rm -f "$MAINTENANCE"
+is_uint "$NOW_EPOCH"
+EXPIRES_EPOCH=$((NOW_EPOCH + 300))
+MAINTENANCE_TEMP="${MAINTENANCE}.tmp.$$"
+MARKER_PUBLISHED=0
+REMOVE_MARKER_ON_EXIT=0
+marker_is_owned() {
+  [ "$MARKER_PUBLISHED" -eq 1 ] &&
+    [ -f "$MAINTENANCE" ] &&
+    [ ! -L "$MAINTENANCE" ] &&
+    [ "$(stat -c '%u:%g:%a:%h' "$MAINTENANCE" 2>/dev/null)" = \
+      '0:0:600:1' ] &&
+    [ "$(wc -c <"$MAINTENANCE" | tr -d ' \r\n')" -eq \
+      $((${#EXPIRES_EPOCH} + 1)) ] &&
+    [ "$(cat "$MAINTENANCE")" = "$EXPIRES_EPOCH" ]
+}
+cleanup_maintenance() {
+  CLEANUP_RC=$?
+  trap - EXIT HUP INT TERM
+  if [ "$REMOVE_MARKER_ON_EXIT" -eq 1 ] && marker_is_owned; then
+    rm -f -- "$MAINTENANCE"
+  fi
+  if [ -f "$MAINTENANCE_TEMP" ] &&
+     [ ! -L "$MAINTENANCE_TEMP" ]; then
+    rm -f -- "$MAINTENANCE_TEMP"
+  fi
+  exec 7>&-
+  exit "$CLEANUP_RC"
+}
+trap cleanup_maintenance EXIT HUP INT TERM
+[ ! -e "$MAINTENANCE" ] && [ ! -L "$MAINTENANCE" ]
+[ ! -e "$MAINTENANCE_TEMP" ] && [ ! -L "$MAINTENANCE_TEMP" ]
+(umask 077; set -C; printf '%s\n' "$EXPIRES_EPOCH" \
+  >"$MAINTENANCE_TEMP")
+chown 0:0 "$MAINTENANCE_TEMP"
+chmod 0600 "$MAINTENANCE_TEMP"
+mv -f -- "$MAINTENANCE_TEMP" "$MAINTENANCE"
+MAINTENANCE_TEMP=""
+MARKER_PUBLISHED=1
+marker_is_owned
+timeout -s TERM -k 2 30 /bin/sh -c \
+  'exec 7>&-; "$1" restart && "$1" running' \
+  jammonitor-generation-reset /etc/init.d/tailscale &
+ACTION_PID=$!
+wait "$ACTION_PID"
+marker_is_owned
+REMOVE_MARKER_ON_EXIT=1
+rm -f -- "$MAINTENANCE"
+MARKER_PUBLISHED=0
+exec 7>&-
 trap - EXIT HUP INT TERM
 /etc/init.d/jammonitor-tailscale-watchdog restart
 

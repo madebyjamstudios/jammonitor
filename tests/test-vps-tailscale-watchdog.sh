@@ -163,6 +163,31 @@ case "${MOCK_TAILSCALE_MODE:-running}" in
     timeout_143)
         exit 86
         ;;
+    deadline_137)
+        exit 85
+        ;;
+    command_124)
+        exit 84
+        ;;
+    deadline_143)
+        exit 83
+        ;;
+    command_124_rollover)
+        printf '%s\n' '101.00 0.00' >"$MOCK_UPTIME_FILE"
+        exit 82
+        ;;
+    finish_malformed)
+        printf '%s\n' 'not-uptime' >"$MOCK_UPTIME_FILE"
+        exit 81
+        ;;
+    clock_backstep)
+        printf '%s\n' '99.99 0.00' >"$MOCK_UPTIME_FILE"
+        exit 80
+        ;;
+    deadline_minus_one)
+        printf '%s\n' '100.99 0.00' >"$MOCK_UPTIME_FILE"
+        exit 79
+        ;;
     block)
         fifo="${MOCK_CASE_DIR}/block-fifo"
         [ -p "$fifo" ] || mkfifo "$fifo"
@@ -251,6 +276,7 @@ cat >"${MOCK_BIN}/timeout" <<'EOF'
 #!/bin/sh
 [ "${1:-}" = "--signal=TERM" ] || exit 96
 [ "${2:-}" = "--kill-after=2" ] || exit 97
+deadline="${3:-}"
 shift 3
 "$@" &
 child=$!
@@ -262,9 +288,36 @@ trap 'terminate_child; exit 143' HUP INT TERM
 wait "$child"
 rc=$?
 trap - HUP INT TERM
-[ "$rc" -eq 88 ] && exit 124
+advance_uptime() {
+    increment="$1"
+    [ -n "${MOCK_UPTIME_FILE:-}" ] || return 0
+    [ -f "$MOCK_UPTIME_FILE" ] || return 0
+    current="$(cut -d. -f1 "$MOCK_UPTIME_FILE" 2>/dev/null)"
+    case "${current}:${increment}" in
+        *[!0-9:]*|:*) return 0 ;;
+    esac
+    printf '%s.00 0.00\n' "$((current + increment))" \
+        >"$MOCK_UPTIME_FILE"
+}
+if [ "$rc" -eq 88 ]; then
+    advance_uptime "$deadline"
+    exit 124
+fi
 [ "$rc" -eq 87 ] && exit 137
 [ "$rc" -eq 86 ] && exit 143
+[ "$rc" -eq 85 ] && {
+    advance_uptime "$((deadline + 2))"
+    exit 137
+}
+[ "$rc" -eq 84 ] && exit 124
+[ "$rc" -eq 83 ] && {
+    advance_uptime "$deadline"
+    exit 143
+}
+[ "$rc" -eq 82 ] && exit 124
+[ "$rc" -eq 81 ] && exit 124
+[ "$rc" -eq 80 ] && exit 124
+[ "$rc" -eq 79 ] && exit 124
 exit "$rc"
 EOF
 
@@ -289,16 +342,6 @@ case "${1:-}" in
         fi
         show_count=$((show_count + 1))
         printf '%s\n' "$show_count" >"$show_count_file"
-        if [ "$show_count" -ge 3 ] &&
-           [ "${MOCK_SHOW_PUBLISH_MAINTENANCE:-0}" = "1" ] &&
-           [ ! -e "${MOCK_MAINTENANCE_FILE:?}" ]; then
-            printf '%s %s\n' \
-                "${MOCK_MAINTENANCE_CREATED:?}" \
-                "${MOCK_MAINTENANCE_EXPIRY:?}" \
-                >"${MOCK_MAINTENANCE_FILE:?}" || exit 1
-            chmod 0600 "${MOCK_MAINTENANCE_FILE:?}" || exit 1
-        fi
-
         service_state="${MOCK_SERVICE_STATE:-active}"
         unit_file_state="${MOCK_UNIT_FILE_STATE:-enabled}"
         nrestarts="${MOCK_NRESTARTS:-0}"
@@ -332,6 +375,11 @@ case "${1:-}" in
         ;;
     restart)
         [ "${2:-}" = "tailscaled.service" ] || exit 99
+        if [ -e /dev/fd/9 ]; then
+            printf '%s\n' open >"${MOCK_CASE_DIR}/restart-fd9"
+        else
+            printf '%s\n' closed >"${MOCK_CASE_DIR}/restart-fd9"
+        fi
         printf '%s\n' restart >>"${MOCK_ACTIONS_FILE}"
         if [ "${MOCK_RESTART_BLOCK:-0}" = "1" ]; then
             fifo="${MOCK_CASE_DIR}/restart-fifo"
@@ -370,6 +418,15 @@ if [ "${MOCK_MV_GENERATION_CHANGE:-0}" = "1" ] &&
    [ -n "${MOCK_GENERATION_CHANGE_FILE:-}" ]; then
     : >"$MOCK_GENERATION_CHANGE_FILE"
 fi
+if [ "${MOCK_MV_PUBLISH_MAINTENANCE:-0}" = "1" ] &&
+   [ "${target##*/}" = "memory" ] &&
+   [ ! -e "${MOCK_MAINTENANCE_FILE:?}" ]; then
+    printf '%s %s\n' \
+        "${MOCK_MAINTENANCE_CREATED:?}" \
+        "${MOCK_MAINTENANCE_EXPIRY:?}" \
+        >"${MOCK_MAINTENANCE_FILE:?}" || exit 1
+    chmod 0600 "${MOCK_MAINTENANCE_FILE:?}" || exit 1
+fi
 if [ "${MOCK_REPLACE_PEER_AFTER_MEMORY:-0}" = "1" ] &&
    [ "${target##*/}" = "memory" ] &&
    [ ! -e "${MOCK_CASE_DIR}/peer-replaced-after-memory" ]; then
@@ -381,6 +438,40 @@ if [ "${MOCK_REPLACE_PEER_AFTER_MEMORY:-0}" = "1" ] &&
     : >"${MOCK_CASE_DIR}/peer-replaced-after-memory" || exit 1
 fi
 exit 0
+EOF
+
+cat >"${MOCK_BIN}/dd" <<'EOF'
+#!/bin/sh
+input=""
+for argument in "$@"; do
+    case "$argument" in
+        if=*) input="${argument#if=}" ;;
+    esac
+done
+/bin/dd "$@"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+   [ "${MOCK_DD_GENERATION_CHANGE_ON_SECOND_MAINTENANCE:-0}" = "1" ]; then
+    case "$input" in
+        */maintenance-until)
+            count=0
+            if [ -f "${MOCK_DD_MAINTENANCE_COUNT_FILE:?}" ]; then
+                count="$(cat "${MOCK_DD_MAINTENANCE_COUNT_FILE:?}")"
+            fi
+            case "$count" in
+                0|[1-9]|[1-9][0-9]*) ;;
+                *) exit 97 ;;
+            esac
+            count=$((count + 1))
+            printf '%s\n' "$count" \
+                >"${MOCK_DD_MAINTENANCE_COUNT_FILE:?}" || exit 98
+            if [ "$count" -eq 2 ]; then
+                : >"${MOCK_GENERATION_CHANGE_FILE:?}" || exit 99
+            fi
+            ;;
+    esac
+fi
+exit "$rc"
 EOF
 
 cat >"${MOCK_BIN}/flock" <<'EOF'
@@ -416,7 +507,8 @@ EOF
 
 chmod 0755 "${MOCK_BIN}/tailscale" "${MOCK_BIN}/jq" \
     "${MOCK_BIN}/timeout" "${MOCK_BIN}/systemctl" "${MOCK_BIN}/logger" \
-    "${MOCK_BIN}/mv" "${MOCK_BIN}/flock" "${MOCK_BIN}/stat"
+    "${MOCK_BIN}/mv" "${MOCK_BIN}/dd" "${MOCK_BIN}/flock" \
+    "${MOCK_BIN}/stat"
 
 PASS_COUNT=0
 EXPECTED_TEST_UID="$(id -u)"
@@ -453,6 +545,7 @@ new_case() {
     LOG_FILE="${CASE_DIR}/log"
     CLI_ARGS_FILE="${CASE_DIR}/cli-args"
     SYSTEMCTL_ARGS_FILE="${CASE_DIR}/systemctl-args"
+    UPTIME_FILE="${CASE_DIR}/uptime"
     SOCKET_COUNTER=$((SOCKET_COUNTER + 1))
     SOCKET_PATH="${TMPDIR:-/tmp}/jmvps-watchdog-sock.$$.${SOCKET_COUNTER}"
     CRITICAL_PEER_PATH="${CASE_DIR}/critical-peer"
@@ -461,6 +554,7 @@ new_case() {
     : >"$LOG_FILE"
     : >"$CLI_ARGS_FILE"
     : >"$SYSTEMCTL_ARGS_FILE"
+    printf '100.00 0.00\n' >"$UPTIME_FILE"
     create_unix_socket "$SOCKET_PATH"
 }
 
@@ -493,8 +587,10 @@ run_once() {
     _after_memory_process_start_usec="${AFTER_MEMORY_PROCESS_START_USEC_VALUE:-$_pre_restart_process_start_usec}"
     _show_count_file="${CASE_DIR}/show-count.${_mono}.${_epoch}"
     _generation_change_file="${_show_count_file}.memory-committed"
+    _maintenance_count_file="${_show_count_file}.maintenance-count"
     rm -f "$_show_count_file"
     rm -f "$_generation_change_file"
+    rm -f "$_maintenance_count_file"
     env \
         MOCK_TAILSCALE_MODE="$_mode" \
         MOCK_PEER_MODE="${PEER_MODE_VALUE:-reachable}" \
@@ -518,11 +614,13 @@ run_once() {
         MOCK_SHOW_COUNT_FILE="$_show_count_file" \
         MOCK_GENERATION_CHANGE_FILE="$_generation_change_file" \
         MOCK_MV_GENERATION_CHANGE="${MV_GENERATION_CHANGE_VALUE:-0}" \
+        MOCK_MV_PUBLISH_MAINTENANCE="${MV_PUBLISH_MAINTENANCE_VALUE:-0}" \
+        MOCK_DD_GENERATION_CHANGE_ON_SECOND_MAINTENANCE="${DD_GENERATION_CHANGE_DURING_FINAL_MAINTENANCE_VALUE:-0}" \
+        MOCK_DD_MAINTENANCE_COUNT_FILE="$_maintenance_count_file" \
         MOCK_REPLACE_PEER_DURING_PING="${REPLACE_PEER_DURING_PING_VALUE:-0}" \
         MOCK_REPLACE_PEER_AFTER_MEMORY="${REPLACE_PEER_AFTER_MEMORY_VALUE:-0}" \
         MOCK_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
         MOCK_PEER_REPLACEMENT_VALUE="${PEER_REPLACEMENT_VALUE:-100.104.78.43}" \
-        MOCK_SHOW_PUBLISH_MAINTENANCE="${SHOW_PUBLISH_MAINTENANCE_VALUE:-0}" \
         MOCK_MAINTENANCE_FILE="${STATE_DIR}/maintenance-until" \
         MOCK_MAINTENANCE_CREATED="$_epoch" \
         MOCK_MAINTENANCE_EXPIRY="$((_epoch + 600))" \
@@ -533,6 +631,7 @@ run_once() {
         MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
         MOCK_SYSTEMCTL_ARGS_FILE="$SYSTEMCTL_ARGS_FILE" \
         MOCK_CASE_DIR="$CASE_DIR" \
+        MOCK_UPTIME_FILE="$UPTIME_FILE" \
         TAILSCALE_CLI="${MOCK_BIN}/tailscale" \
         TAILSCALE_SOCKET="$SOCKET_PATH" \
         WATCHDOG_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
@@ -542,11 +641,12 @@ run_once() {
         WATCHDOG_LOGGER_CMD="${MOCK_BIN}/logger" \
         WATCHDOG_FLOCK_CMD="${MOCK_BIN}/flock" \
         WATCHDOG_MV_CMD="${MOCK_BIN}/mv" \
-        WATCHDOG_DD_CMD="/bin/dd" \
+        WATCHDOG_DD_CMD="${MOCK_BIN}/dd" \
         WATCHDOG_STAT_CMD="${MOCK_BIN}/stat" \
         WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
         WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_UPTIME_FILE="$UPTIME_FILE" \
         WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
         WATCHDOG_CONTINUITY_MAX_GAP=30 \
         MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
@@ -584,6 +684,7 @@ start_restart_blocking_watchdog() {
         MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
         MOCK_SYSTEMCTL_ARGS_FILE="$SYSTEMCTL_ARGS_FILE" \
         MOCK_CASE_DIR="$CASE_DIR" \
+        MOCK_UPTIME_FILE="$UPTIME_FILE" \
         TAILSCALE_CLI="${MOCK_BIN}/tailscale" \
         TAILSCALE_SOCKET="$SOCKET_PATH" \
         WATCHDOG_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
@@ -598,6 +699,7 @@ start_restart_blocking_watchdog() {
         WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
         WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_UPTIME_FILE="$UPTIME_FILE" \
         WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
         WATCHDOG_CONTINUITY_MAX_GAP=30 \
         MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
@@ -635,6 +737,7 @@ start_blocking_watchdog() {
         MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
         MOCK_SYSTEMCTL_ARGS_FILE="$SYSTEMCTL_ARGS_FILE" \
         MOCK_CASE_DIR="$CASE_DIR" \
+        MOCK_UPTIME_FILE="$UPTIME_FILE" \
         TAILSCALE_CLI="${MOCK_BIN}/tailscale" \
         TAILSCALE_SOCKET="$SOCKET_PATH" \
         WATCHDOG_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
@@ -649,6 +752,7 @@ start_blocking_watchdog() {
         WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
         WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_UPTIME_FILE="$UPTIME_FILE" \
         WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
         WATCHDOG_CONTINUITY_MAX_GAP=30 \
         MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
@@ -673,6 +777,21 @@ wait_for_file() {
         _attempt=$((_attempt + 1))
     done
     [ -e "$_path" ] || fail "timed out waiting for ${_path}"
+}
+
+watchdog_lock_is_available() (
+    exec 9<>"${STATE_DIR}/watchdog.lock"
+    "${MOCK_BIN}/flock" -n 9
+)
+
+wait_for_watchdog_lock_available() {
+    _attempt=0
+    while ! watchdog_lock_is_available && [ "$_attempt" -lt 100 ]; do
+        sleep 0.02
+        _attempt=$((_attempt + 1))
+    done
+    watchdog_lock_is_available ||
+        fail "timed out waiting for watchdog lock guardian"
 }
 
 assert_json() {
@@ -828,9 +947,9 @@ pass "a replacement after latch persistence and before restart is suppressed"
 new_case maintenance-published-before-threshold-restart
 run_once timeout 0 220 1020
 run_once timeout 0 221 1021
-SHOW_PUBLISH_MAINTENANCE_VALUE=1
+MV_PUBLISH_MAINTENANCE_VALUE=1
 run_once timeout 0 222 1022
-unset SHOW_PUBLISH_MAINTENANCE_VALUE
+unset MV_PUBLISH_MAINTENANCE_VALUE
 assert_json '"maintenance_active":true'
 assert_json '"maintenance_state":"active"'
 assert_json '"eligible_failure":false'
@@ -843,7 +962,32 @@ grep -Fqx 'consecutive_failures=0' "${STATE_DIR}/memory" ||
 grep -Fqx 'recovery_latched=0' "${STATE_DIR}/memory" ||
     fail "late maintenance race left a false durable latch"
 assert_no_action
-pass "maintenance published during the final supervisor join suppresses restart durably"
+pass "maintenance published after latch persistence suppresses restart durably"
+
+new_case generation-changes-during-final-maintenance-proof
+printf '%s %s\n' 1000 1001 >"${STATE_DIR}/maintenance-until"
+run_once timeout 0 220 1020
+run_once timeout 0 221 1021
+DD_GENERATION_CHANGE_DURING_FINAL_MAINTENANCE_VALUE=1
+AFTER_MEMORY_PROCESS_START_USEC_VALUE=200000000
+run_once timeout 0 222 1022
+unset DD_GENERATION_CHANGE_DURING_FINAL_MAINTENANCE_VALUE \
+    AFTER_MEMORY_PROCESS_START_USEC_VALUE
+assert_json '"status":"supervisor_generation_changed"'
+assert_json '"reason":"supervisor_generation_changed"'
+assert_json '"eligible_failure":false'
+assert_json '"consecutive_eligible_failures":0'
+assert_json '"recovery_latched":false'
+assert_json '"recovery_count":0'
+assert_json '"action":"suppressed_generation_change"'
+grep -Fqx 'consecutive_failures=0' "${STATE_DIR}/memory" ||
+    fail "maintenance-proof generation race left a durable failure streak"
+grep -Fqx 'recovery_latched=0' "${STATE_DIR}/memory" ||
+    fail "maintenance-proof generation race left a false durable latch"
+[ "$(grep -c '^show ' "$SYSTEMCTL_ARGS_FILE")" -eq 7 ] ||
+    fail "generation was not rejoined after the final maintenance proof"
+assert_no_action
+pass "generation change during final maintenance proof is joined and refunded"
 
 new_case inactive-becomes-live-before-recovery
 THRESHOLD_VALUE=1
@@ -1304,7 +1448,7 @@ assert_json '"eligible_failure":true'
 assert_json '"recovery_count":1'
 pass "proven LocalAPI timeout receives exactly one restart"
 
-for _interrupted_mode in timeout_137 timeout_143; do
+for _interrupted_mode in command_124 timeout_137 timeout_143; do
     new_case "$_interrupted_mode"
     _i=1
     while [ "$_i" -le 4 ]; do
@@ -1316,7 +1460,73 @@ for _interrupted_mode in timeout_137 timeout_143; do
     assert_json '"eligible_failure":false'
     assert_no_action
 done
-pass "ambiguous signal-derived GNU timeout exits cannot authorize restart"
+pass "command-owned rc124 and early signal exits cannot authorize restart"
+
+new_case command_124_rollover
+printf '%s\n' '100.99 0.00' >"$UPTIME_FILE"
+run_once command_124_rollover 0 960 1760
+assert_json '"status":"command_error"'
+assert_json '"reason":"localapi_command_failed"'
+assert_json '"eligible_failure":false'
+assert_no_action
+pass "a one-centisecond rollover cannot turn command-owned rc124 into a timeout"
+
+new_case malformed_uptime
+printf '%s\n' 'not-uptime' >"$UPTIME_FILE"
+_i=1
+while [ "$_i" -le 4 ]; do
+    run_once timeout 0 "$((965 + _i))" "$((1765 + _i))"
+    _i=$((_i + 1))
+done
+assert_json '"status":"command_error"'
+assert_json '"reason":"localapi_command_failed"'
+assert_json '"eligible_failure":false'
+assert_no_action
+pass "malformed monotonic deadline evidence fails closed without restart"
+
+new_case missing_uptime
+rm -f "$UPTIME_FILE"
+: >"${CASE_DIR}/missing-uptime-stderr"
+_i=1
+while [ "$_i" -le 4 ]; do
+    run_once timeout 0 "$((968 + _i))" "$((1768 + _i))" \
+        2>>"${CASE_DIR}/missing-uptime-stderr"
+    _i=$((_i + 1))
+done
+assert_json '"status":"command_error"'
+assert_json '"reason":"localapi_command_failed"'
+assert_json '"eligible_failure":false'
+assert_no_action
+[ ! -s "${CASE_DIR}/missing-uptime-stderr" ] ||
+    fail "an absent monotonic source leaked a shell diagnostic"
+pass "an absent monotonic source fails closed without restart"
+
+for _fail_closed_boundary in \
+    finish_malformed clock_backstep deadline_minus_one
+do
+    new_case "$_fail_closed_boundary"
+    run_once "$_fail_closed_boundary" 0 970 1770
+    assert_json '"status":"command_error"'
+    assert_json '"reason":"localapi_command_failed"'
+    assert_json '"eligible_failure":false'
+    assert_no_action
+done
+pass "malformed finish, clock backstep, and deadline-minus-one fail closed"
+
+for _deadline_mode in deadline_137 deadline_143; do
+    new_case "$_deadline_mode"
+    _i=1
+    while [ "$_i" -le 3 ]; do
+        run_once "$_deadline_mode" 0 "$((970 + _i))" "$((1770 + _i))"
+        _i=$((_i + 1))
+    done
+    [ "$(action_count)" -eq 1 ] ||
+        fail "${_deadline_mode} did not latch one restart"
+    assert_json '"status":"localapi_timeout"'
+    assert_json '"eligible_failure":true'
+    assert_json '"recovery_count":1'
+done
+pass "deadline evidence recognizes signal-derived GNU timeout exits"
 
 new_case rearm
 _i=1
@@ -1519,6 +1729,9 @@ run_once timeout 0 1601 2401
 run_once timeout 0 1602 2402
 start_restart_blocking_watchdog
 wait_for_file "${CASE_DIR}/restart-child-pid"
+wait_for_file "${CASE_DIR}/restart-fd9"
+[ "$(cat "${CASE_DIR}/restart-fd9")" = "closed" ] ||
+    fail "actual systemctl restart child inherited singleton fd9"
 grep -Fqx 'recovery_latched=1' "${STATE_DIR}/memory" ||
     fail "recovery latch was not durable before systemctl restart"
 grep -Fqx 'recovery_count=1' "${STATE_DIR}/memory" ||
@@ -1530,14 +1743,23 @@ _wait_rc=0
 wait "$RESTART_WATCHDOG_PID" 2>/dev/null || _wait_rc=$?
 [ "$_wait_rc" -gt 128 ] ||
     fail "SIGKILL did not terminate the watchdog during restart"
+_calls_before_blocked_successor="$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')"
+run_once running 0 1604 2404
+_calls_after_blocked_successor="$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')"
+[ "$_calls_after_blocked_successor" -eq "$_calls_before_blocked_successor" ] ||
+    fail "successor reached LocalAPI while restart guardian held fd9"
+if watchdog_lock_is_available; then
+    fail "restart timeout did not retain singleton authority after SIGKILL"
+fi
 printf '%s\n' continue >"${CASE_DIR}/restart-fifo"
-run_once timeout 0 1604 2404
+wait_for_watchdog_lock_available
+run_once timeout 0 1605 2405
 [ "$(action_count)" -eq 1 ] ||
     fail "successor retried recovery after watchdog SIGKILL"
 assert_json '"recovery_latched":true'
 assert_json '"recovery_count":1'
 assert_json '"action":"recovery_cooldown"'
-pass "durable pre-restart state enforces cooldown after watchdog SIGKILL"
+pass "bounded restart guardian prevents overlap and durable cooldown survives SIGKILL"
 
 new_case recovery-state-write-failure
 MEMORY_FILE_VALUE="${CASE_DIR}/memory-store/memory"
@@ -1879,10 +2101,12 @@ grep -Fq '"$TIMEOUT_CMD" --signal=TERM --kill-after=2 "$RESTART_TIMEOUT"' \
     "$WATCHDOG" || fail "restart request is not deadline-bounded"
 pass "mutation surface is limited to one bounded supervisor restart"
 
-[ "$(grep -c '9>&- &' "$WATCHDOG")" -eq 5 ] ||
+[ "$(grep -c '9>&- &' "$WATCHDOG")" -eq 4 ] ||
     fail "a long-running watchdog child can inherit the singleton lock"
+grep -Fq "/bin/sh -c 'exec 9>&-; exec \"\$@\"'" "$WATCHDOG" ||
+    fail "restart child does not close fd9 behind a bounded lock guardian"
 grep -Fq '>/dev/null 2>&1 9>&- || true' "$WATCHDOG" ||
     fail "logger child can inherit the singleton lock"
-pass "every timeout tree and logger closes the singleton descriptor"
+pass "observation children close fd9 and the restart timeout is its bounded guardian"
 
 printf '1..%s\n' "$PASS_COUNT"

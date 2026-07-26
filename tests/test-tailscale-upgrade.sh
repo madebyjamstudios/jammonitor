@@ -353,14 +353,21 @@ import os
 import stat
 import sys
 
-if len(sys.argv) != 4 or sys.argv[1] != "-c":
+arguments = sys.argv[1:]
+follow_links = False
+if arguments and arguments[0] == "-L":
+    follow_links = True
+    arguments = arguments[1:]
+if len(arguments) != 3 or arguments[0] != "-c":
     raise SystemExit(64)
-fmt = sys.argv[2]
-path = sys.argv[3]
-if path.startswith("/dev/fd/"):
+fmt = arguments[1]
+path = arguments[2]
+if follow_links and path.startswith("/dev/fd/"):
     value = os.fstat(int(path.rsplit("/", 1)[1]))
-else:
+elif follow_links:
     value = os.stat(path)
+else:
+    value = os.lstat(path)
 replacements = {
     "%u": str(value.st_uid),
     "%g": str(value.st_gid),
@@ -2881,6 +2888,38 @@ EOF
     fi
 }
 
+test_storage_fd_identity_requires_explicit_link_following() {
+    setup_case Running
+    storage_target="$ROOT/mnt/data"
+    target_identity="$("$TOOLS/stat" -c '%d:%i' "$storage_target")"
+    if ! (
+        exec 7<"$storage_target"
+        nofollow_identity="$("$TOOLS/stat" -c '%d:%i' /dev/fd/7)"
+        followed_identity="$("$TOOLS/stat" -L -c '%d:%i' /dev/fd/7)"
+        [ "$nofollow_identity" != "$target_identity" ] &&
+            [ "$followed_identity" = "$target_identity" ]
+    ); then
+        fail "stat mock does not reproduce BusyBox descriptor-link semantics"
+        return
+    fi
+
+    fd_identity_count="$(
+        grep -F '"$FD_ROOT/' "$UPGRADER" | wc -l | tr -d ' '
+    )"
+    fd_follow_count="$(
+        grep -F '"$STAT_CMD" -L -c' "$UPGRADER" |
+            grep -F '"$FD_ROOT/' |
+            wc -l |
+            tr -d ' '
+    )"
+    [ "$fd_identity_count" = "4" ] &&
+        [ "$fd_follow_count" = "$fd_identity_count" ] || {
+            fail "not every persistent descriptor identity check follows links"
+            return
+        }
+    pass "persistent descriptor identities explicitly follow BusyBox fd links"
+}
+
 test_secret_output_assertion_rejects_each_secret
 test_running_success
 test_needs_login_success
@@ -2952,6 +2991,7 @@ test_incomplete_rollback_preserves_recovery
 test_installer_recovery_evidence_blocks_before_staging
 test_raw_status_output_is_bounded_before_mutation
 test_status_json_requires_exact_types
+test_storage_fd_identity_requires_explicit_link_following
 test_live_guard_rechecks_mount_and_bundle_before_each_rename
 test_rollback_sync_barriers_preserve_uncertain_evidence
 test_delayed_stop_timeout_is_reasserted_before_wal_clear

@@ -1072,6 +1072,11 @@ checking or changing the durable recovery root and holds it through commit or
 rollback. It cannot overlap an install or service repair, and the shared lock
 inode is never removed.
 
+The live block-device and mount-root descriptors are re-proved with
+`stat -L`. BusyBox `stat` otherwise reports the `/proc/self/fd/*` symlink
+inode instead of the opened target, which would either defeat the identity
+comparison or make every valid production upgrade fail before mutation.
+
 The upgrader requires `uname -m` to report `aarch64`. It downloads the
 versioned official tarball and its `.sha256` file into a private directory,
 requires both the published checksum and archive hash to match the repository

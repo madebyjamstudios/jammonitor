@@ -805,9 +805,9 @@ pin_storage_authority() {
         die "could not pin the persistent recovery block device"
     exec 8<"$PERSISTENT_MOUNT" ||
         die "could not pin the persistent recovery mount root"
-    [ "$("$STAT_CMD" -c '%d:%i:%t:%T' "$FD_ROOT/6" 2>/dev/null)" = \
+    [ "$("$STAT_CMD" -L -c '%d:%i:%t:%T' "$FD_ROOT/6" 2>/dev/null)" = \
       "$STORAGE_SOURCE_IDENTITY" ] &&
-        [ "$("$STAT_CMD" -c '%d:%i' "$FD_ROOT/8" 2>/dev/null)" = \
+        [ "$("$STAT_CMD" -L -c '%d:%i' "$FD_ROOT/8" 2>/dev/null)" = \
           "$STORAGE_MOUNT_IDENTITY" ] ||
         die "persistent recovery descriptors did not join the verified paths"
     STORAGE_PINNED=1
@@ -826,9 +826,9 @@ storage_authority_matches_pin() {
         [ "$CURRENT_STORAGE_PARTITION_PATH" = \
           "$STORAGE_PARTITION_PATH" ] &&
         [ "$CURRENT_STORAGE_PARENT_PATH" = "$STORAGE_PARENT_PATH" ] &&
-        [ "$("$STAT_CMD" -c '%d:%i:%t:%T' "$FD_ROOT/6" 2>/dev/null)" = \
+        [ "$("$STAT_CMD" -L -c '%d:%i:%t:%T' "$FD_ROOT/6" 2>/dev/null)" = \
           "$STORAGE_SOURCE_IDENTITY" ] &&
-        [ "$("$STAT_CMD" -c '%d:%i' "$FD_ROOT/8" 2>/dev/null)" = \
+        [ "$("$STAT_CMD" -L -c '%d:%i' "$FD_ROOT/8" 2>/dev/null)" = \
           "$STORAGE_MOUNT_IDENTITY" ]
 }
 

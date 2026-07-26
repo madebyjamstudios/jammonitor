@@ -7,35 +7,87 @@ LIB_ONLY="${JAMMONITOR_LIB_ONLY:-0}"
 RUNTIME_DIR="${JAMMONITOR_RUNTIME_DIR:-/var/run/jammonitor}"
 PIDFILE="${JAMMONITOR_PIDFILE:-/var/run/jammonitor-collect.pid}"
 LOCK_FILE="${JAMMONITOR_LOCK_FILE:-${PIDFILE}.lock}"
+SYSLOG_LOCK_FILE="${JAMMONITOR_SYSLOG_LOCK_FILE:-${RUNTIME_DIR}/syslog-stream.lock}"
 PROC_ROOT="${JAMMONITOR_PROC_ROOT:-/proc}"
 PROC_STAT_CMD="${JAMMONITOR_PROC_STAT_CMD:-cat}"
 STATUS_FILE="${RUNTIME_DIR}/collector-status.json"
 MOUNT_POINT="${JAMMONITOR_MOUNT_POINT:-/mnt/data}"
 PROC_MOUNTS="${JAMMONITOR_PROC_MOUNTS:-/proc/mounts}"
+PROC_MOUNTINFO="${JAMMONITOR_PROC_MOUNTINFO:-/proc/self/mountinfo}"
+FDINFO_ROOT="${JAMMONITOR_FDINFO_ROOT:-/proc/self/fdinfo}"
+FD_ROOT="${JAMMONITOR_FD_ROOT:-/proc/self/fd}"
+SYS_CLASS_BLOCK_ROOT="${JAMMONITOR_SYS_CLASS_BLOCK_ROOT:-/sys/class/block}"
+FSTAB_CONFIG="${JAMMONITOR_FSTAB_CONFIG:-/etc/config/fstab}"
+STORAGE_RECOVERY_JOURNAL="${JAMMONITOR_STORAGE_RECOVERY_JOURNAL:-/etc/jammonitor_storage_mount_recovery.json}"
+STORAGE_RECOVERY_FAILED="${JAMMONITOR_STORAGE_RECOVERY_FAILED:-/etc/jammonitor_storage_mount_recovery_failed}"
 DATA_DIR="${MOUNT_POINT}/jammonitor"
 DB_PATH="${DATA_DIR}/history.db"
 LOG_PATH="${DATA_DIR}/syslog.txt"
 SYSLOG_PID=""
+WATCHDOG_SNAPSHOT_FILE=""
+VOLATILE_SNAPSHOT_FILE=""
 SQLITE_CMD="${JAMMONITOR_SQLITE_CMD:-sqlite3}"
 TIMEOUT_CMD="${JAMMONITOR_TIMEOUT_CMD:-${JAMMONITOR_SQLITE_TIMEOUT_CMD:-timeout}}"
 SQLITE_TIMEOUT_CMD="${JAMMONITOR_SQLITE_TIMEOUT_CMD:-$TIMEOUT_CMD}"
 SQLITE_TIMEOUT_SECONDS="${JAMMONITOR_SQLITE_TIMEOUT_SECONDS:-15}"
 CONNTRACK_CMD="${JAMMONITOR_CONNTRACK_CMD:-conntrack}"
 CONNTRACK_TIMEOUT_SECONDS="${JAMMONITOR_CONNTRACK_TIMEOUT_SECONDS:-10}"
+# ulimit -f is expressed in 512-byte blocks on the target BusyBox shell.
+# Bound the complete producer before any parser reads it so a compromised or
+# pathological conntrack command cannot fill the private runtime tmpfs.
+CONNTRACK_SNAPSHOT_BLOCKS=2048
 FLOCK_CMD="${JAMMONITOR_FLOCK_CMD:-flock}"
+LOGREAD_CMD="${JAMMONITOR_LOGREAD_CMD:-logread}"
+DD_CMD="${JAMMONITOR_DD_CMD:-dd}"
+MKTEMP_CMD="${JAMMONITOR_MKTEMP_CMD:-mktemp}"
+STAT_CMD="${JAMMONITOR_STAT_CMD:-stat}"
+UCI_CMD="${JAMMONITOR_UCI_CMD:-uci}"
+BLOCK_CMD="${JAMMONITOR_BLOCK_CMD:-block}"
+SYNC_CMD="${JAMMONITOR_SYNC_CMD:-sync}"
+RANDOM_UUID_FILE="${JAMMONITOR_RANDOM_UUID_FILE:-/proc/sys/kernel/random/uuid}"
+EXPECTED_VOLATILE_UID="${JAMMONITOR_EXPECTED_VOLATILE_UID:-0}"
+EXPECTED_STORAGE_UID="${JAMMONITOR_EXPECTED_STORAGE_UID:-0}"
+EXPECTED_STORAGE_GID="${JAMMONITOR_EXPECTED_STORAGE_GID:-0}"
+PINNED_STORAGE_TOKEN=""
+PINNED_STORAGE_SOURCE=""
+PINNED_STORAGE_UUID=""
+PINNED_STORAGE_KERNEL_ID=""
+PINNED_STORAGE_MOUNT_ID=""
+WATCHDOG_SNAPSHOT_MAX_BYTES=65536
+WATCHDOG_COPY_TIMEOUT_SECONDS=2
+DHCP_LEASES_MAX_BYTES=262144
+RESOLV_CONF_MAX_BYTES=65536
+VOLATILE_COPY_TIMEOUT_SECONDS=2
+SYSLOG_STOP_GRACE_SECONDS=3
+LEGACY_SYSLOG_SCAN_BLOCKS=4096
+LEGACY_SYSLOG_SCAN_TIMEOUT_SECONDS=10
+LEGACY_SYSLOG_MAX_LEAVES=4096
+STORAGE_SYNC_TIMEOUT_SECONDS=15
 
 RETENTION_DAYS=30
 RETENTION_DAYS_RAW=30      # Keep raw per-client data for 30 days
 DISK_THRESHOLD=80          # Start cleanup when disk usage exceeds this %
 MAX_LOG_SIZE=10485760      # Rotate the streamed system log at 10 MiB
 WAN_CONFIG="/etc/jammonitor_wans"
-CLIENT_SNAPSHOT="/tmp/jammonitor_client_last"
+# Counter baselines and scratch files are root-owned service state. Keeping
+# their predictable names inside the collector's private runtime directory
+# prevents an unprivileged /tmp symlink from redirecting root writes.
+CLIENT_SNAPSHOT="${JAMMONITOR_CLIENT_SNAPSHOT:-${RUNTIME_DIR}/client-traffic}"
 DHCP_LEASES="${JAMMONITOR_DHCP_LEASES:-/tmp/dhcp.leases}"
+RESOLV_CONF="${JAMMONITOR_RESOLV_CONF:-/tmp/resolv.conf}"
 ARP_TABLE="${JAMMONITOR_ARP_TABLE:-/proc/net/arp}"
 
 umask 077
 if [ "$LIB_ONLY" != "1" ]; then
+    # /var/run is root-owned, but fail closed if the configured runtime path
+    # is a symlink or cannot be made private. Every predictable scratch file
+    # below inherits this directory as its trust boundary.
+    if [ -L "$RUNTIME_DIR" ]; then
+        exit 1
+    fi
     mkdir -p "$RUNTIME_DIR" || exit 1
+    [ -d "$RUNTIME_DIR" ] || exit 1
+    chmod 0700 "$RUNTIME_DIR" || exit 1
 fi
 
 proc_start_ticks() {
@@ -52,6 +104,32 @@ proc_start_ticks() {
         ""|*[!0-9]*|0) return 1 ;;
         *) printf '%s\n' "$1" ;;
     esac
+}
+
+collector_generation_is_live() {
+    _generation_pid="${1:-}"
+    _generation_ticks="${2:-}"
+    case "$_generation_pid" in
+        ""|*[!0-9]*|0|1) return 1 ;;
+    esac
+    case "$_generation_ticks" in
+        ""|*[!0-9]*|0) return 1 ;;
+    esac
+
+    _generation_stat="$("$PROC_STAT_CMD" \
+        "$PROC_ROOT/$_generation_pid/stat" 2>/dev/null)" || return 1
+    # After the final ") ", item 1 is state (field 3) and item 20 is
+    # starttime (field 22). Checking both the immutable starttime and a
+    # non-zombie state prevents PID reuse or an unreaped killed collector from
+    # keeping its stream alive.
+    _generation_tail="${_generation_stat##*) }"
+    set -- $_generation_tail
+    [ "$#" -ge 20 ] || return 1
+    case "${1:-}" in
+        Z|X|x|"") return 1 ;;
+    esac
+    shift 19
+    [ "${1:-}" = "$_generation_ticks" ]
 }
 
 collector_identity() {
@@ -109,11 +187,35 @@ remove_owned_pidfile() {
     fi
 }
 
+release_watchdog_snapshot() {
+    if [ -n "$WATCHDOG_SNAPSHOT_FILE" ]; then
+        case "$WATCHDOG_SNAPSHOT_FILE" in
+            "${RUNTIME_DIR}/tailscale-watchdog.snapshot."*)
+                rm -f "$WATCHDOG_SNAPSHOT_FILE" 8>&- 9>&-
+                ;;
+        esac
+        WATCHDOG_SNAPSHOT_FILE=""
+    fi
+}
+
+release_volatile_snapshot() {
+    if [ -n "$VOLATILE_SNAPSHOT_FILE" ]; then
+        case "$VOLATILE_SNAPSHOT_FILE" in
+            "${RUNTIME_DIR}/volatile."*)
+                rm -f "$VOLATILE_SNAPSHOT_FILE" 8>&- 9>&-
+                ;;
+        esac
+        VOLATILE_SNAPSHOT_FILE=""
+    fi
+}
+
 cleanup_processes() {
     if [ -n "$SYSLOG_PID" ]; then
         kill "$SYSLOG_PID" 2>/dev/null || true
         wait "$SYSLOG_PID" 2>/dev/null || true
     fi
+    release_watchdog_snapshot
+    release_volatile_snapshot
     # Never unlink the persistent lock inode. Closing descriptor 9 releases
     # ownership atomically; removing only our legacy PID file cannot erase a
     # successor's metadata.
@@ -145,32 +247,662 @@ fi
 # USB drive. Failing closed lets procd retry without filling internal flash.
 data_mount_is_safe() {
     awk -v mount_point="$MOUNT_POINT" '
-        $2 == mount_point && $3 != "overlay" && $3 != "tmpfs" &&
-            ("," $4 ",") ~ /,rw,/ { found = 1 }
-        END { exit(found ? 0 : 1) }
+        $2 == mount_point {
+            matches += 1
+            options = "," $4 ","
+            if ($3 == "ext4" &&
+                options ~ /,rw,/ &&
+                options !~ /,ro,/) {
+                valid += 1
+            }
+        }
+        END { exit(matches == 1 && valid == 1 ? 0 : 1) }
     ' "$PROC_MOUNTS" 2>/dev/null
 }
 
-require_data_mount() {
-    if ! data_mount_is_safe; then
-        logger -t jammonitor "FATAL: $MOUNT_POINT is not a persistent mounted filesystem; refusing internal-flash fallback"
+storage_recovery_is_pending() {
+    [ -e "$STORAGE_RECOVERY_JOURNAL" ] ||
+        [ -L "$STORAGE_RECOVERY_JOURNAL" ] ||
+        [ -e "$STORAGE_RECOVERY_FAILED" ] ||
+        [ -L "$STORAGE_RECOVERY_FAILED" ]
+}
+
+storage_fstab_uuid() {
+    [ -f "$FSTAB_CONFIG" ] && [ ! -L "$FSTAB_CONFIG" ] || return 1
+    _storage_fstab_meta="$("$STAT_CMD" -c '%F|%u|%h|%s' \
+        "$FSTAB_CONFIG" 2>/dev/null)" || return 1
+    _storage_fstab_type="${_storage_fstab_meta%%|*}"
+    _storage_fstab_rest="${_storage_fstab_meta#*|}"
+    _storage_fstab_uid="${_storage_fstab_rest%%|*}"
+    _storage_fstab_rest="${_storage_fstab_rest#*|}"
+    _storage_fstab_links="${_storage_fstab_rest%%|*}"
+    _storage_fstab_size="${_storage_fstab_rest##*|}"
+    [ "$_storage_fstab_type" = "regular file" ] &&
+        [ "$_storage_fstab_uid" = "$EXPECTED_STORAGE_UID" ] &&
+        [ "$_storage_fstab_links" = "1" ] || return 1
+    case "$_storage_fstab_size" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_storage_fstab_size" -le 32768 ] || return 1
+
+    _storage_fstab_dump="$(
+        "$TIMEOUT_CMD" 5 "$UCI_CMD" -q show fstab 2>/dev/null
+    )" || return 1
+    [ "${#_storage_fstab_dump}" -le 32768 ] || return 1
+    _storage_target_sections="$(
+        printf '%s\n' "$_storage_fstab_dump" |
+            awk -F= -v target="$MOUNT_POINT" '
+                $1 ~ /^fstab\..+\.target$/ &&
+                    $2 == "\047" target "\047" {
+                    section = $1
+                    sub(/^fstab\./, "", section)
+                    sub(/\.target$/, "", section)
+                    print section
+                }
+            '
+    )"
+    [ -n "$_storage_target_sections" ] || return 1
+    [ "$(printf '%s\n' "$_storage_target_sections" | wc -l |
+        tr -d ' ')" = "1" ] || return 1
+    _storage_section="$_storage_target_sections"
+    [ "${#_storage_section}" -le 128 ] || return 1
+
+    _storage_type="$(
+        "$TIMEOUT_CMD" 5 "$UCI_CMD" -q get \
+            "fstab.${_storage_section}" 2>/dev/null
+    )" || return 1
+    [ "$_storage_type" = "mount" ] || return 1
+    _storage_uuid="$(
+        "$TIMEOUT_CMD" 5 "$UCI_CMD" -q get \
+            "fstab.${_storage_section}.uuid" 2>/dev/null
+    )" || return 1
+    case "$_storage_uuid" in
+        ""|*[!A-Fa-f0-9-]*) return 1 ;;
+    esac
+    [ "${#_storage_uuid}" -ge 8 ] &&
+        [ "${#_storage_uuid}" -le 64 ] || return 1
+    _storage_enabled="$(
+        "$TIMEOUT_CMD" 5 "$UCI_CMD" -q get \
+            "fstab.${_storage_section}.enabled" 2>/dev/null
+    )" || return 1
+    [ "$_storage_enabled" = "1" ] || return 1
+
+    _storage_prefix="fstab.${_storage_section}"
+    if printf '%s\n' "$_storage_fstab_dump" |
+       grep -Fq "${_storage_prefix}.fstype="; then
+        [ "$("$TIMEOUT_CMD" 5 "$UCI_CMD" -q get \
+            "${_storage_prefix}.fstype" 2>/dev/null)" = "ext4" ] || return 1
+    fi
+    printf '%s\n' "$_storage_fstab_dump" |
+        grep -Fq "${_storage_prefix}.options=" || return 1
+    [ "$("$TIMEOUT_CMD" 5 "$UCI_CMD" -q get \
+        "${_storage_prefix}.options" 2>/dev/null)" = \
+        "rw,noatime,nosuid,nodev,noexec" ] || return 1
+    if printf '%s\n' "$_storage_fstab_dump" |
+       grep -Eq "^${_storage_prefix}\\.(device|label)="; then
         return 1
     fi
-    if [ ! -w "$MOUNT_POINT" ]; then
-        logger -t jammonitor "FATAL: $MOUNT_POINT is mounted but not writable"
+    printf '%s\n' "$_storage_uuid"
+}
+
+storage_mount_row() {
+    awk -v mount_point="$MOUNT_POINT" '
+        $2 == mount_point {
+            matches += 1
+            source = $1
+            fstype = $3
+            options = "," $4 ","
+        }
+        END {
+            if (matches == 1 &&
+                source ~ /^\/dev\/sd[a-z][1-9][0-9]*$/ &&
+                fstype == "ext4" &&
+                options ~ /,rw,/ &&
+                options !~ /,ro,/ &&
+                options ~ /,noatime,/ &&
+                options ~ /,nosuid,/ &&
+                options ~ /,nodev,/ &&
+                options ~ /,noexec,/) {
+                sub(/^,/, "", options)
+                sub(/,$/, "", options)
+                print source "|" options
+                exit 0
+            }
+            exit 1
+        }
+    ' "$PROC_MOUNTS" 2>/dev/null
+}
+
+storage_mount_id() {
+    awk -v mount_point="$MOUNT_POINT" '
+        $5 == mount_point {
+            matches += 1
+            mount_id = $1
+        }
+        END {
+            if (matches == 1 && mount_id ~ /^[1-9][0-9]*$/) {
+                print mount_id
+                exit 0
+            }
+            exit 1
+        }
+    ' "$PROC_MOUNTINFO" 2>/dev/null
+}
+
+pinned_fd_mount_id() {
+    awk '
+        $1 == "mnt_id:" && $2 ~ /^[1-9][0-9]*$/ {
+            matches += 1
+            mount_id = $2
+        }
+        END {
+            if (matches == 1) {
+                print mount_id
+                exit 0
+            }
+            exit 1
+        }
+    ' "${FDINFO_ROOT}/8" 2>/dev/null
+}
+
+prove_storage_authority() {
+    storage_recovery_is_pending && return 1
+    _storage_mount_row="$(storage_mount_row)" || return 1
+    _storage_source="${_storage_mount_row%%|*}"
+    _storage_options="${_storage_mount_row#*|}"
+    _storage_name="${_storage_source#/dev/}"
+    _storage_disk="${_storage_name%%[0-9]*}"
+    _storage_partition="${_storage_name#$_storage_disk}"
+    case "$_storage_disk" in sd[a-z]) ;; *) return 1 ;; esac
+    case "$_storage_partition" in
+        ""|0|*[!0-9]*) return 1 ;;
+    esac
+
+    _storage_kernel_id="$(
+        sed -n '1{s/[[:space:]]//g;p;}' \
+            "${SYS_CLASS_BLOCK_ROOT}/${_storage_name}/dev" 2>/dev/null
+    )" || return 1
+    case "$_storage_kernel_id" in
+        *[!0-9:]*|:*|*:) return 1 ;;
+    esac
+    [ "$(
+        sed -n '1{s/[[:space:]]//g;p;}' \
+            "${SYS_CLASS_BLOCK_ROOT}/${_storage_name}/partition" 2>/dev/null
+    )" = "$_storage_partition" ] || return 1
+    [ "$(
+        sed -n '1{s/[[:space:]]//g;p;}' \
+            "${SYS_CLASS_BLOCK_ROOT}/${_storage_disk}/removable" 2>/dev/null
+    )" = "1" ] || return 1
+
+    _storage_source_meta="$("$STAT_CMD" -L -c '%F|%t:%T' \
+        "$_storage_source" 2>/dev/null)" || return 1
+    [ "${_storage_source_meta%%|*}" = "block special file" ] || return 1
+
+    _storage_fstab_uuid="$(storage_fstab_uuid)" || return 1
+    _storage_selected_info="$(
+        "$TIMEOUT_CMD" 5 "$BLOCK_CMD" info "$_storage_source" 2>/dev/null
+    )" || return 1
+    [ "${#_storage_selected_info}" -le 4096 ] || return 1
+    _storage_selected="$(
+        printf '%s\n' "$_storage_selected_info" |
+            awk -v source="$_storage_source" '
+                $1 == source ":" {
+                    lines += 1
+                    for (i = 2; i <= NF; i += 1) {
+                        value = $i
+                        if (value ~ /^UUID="/) {
+                            sub(/^UUID="/, "", value)
+                            sub(/"$/, "", value)
+                            uuid = value
+                        } else if (value ~ /^TYPE="/) {
+                            sub(/^TYPE="/, "", value)
+                            sub(/"$/, "", value)
+                            type = value
+                        } else if (value ~ /^MOUNT="/) {
+                            sub(/^MOUNT="/, "", value)
+                            sub(/"$/, "", value)
+                            mount = value
+                        }
+                    }
+                }
+                END {
+                    if (lines == 1 && uuid != "" && type != "" &&
+                        mount != "") {
+                        print uuid "|" type "|" mount
+                        exit 0
+                    }
+                    exit 1
+                }
+            '
+    )" || return 1
+    _storage_live_uuid="${_storage_selected%%|*}"
+    _storage_selected_rest="${_storage_selected#*|}"
+    _storage_live_type="${_storage_selected_rest%%|*}"
+    _storage_live_mount="${_storage_selected_rest#*|}"
+    [ "$_storage_live_uuid" = "$_storage_fstab_uuid" ] &&
+        [ "$_storage_live_type" = "ext4" ] &&
+        [ "$_storage_live_mount" = "$MOUNT_POINT" ] || return 1
+
+    _storage_all_info="$(
+        "$TIMEOUT_CMD" 5 "$BLOCK_CMD" info 2>/dev/null
+    )" || return 1
+    [ "${#_storage_all_info}" -le 65536 ] || return 1
+    _storage_uuid_count="$(
+        printf '%s\n' "$_storage_all_info" |
+            awk -v uuid="$_storage_fstab_uuid" '
+                {
+                    for (i = 2; i <= NF; i += 1) {
+                        value = $i
+                        if (value ~ /^UUID="/) {
+                            sub(/^UUID="/, "", value)
+                            sub(/"$/, "", value)
+                            if (value == uuid) matches += 1
+                        }
+                    }
+                }
+                END { print matches + 0 }
+            '
+    )"
+    [ "$_storage_uuid_count" = "1" ] || return 1
+
+    _storage_mount_id="$(storage_mount_id)" || return 1
+    _storage_root_meta="$("$STAT_CMD" -L -c '%F|%u|%g|%a|%d|%i' \
+        "$MOUNT_POINT" 2>/dev/null)" || return 1
+    IFS='|' read -r _storage_root_type _storage_root_uid \
+        _storage_root_gid _storage_root_mode _storage_root_dev \
+        _storage_root_ino <<EOF
+$_storage_root_meta
+EOF
+    [ "$_storage_root_type" = "directory" ] &&
+        [ "$_storage_root_uid" = "$EXPECTED_STORAGE_UID" ] &&
+        [ "$_storage_root_gid" = "$EXPECTED_STORAGE_GID" ] || return 1
+    case "$_storage_root_mode" in
+        ""|*[!0-9]*|*[2367][0-7]|*[0-7][2367]) return 1 ;;
+    esac
+    [ -w "$MOUNT_POINT" ] || return 1
+
+    PROVED_STORAGE_SOURCE="$_storage_source"
+    PROVED_STORAGE_UUID="$_storage_live_uuid"
+    PROVED_STORAGE_KERNEL_ID="$_storage_kernel_id"
+    PROVED_STORAGE_MOUNT_ID="$_storage_mount_id"
+    PROVED_STORAGE_ROOT_DEV="$_storage_root_dev"
+    PROVED_STORAGE_ROOT_INO="$_storage_root_ino"
+    PROVED_STORAGE_TOKEN="${_storage_source}|${_storage_live_uuid}|${_storage_kernel_id}|${_storage_mount_id}|${_storage_root_dev}|${_storage_root_ino}|${_storage_options}"
+    return 0
+}
+
+storage_authority_is_current() {
+    prove_storage_authority || return 1
+    if [ -n "$PINNED_STORAGE_TOKEN" ]; then
+        [ "$PROVED_STORAGE_TOKEN" = "$PINNED_STORAGE_TOKEN" ] || return 1
+        _storage_fd_mount_id="$(pinned_fd_mount_id)" || return 1
+        [ "$_storage_fd_mount_id" = "$PINNED_STORAGE_MOUNT_ID" ] &&
+            [ "$_storage_fd_mount_id" = "$PROVED_STORAGE_MOUNT_ID" ] ||
+            return 1
+        _storage_fd_dev="$("$STAT_CMD" -L -c '%d' \
+            "${FD_ROOT}/8" 2>/dev/null)" || return 1
+        [ "$_storage_fd_dev" = "$PROVED_STORAGE_ROOT_DEV" ] || return 1
+    fi
+    return 0
+}
+
+require_data_mount() {
+    if [ -L "$MOUNT_POINT" ] || [ ! -d "$MOUNT_POINT" ]; then
+        logger -t jammonitor \
+            "FATAL: $MOUNT_POINT is not a real mount directory"
+        return 1
+    fi
+    if ! storage_authority_is_current; then
+        logger -t jammonitor \
+            "FATAL: $MOUNT_POINT source, UUID, fstab, mount generation, or ownership authority is unproven"
         return 1
     fi
     return 0
 }
 
+storage_leaf_names_are_line_safe() {
+    _storage_name_dir="$1"
+    _storage_name_timeout="$2"
+    _storage_name_nonce="$(sed -n '1p' "$RANDOM_UUID_FILE" \
+        2>/dev/null)" || return 1
+    case "$_storage_name_nonce" in
+        ""|*[!A-Fa-f0-9-]*) return 1 ;;
+    esac
+
+    # POSIX pathnames may contain newlines. Both bounded tree parsers below
+    # are intentionally line-oriented, so prove first that every top-level
+    # leaf name is line-safe. Any matching pathname contributes bytes before
+    # the completion sentinel and therefore fails the exact comparison. head
+    # bounds captured output, while timeout -k bounds a producer that ignores
+    # TERM or scans an attacker-created directory with extreme fanout.
+    _storage_name_newline='
+'
+    _storage_name_probe="$(
+        {
+            "$TIMEOUT_CMD" -s TERM -k 2 "$_storage_name_timeout" \
+                find -H "$_storage_name_dir" -xdev \
+                    -mindepth 1 -maxdepth 1 \
+                    -name "*${_storage_name_newline}*" -print 2>/dev/null
+            _storage_name_rc=$?
+            printf '%s:%s\n' \
+                "$_storage_name_nonce" "$_storage_name_rc"
+        } | head -c 8192
+    )"
+    [ "$_storage_name_probe" = "${_storage_name_nonce}:0" ]
+}
+
+storage_sync_barrier() {
+    "$TIMEOUT_CMD" -s TERM -k 2 \
+        "$STORAGE_SYNC_TIMEOUT_SECONDS" "$SYNC_CMD"
+}
+
+storage_data_tree_is_safe() {
+    _storage_data_dir="$1"
+    [ -d "$_storage_data_dir" ] && [ ! -L "$_storage_data_dir" ] ||
+        return 1
+
+    _storage_meta="$("$STAT_CMD" -c '%F|%u|%g|%a' \
+        "$_storage_data_dir" 2>/dev/null)" || return 1
+    [ "$_storage_meta" = \
+        "directory|${EXPECTED_STORAGE_UID}|${EXPECTED_STORAGE_GID}|700" ] ||
+        return 1
+    storage_leaf_names_are_line_safe "$_storage_data_dir" 5 || return 1
+
+    # Bound the offline-controlled directory fanout before inspecting leaves.
+    # The fresh kernel UUID makes a crafted filename unable to forge the
+    # completion sentinel; head closes the producer after 65 entries.
+    _storage_walk_nonce="$(sed -n '1p' "$RANDOM_UUID_FILE" \
+        2>/dev/null)" || return 1
+    case "$_storage_walk_nonce" in
+        ""|*[!A-Fa-f0-9-]*) return 1 ;;
+    esac
+    _storage_walk="$(
+        {
+            "$TIMEOUT_CMD" 5 find "$_storage_data_dir" -xdev \
+                -mindepth 1 -maxdepth 1 -print 2>/dev/null
+            _storage_walk_rc=$?
+            printf '%s:%s\n' "$_storage_walk_nonce" "$_storage_walk_rc"
+        } | head -n 66
+    )"
+    _storage_count=0
+    _storage_complete=0
+    while IFS= read -r _storage_leaf; do
+        if [ "$_storage_leaf" = "${_storage_walk_nonce}:0" ]; then
+            _storage_complete=$((_storage_complete + 1))
+            continue
+        fi
+        _storage_count=$((_storage_count + 1))
+        [ "$_storage_count" -le 64 ] || return 1
+        _storage_name="${_storage_leaf##*/}"
+        case "$_storage_name" in
+            history.db|history.db-wal|history.db-shm|history.db-journal|\
+            syslog.txt|syslog.txt.old|iface_snapshot.current|\
+            iface_snapshot.last)
+                ;;
+            syslog.txt.[1-9]|syslog.txt.[1-9][0-9]*)
+                case "${_storage_name#syslog.txt.}" in
+                    *[!0-9]*) return 1 ;;
+                esac
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        _storage_leaf_meta="$("$STAT_CMD" -c '%F|%u|%g|%h|%a' \
+            "$_storage_leaf" 2>/dev/null)" || return 1
+        IFS='|' read -r _storage_leaf_type _storage_leaf_uid \
+            _storage_leaf_gid _storage_leaf_links _storage_leaf_mode <<EOF
+$_storage_leaf_meta
+EOF
+        [ "$_storage_leaf_type" = "regular file" ] &&
+            [ "$_storage_leaf_uid" = "$EXPECTED_STORAGE_UID" ] &&
+            [ "$_storage_leaf_gid" = "$EXPECTED_STORAGE_GID" ] &&
+            [ "$_storage_leaf_links" = "1" ] || return 1
+        case "$_storage_leaf_mode" in
+            ""|*[!0-9]*|*[2367][0-7]|*[0-7][2367]) return 1 ;;
+        esac
+    done <<EOF
+$_storage_walk
+EOF
+    [ "$_storage_complete" -eq 1 ]
+}
+
+legacy_storage_leaf_is_safe() {
+    _legacy_check_path="$1"
+    _legacy_check_meta="$("$STAT_CMD" -c '%F|%u|%g|%h|%a' \
+        "$_legacy_check_path" 2>/dev/null)" || return 1
+    IFS='|' read -r _legacy_check_type _legacy_check_uid \
+        _legacy_check_gid _legacy_check_links _legacy_check_mode <<EOF
+$_legacy_check_meta
+EOF
+    [ "$_legacy_check_type" = "regular file" ] &&
+        [ "$_legacy_check_uid" = "$EXPECTED_STORAGE_UID" ] &&
+        [ "$_legacy_check_gid" = "$EXPECTED_STORAGE_GID" ] &&
+        [ "$_legacy_check_links" = "1" ] || return 1
+    case "$_legacy_check_mode" in
+        ""|*[!0-9]*|*[2367][0-7]|*[0-7][2367]) return 1 ;;
+    esac
+}
+
+migrate_legacy_syslog_rotations() {
+    _legacy_data_dir="$1"
+    [ -d "$_legacy_data_dir" ] && [ ! -L "$_legacy_data_dir" ] ||
+        return 1
+    _legacy_dir_meta="$("$STAT_CMD" -c '%F|%u|%g|%a' \
+        "$_legacy_data_dir" 2>/dev/null)" || return 1
+    [ "$_legacy_dir_meta" = \
+        "directory|${EXPECTED_STORAGE_UID}|${EXPECTED_STORAGE_GID}|700" ] ||
+        return 1
+    require_data_mount || return 1
+    storage_leaf_names_are_line_safe \
+        "$_legacy_data_dir" "$LEGACY_SYSLOG_SCAN_TIMEOUT_SECONDS" || return 1
+
+    _legacy_scan="$("$MKTEMP_CMD" \
+        "${RUNTIME_DIR}/legacy-syslog-scan.XXXXXX" 8>&- 9>&-)" ||
+        return 1
+    chmod 0600 "$_legacy_scan" 8>&- 9>&- || {
+        rm -f "$_legacy_scan"
+        return 1
+    }
+    if ! (
+        ulimit -c 0 || exit 125
+        ulimit -f "$LEGACY_SYSLOG_SCAN_BLOCKS" || exit 125
+        exec "$TIMEOUT_CMD" -s TERM -k 2 \
+            "$LEGACY_SYSLOG_SCAN_TIMEOUT_SECONDS" \
+            find -H "$_legacy_data_dir" -xdev \
+                -mindepth 1 -maxdepth 1 -print
+    ) > "$_legacy_scan" 2>/dev/null; then
+        rm -f "$_legacy_scan"
+        return 1
+    fi
+
+    _legacy_count=0
+    _legacy_rotation_count=0
+    _legacy_newest_path=""
+    _legacy_newest_epoch=0
+    _legacy_old_present=0
+    while IFS= read -r _legacy_leaf; do
+        _legacy_count=$((_legacy_count + 1))
+        [ "$_legacy_count" -le "$LEGACY_SYSLOG_MAX_LEAVES" ] || {
+            rm -f "$_legacy_scan"
+            return 1
+        }
+        _legacy_name="${_legacy_leaf##*/}"
+        case "$_legacy_name" in
+            history.db|history.db-wal|history.db-shm|history.db-journal|\
+            syslog.txt|iface_snapshot.current|iface_snapshot.last)
+                ;;
+            syslog.txt.old)
+                _legacy_old_present=1
+                ;;
+            syslog.txt.[1-9]|syslog.txt.[1-9][0-9]*)
+                _legacy_epoch="${_legacy_name#syslog.txt.}"
+                case "$_legacy_epoch" in
+                    ""|*[!0-9]*)
+                        rm -f "$_legacy_scan"
+                        return 1
+                        ;;
+                esac
+                [ "${#_legacy_epoch}" -le 18 ] || {
+                    rm -f "$_legacy_scan"
+                    return 1
+                }
+                _legacy_rotation_count=$((_legacy_rotation_count + 1))
+                if [ "$_legacy_epoch" -gt "$_legacy_newest_epoch" ]; then
+                    _legacy_newest_epoch="$_legacy_epoch"
+                    _legacy_newest_path="$_legacy_leaf"
+                fi
+                ;;
+            *)
+                rm -f "$_legacy_scan"
+                return 1
+                ;;
+        esac
+        legacy_storage_leaf_is_safe "$_legacy_leaf" || {
+            rm -f "$_legacy_scan"
+            return 1
+        }
+    done < "$_legacy_scan"
+
+    [ "$_legacy_rotation_count" -gt 0 ] || {
+        rm -f "$_legacy_scan"
+        return 0
+    }
+    require_data_mount || {
+        rm -f "$_legacy_scan"
+        return 1
+    }
+
+    _legacy_keep_path=""
+    if [ "$_legacy_old_present" -eq 0 ]; then
+        [ -n "$_legacy_newest_path" ] || {
+            rm -f "$_legacy_scan"
+            return 1
+        }
+        _legacy_keep_path="$_legacy_newest_path"
+        legacy_storage_leaf_is_safe "$_legacy_keep_path" || {
+            rm -f "$_legacy_scan"
+            return 1
+        }
+        [ ! -e "${_legacy_data_dir}/syslog.txt.old" ] &&
+            [ ! -L "${_legacy_data_dir}/syslog.txt.old" ] || {
+                rm -f "$_legacy_scan"
+                return 1
+            }
+        mv -f "$_legacy_keep_path" "${_legacy_data_dir}/syslog.txt.old" ||
+            {
+                rm -f "$_legacy_scan"
+                return 1
+            }
+        legacy_storage_leaf_is_safe \
+            "${_legacy_data_dir}/syslog.txt.old" || {
+                rm -f "$_legacy_scan"
+                return 1
+            }
+    fi
+    # Make preservation of the fixed archive durable before retiring any
+    # redundant legacy copy. If this barrier fails, no legacy archive is
+    # deleted; a later start can safely revalidate and resume.
+    storage_sync_barrier || {
+        rm -f "$_legacy_scan"
+        return 1
+    }
+
+    while IFS= read -r _legacy_leaf; do
+        _legacy_name="${_legacy_leaf##*/}"
+        case "$_legacy_name" in
+            syslog.txt.[1-9]|syslog.txt.[1-9][0-9]*)
+                [ "$_legacy_leaf" = "$_legacy_keep_path" ] && continue
+                _legacy_epoch="${_legacy_name#syslog.txt.}"
+                case "$_legacy_epoch" in
+                    ""|*[!0-9]*) rm -f "$_legacy_scan"; return 1 ;;
+                esac
+                legacy_storage_leaf_is_safe "$_legacy_leaf" ||
+                    { rm -f "$_legacy_scan"; return 1; }
+                rm -f "$_legacy_leaf" ||
+                    { rm -f "$_legacy_scan"; return 1; }
+                ;;
+        esac
+    done < "$_legacy_scan"
+    rm -f "$_legacy_scan"
+    storage_sync_barrier || return 1
+    require_data_mount || return 1
+    logger -t jammonitor \
+        "Migrated $_legacy_rotation_count legacy syslog rotations to one bounded archive"
+    return 0
+}
+
 if [ "$LIB_ONLY" != "1" ]; then
+    for _storage_required_command in \
+        "$TIMEOUT_CMD" "$STAT_CMD" "$UCI_CMD" "$BLOCK_CMD" "$MKTEMP_CMD" \
+        "$SYNC_CMD"
+    do
+        command -v "$_storage_required_command" >/dev/null 2>&1 || {
+            logger -t jammonitor \
+                "FATAL: storage authority command is unavailable: $_storage_required_command"
+            exit 1
+        }
+    done
     require_data_mount || {
         exit 1
     }
-    mkdir -p "$DATA_DIR" 2>/dev/null || {
-        logger -t jammonitor "FATAL: Cannot create data directory $DATA_DIR"
+    # Hold the verified mount for the collector lifetime. If the filesystem is
+    # unmounted or detached later, descriptor-relative paths remain bound to
+    # that original mount and can never fall through to the router overlay.
+    exec 8<"$MOUNT_POINT" || {
+        logger -t jammonitor "FATAL: Cannot pin mounted storage"
         exit 1
     }
+    # Spend the first complete proof only after the mount descriptor is open.
+    # The second proof below must match this exact mount ID/source/UUID/root
+    # generation and the descriptor's kernel mnt_id.
+    PINNED_STORAGE_TOKEN="$PROVED_STORAGE_TOKEN"
+    PINNED_STORAGE_SOURCE="$PROVED_STORAGE_SOURCE"
+    PINNED_STORAGE_UUID="$PROVED_STORAGE_UUID"
+    PINNED_STORAGE_KERNEL_ID="$PROVED_STORAGE_KERNEL_ID"
+    PINNED_STORAGE_MOUNT_ID="$PROVED_STORAGE_MOUNT_ID"
+    require_data_mount || {
+        logger -t jammonitor \
+            "FATAL: storage mount changed while it was being pinned"
+        exit 1
+    }
+    _pinned_data_dir="${FD_ROOT}/8/jammonitor"
+    if [ -L "$_pinned_data_dir" ]; then
+        logger -t jammonitor \
+            "FATAL: mounted storage data directory is a symlink"
+        exit 1
+    fi
+    if [ ! -e "$_pinned_data_dir" ]; then
+        mkdir -m 0700 "$_pinned_data_dir" 2>/dev/null || {
+            logger -t jammonitor \
+                "FATAL: Cannot create data directory on mounted storage"
+            exit 1
+        }
+    fi
+    if [ ! -d "$_pinned_data_dir" ] ||
+       [ -L "$_pinned_data_dir" ] ||
+       ! chmod 0700 "$_pinned_data_dir" ||
+       ! migrate_legacy_syslog_rotations "$_pinned_data_dir" ||
+       ! storage_data_tree_is_safe "$_pinned_data_dir"; then
+        logger -t jammonitor \
+            "FATAL: mounted storage data tree is not root-confined"
+        exit 1
+    fi
+
+    # Pin the verified data directory itself. All persistent leaf paths are
+    # now descriptor-relative with no attacker-controlled intermediate
+    # component. Descriptor 5 only bridges the dup while descriptor 8 still
+    # pins the parent mount.
+    exec 5<"$_pinned_data_dir" || {
+        logger -t jammonitor "FATAL: Cannot pin verified data directory"
+        exit 1
+    }
+    exec 8<&-
+    exec 8<&5
+    exec 5<&-
+    DATA_DIR="${FD_ROOT}/8"
+    DB_PATH="${DATA_DIR}/history.db"
+    LOG_PATH="${DATA_DIR}/syslog.txt"
 fi
 
 # SQLite single-quoted string literals escape only single quotes. Backslash
@@ -181,9 +913,124 @@ sql_escape() {
 
 is_uint() {
     case "${1:-}" in
-        ""|*[!0-9]*) return 1 ;;
-        *) return 0 ;;
+        0|[1-9]|[1-9][0-9]*)
+            [ "${#1}" -le 18 ]
+            ;;
+        *)
+            return 1
+            ;;
     esac
+}
+
+pin_watchdog_snapshot() {
+    _watchdog_source="${1:-}"
+    release_watchdog_snapshot
+
+    # Reject symlinks and every non-regular source before the bounded copy.
+    # The producer publishes by rename, so dd's single source open remains on
+    # one inode even if the public pathname is replaced during this cycle.
+    [ -f "$_watchdog_source" ] && [ ! -L "$_watchdog_source" ] ||
+        return 1
+    WATCHDOG_SNAPSHOT_FILE="$("$MKTEMP_CMD" \
+        "${RUNTIME_DIR}/tailscale-watchdog.snapshot.XXXXXX" 8>&- 9>&-)" ||
+        return 1
+    chmod 0600 "$WATCHDOG_SNAPSHOT_FILE" 8>&- 9>&- || {
+        release_watchdog_snapshot
+        return 1
+    }
+
+    if ! "$TIMEOUT_CMD" "$WATCHDOG_COPY_TIMEOUT_SECONDS" \
+        "$DD_CMD" if="$_watchdog_source" of="$WATCHDOG_SNAPSHOT_FILE" \
+        bs=$((WATCHDOG_SNAPSHOT_MAX_BYTES + 1)) count=1 \
+        8>&- 9>&- 2>/dev/null; then
+        release_watchdog_snapshot
+        return 1
+    fi
+    [ -f "$WATCHDOG_SNAPSHOT_FILE" ] &&
+        [ ! -L "$WATCHDOG_SNAPSHOT_FILE" ] || {
+        release_watchdog_snapshot
+        return 1
+    }
+    _watchdog_snapshot_bytes="$(
+        wc -c < "$WATCHDOG_SNAPSHOT_FILE" 8>&- 9>&-
+    )"
+    _watchdog_snapshot_bytes="$(
+        printf '%s' "$_watchdog_snapshot_bytes" | tr -d '[:space:]'
+    )"
+    if ! is_uint "$_watchdog_snapshot_bytes" ||
+       [ "$_watchdog_snapshot_bytes" -eq 0 ] ||
+       [ "$_watchdog_snapshot_bytes" -gt "$WATCHDOG_SNAPSHOT_MAX_BYTES" ]; then
+        release_watchdog_snapshot
+        return 1
+    fi
+    return 0
+}
+
+pin_root_volatile_snapshot() {
+    _volatile_source="${1:-}"
+    _volatile_label="${2:-}"
+    _volatile_max_bytes="${3:-}"
+    release_volatile_snapshot
+
+    case "$_volatile_label" in
+        dhcp|resolv) ;;
+        *) return 1 ;;
+    esac
+    is_uint "$_volatile_max_bytes" &&
+        [ "$_volatile_max_bytes" -gt 0 ] || return 1
+    [ -f "$_volatile_source" ] && [ ! -L "$_volatile_source" ] ||
+        return 1
+    _volatile_before="$(
+        "$STAT_CMD" -c '%u:%F:%d:%i:%s:%Y' \
+            "$_volatile_source" 8>&- 9>&- 2>/dev/null
+    )" || return 1
+    [ "${_volatile_before%%:*}" = "$EXPECTED_VOLATILE_UID" ] || return 1
+
+    VOLATILE_SNAPSHOT_FILE="$("$MKTEMP_CMD" \
+        "${RUNTIME_DIR}/volatile.${_volatile_label}.XXXXXX" 8>&- 9>&-)" ||
+        return 1
+    chmod 0600 "$VOLATILE_SNAPSHOT_FILE" 8>&- 9>&- || {
+        release_volatile_snapshot
+        return 1
+    }
+    if ! "$TIMEOUT_CMD" "$VOLATILE_COPY_TIMEOUT_SECONDS" \
+        "$DD_CMD" if="$_volatile_source" of="$VOLATILE_SNAPSHOT_FILE" \
+        bs=$((_volatile_max_bytes + 1)) count=1 \
+        8>&- 9>&- 2>/dev/null; then
+        release_volatile_snapshot
+        return 1
+    fi
+    _volatile_after="$(
+        "$STAT_CMD" -c '%u:%F:%d:%i:%s:%Y' \
+            "$_volatile_source" 8>&- 9>&- 2>/dev/null
+    )" || {
+        release_volatile_snapshot
+        return 1
+    }
+    [ "$_volatile_after" = "$_volatile_before" ] || {
+        release_volatile_snapshot
+        return 1
+    }
+    _volatile_snapshot_bytes="$(
+        wc -c < "$VOLATILE_SNAPSHOT_FILE" 8>&- 9>&-
+    )"
+    _volatile_snapshot_bytes="$(
+        printf '%s' "$_volatile_snapshot_bytes" | tr -d '[:space:]'
+    )"
+    if ! is_uint "$_volatile_snapshot_bytes" ||
+       [ "$_volatile_snapshot_bytes" -gt "$_volatile_max_bytes" ]; then
+        release_volatile_snapshot
+        return 1
+    fi
+    return 0
+}
+
+watchdog_json_value() {
+    jsonfilter -i "$WATCHDOG_SNAPSHOT_FILE" -e "$1" 8>&- 9>&- 2>/dev/null
+}
+
+watchdog_json_type() {
+    jsonfilter -i "$WATCHDOG_SNAPSHOT_FILE" -t "$1" 8>&- 9>&- 2>/dev/null
 }
 
 is_process_generation() {
@@ -234,6 +1081,22 @@ if [ "$LIB_ONLY" != "1" ]; then
         logger -t jammonitor "FATAL: conntrack command is unavailable: $CONNTRACK_CMD"
         exit 1
     }
+    command -v "$LOGREAD_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: log reader is unavailable: $LOGREAD_CMD"
+        exit 1
+    }
+    command -v "$DD_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: bounded-copy command is unavailable: $DD_CMD"
+        exit 1
+    }
+    command -v "$MKTEMP_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: temporary-file command is unavailable: $MKTEMP_CMD"
+        exit 1
+    }
+    command -v "$STAT_CMD" >/dev/null 2>&1 || {
+        logger -t jammonitor "FATAL: file metadata command is unavailable: $STAT_CMD"
+        exit 1
+    }
 fi
 
 sqlite_command() {
@@ -276,7 +1139,7 @@ publish_collector_status() {
     _mounted=false
     _writable=false
     _healthy=false
-    data_mount_is_safe && _mounted=true
+    storage_authority_is_current && _mounted=true
     [ -w "$MOUNT_POINT" ] && _writable=true
 
     if [ "$LAST_SAMPLE_AT" -gt 0 ]; then
@@ -305,6 +1168,10 @@ publish_collector_status() {
         printf '"healthy":%s,' "$_healthy"
         printf '"mounted":%s,' "$_mounted"
         printf '"writable":%s,' "$_writable"
+        printf '"mount_source":"%s",' "$PINNED_STORAGE_SOURCE"
+        printf '"mount_uuid":"%s",' "$PINNED_STORAGE_UUID"
+        printf '"mount_kernel_id":"%s",' "$PINNED_STORAGE_KERNEL_ID"
+        printf '"mount_generation":"%s",' "$PINNED_STORAGE_MOUNT_ID"
         printf '"database_quick_check":"%s",' "$QUICK_CHECK"
         printf '"last_sample_at":%s,' "$LAST_SAMPLE_AT"
         printf '"last_success_at":%s,' "$LAST_SUCCESS_AT"
@@ -339,27 +1206,76 @@ is_local_client_ip() {
     esac
 }
 
+is_ipv4_octet() {
+    _ip_octet="${1:-}"
+    case "$_ip_octet" in
+        0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    [ "$_ip_octet" -le 255 ]
+}
+
+ipv6_part_group_count() {
+    _ipv6_part="${1:-}"
+    IPV6_GROUP_COUNT=0
+    [ -n "$_ipv6_part" ] || return 0
+    case "$_ipv6_part" in
+        :*|*:|*::*|*[!0-9a-f:]*) return 1 ;;
+    esac
+
+    _ipv6_old_ifs="$IFS"
+    IFS=:
+    set -- $_ipv6_part
+    IFS="$_ipv6_old_ifs"
+    for _ipv6_group in "$@"; do
+        [ -n "$_ipv6_group" ] &&
+            [ "${#_ipv6_group}" -le 4 ] || return 1
+    done
+    IPV6_GROUP_COUNT="$#"
+}
+
 is_tailscale_ip() {
     _candidate="${1:-}"
+    [ -n "$_candidate" ] && [ "${#_candidate}" -le 39 ] || return 1
     case "$_candidate" in
         *:*)
+            case "$_candidate" in *[!0-9A-Fa-f:]*) return 1 ;; esac
             _candidate="$(printf '%s' "$_candidate" | tr 'A-F' 'a-f')"
             case "$_candidate" in
-                fd7a:115c:a1e0:*) return 0 ;;
+                fd7a:115c:a1e0:*) ;;
                 *) return 1 ;;
+            esac
+
+            case "$_candidate" in
+                *::*)
+                    _ipv6_left="${_candidate%%::*}"
+                    _ipv6_right="${_candidate#*::}"
+                    case "$_ipv6_right" in *::*) return 1 ;; esac
+                    ipv6_part_group_count "$_ipv6_left" || return 1
+                    _ipv6_left_count="$IPV6_GROUP_COUNT"
+                    ipv6_part_group_count "$_ipv6_right" || return 1
+                    _ipv6_right_count="$IPV6_GROUP_COUNT"
+                    [ $((_ipv6_left_count + _ipv6_right_count)) -lt 8 ]
+                    ;;
+                *)
+                    ipv6_part_group_count "$_candidate" &&
+                        [ "$IPV6_GROUP_COUNT" -eq 8 ]
+                    ;;
             esac
             ;;
         *.*)
-            _old_ifs="$IFS"
+            case "$_candidate" in
+                .*|*.|*..*|*[!0-9.]*) return 1 ;;
+            esac
+            _ip_old_ifs="$IFS"
             IFS=.
             set -- $_candidate
-            IFS="$_old_ifs"
+            IFS="$_ip_old_ifs"
             [ "$#" -eq 4 ] || return 1
             for _octet in "$@"; do
-                is_uint "$_octet" || return 1
-                [ "$_octet" -le 255 ] || return 1
+                is_ipv4_octet "$_octet" || return 1
             done
-            [ "$1" -eq 100 ] &&
+            [ "$1" = "100" ] &&
                 [ "$2" -ge 64 ] &&
                 [ "$2" -le 127 ]
             ;;
@@ -581,7 +1497,13 @@ collect_slow() {
     CT_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 
     # DNS servers
-    DNS=$(grep nameserver /tmp/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+    DNS=""
+    if pin_root_volatile_snapshot \
+        "$RESOLV_CONF" resolv "$RESOLV_CONF_MAX_BYTES"; then
+        DNS=$(grep nameserver "$VOLATILE_SNAPSHOT_FILE" 2>/dev/null |
+            awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+        release_volatile_snapshot
+    fi
 
     # Escape all values for SQL safety
     MPTCP_ESC=$(sql_escape "$MPTCP")
@@ -593,7 +1515,14 @@ collect_slow() {
 }
 
 watchdog_snapshot_is_valid() {
-    [ "$_snapshot_schema" = "2" ] || return 1
+    [ "$_snapshot_schema_type" = "int" ] || return 1
+    [ "$_observed_type" = "int" ] && is_uint "$OBSERVED" || return 1
+    case "$_snapshot_schema" in 2|3) ;; *) return 1 ;; esac
+    [ "$_snapshot_status_type" = "string" ] &&
+        [ "$_snapshot_reason_type" = "string" ] &&
+        [ "$_snapshot_backend_type" = "string" ] &&
+        [ "$_snapshot_ip_type" = "string" ] &&
+        [ "$_key_expiry_type" = "string" ] || return 1
     case "$_snapshot_status" in
         not_installed|watchdog_error|disabled|maintenance|daemon_missing|\
         daemon_unresponsive|socket_missing|running|running_degraded|needs_login|\
@@ -602,39 +1531,112 @@ watchdog_snapshot_is_valid() {
     esac
     [ -n "$_snapshot_reason" ] || return 1
 
-    case "$_healthy" in true|false) ;; *) return 1 ;; esac
-    case "$_connected" in true|false|null) ;; *) return 1 ;; esac
-    case "$_degraded" in true|false) ;; *) return 1 ;; esac
-    case "$_local_api" in true|false|null) ;; *) return 1 ;; esac
-    case "$_control_online" in true|false|null) ;; *) return 1 ;; esac
-    case "$_installed" in true|false) ;; *) return 1 ;; esac
-    case "$_service_enabled" in true|false) ;; *) return 1 ;; esac
-    case "$_service_running" in true|false) ;; *) return 1 ;; esac
-    case "$_tun" in true|false|null) ;; *) return 1 ;; esac
-    case "$_engine" in true|false|null) ;; *) return 1 ;; esac
-    case "$_process_generation" in
-        ""|null)
-            case "$_process_uptime" in ""|null) ;; *) return 1 ;; esac
+    case "${_healthy_type}:${_healthy}" in
+        boolean:true|boolean:false) ;; *) return 1 ;;
+    esac
+    case "${_connected_type}:${_connected}" in
+        boolean:true|boolean:false|null:null) ;; *) return 1 ;;
+    esac
+    case "${_degraded_type}:${_degraded}" in
+        boolean:true|boolean:false) ;; *) return 1 ;;
+    esac
+    case "${_local_api_type}:${_local_api}" in
+        boolean:true|boolean:false|null:null) ;; *) return 1 ;;
+    esac
+    case "${_control_online_type}:${_control_online}" in
+        boolean:true|boolean:false|null:null) ;; *) return 1 ;;
+    esac
+    case "${_installed_type}:${_installed}" in
+        boolean:true|boolean:false) ;; *) return 1 ;;
+    esac
+    case "${_service_enabled_type}:${_service_enabled}" in
+        boolean:true|boolean:false) ;; *) return 1 ;;
+    esac
+    case "${_service_running_type}:${_service_running}" in
+        boolean:true|boolean:false) ;; *) return 1 ;;
+    esac
+    case "${_tun_type}:${_tun}" in
+        boolean:true|boolean:false|null:null) ;; *) return 1 ;;
+    esac
+    [ "$_health_warnings_type" = "int" ] &&
+        is_uint "$_health_warnings" || return 1
+    [ "$_peer_configured_type" = "boolean" ] || return 1
+    case "$_peer_configured" in true|false) ;; *) return 1 ;; esac
+    [ "$_peer_state_type" = "string" ] || return 1
+    case "$_peer_state" in
+        not_configured|unknown|reachable|unreachable|invalid_configuration) ;;
+        *) return 1 ;;
+    esac
+    case "${_peer_type}:${_peer}" in
+        boolean:true|boolean:false|null:null) ;;
+        *) return 1 ;;
+    esac
+    case "${_peer_configured}:${_peer_state}:${_peer}" in
+        false:not_configured:null|\
+        true:unknown:null|\
+        true:reachable:true|\
+        true:unreachable:false|\
+        true:invalid_configuration:false) ;;
+        *) return 1 ;;
+    esac
+    if [ "$_snapshot_schema" = "2" ]; then
+        case "${_in_engine_type}:${_in_engine}" in
+            boolean:true|boolean:false) ;;
+            *) return 1 ;;
+        esac
+        if [ "$_connected" = "true" ] || [ "$_healthy" = "true" ]; then
+            [ "$_in_engine" = "true" ] || return 1
+        fi
+    fi
+    case "${_process_generation_type}:${_process_generation}" in
+        null:null)
+            [ "${_process_uptime_type}:${_process_uptime}" = "null:null" ] ||
+                return 1
             ;;
-        *)
+        string:*)
             is_process_generation "$_process_generation" &&
+                [ "$_process_uptime_type" = "int" ] &&
                 is_uint "$_process_uptime" &&
                 [ "${#_process_uptime}" -le 18 ] || return 1
             ;;
+        *)
+            return 1
+            ;;
+    esac
+    for _typed_uint in \
+        "${_condition_since_type}:${_condition_since}" \
+        "${_connected_since_type}:${_connected_since}" \
+        "${_attempted_type}:${_attempted}" \
+        "${_recovery_type}:${_recovery}"
+    do
+        [ "${_typed_uint%%:*}" = "int" ] &&
+            is_uint "${_typed_uint#*:}" || return 1
+    done
+    case "${_connectivity_uptime_type}:${_connectivity_uptime}" in
+        null:null) ;;
+        int:*) is_uint "$_connectivity_uptime" || return 1 ;;
+        *) return 1 ;;
     esac
 
     # A later/faulty producer must not be able to turn a syntactically fresh
     # file into false historical uptime. Healthy and connected states require
-    # the complete set of delivery prerequisites observed by schema 2.
+    # the complete set of delivery prerequisites in the watchdog contract.
     if [ "$_connected" = "true" ]; then
+        [ "$_peer_configured" != "true" ] ||
+            [ "$_peer" = "true" ] || return 1
         [ "$_installed" = "true" ] &&
             [ "$_service_enabled" = "true" ] &&
             [ "$_service_running" = "true" ] &&
             [ "$_local_api" = "true" ] &&
             [ "$_snapshot_backend" = "Running" ] &&
             [ "$_tun" = "true" ] &&
-            [ "$_engine" = "true" ] &&
             is_tailscale_ip "$_snapshot_ip" || return 1
+        [ "$_connected_since" -gt 0 ] &&
+            [ "$_connectivity_uptime_type" = "int" ] || return 1
+    else
+        [ "$_connected_since" = "0" ] &&
+            [ "${_connectivity_uptime_type}:${_connectivity_uptime}" = \
+                "null:null" ] || return 1
     fi
 
     if [ "$_healthy" = "true" ]; then
@@ -642,6 +1644,7 @@ watchdog_snapshot_is_valid() {
             [ "$_snapshot_reason" = "ok" ] &&
             [ "$_connected" = "true" ] &&
             [ "$_control_online" = "true" ] &&
+            [ "$_health_warnings" = "0" ] &&
             is_process_generation "$_process_generation" &&
             [ "$_degraded" = "false" ] || return 1
     fi
@@ -694,34 +1697,70 @@ collect_tailscale_health() {
     RECOVERY_ATTEMPTED=0
     RECOVERY_COUNT=0
 
-    if [ -r "$WATCHDOG_STATUS" ] && command -v jsonfilter >/dev/null 2>&1; then
-        OBSERVED="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.observed_at' 2>/dev/null)"
-        if is_uint "$OBSERVED" && [ "$OBSERVED" -le $((TS + 5)) ] && [ $((TS - OBSERVED)) -le 45 ]; then
-            _snapshot_schema="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.schema' 2>/dev/null)"
-            _snapshot_status="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.status' 2>/dev/null)"
-            _snapshot_reason="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.reason' 2>/dev/null)"
-            _snapshot_backend="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.backend_state' 2>/dev/null)"
-            _snapshot_ip="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.tailscale_ip' 2>/dev/null)"
-            _healthy="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.healthy' 2>/dev/null)"
-            _connected="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connected' 2>/dev/null)"
-            _degraded="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.degraded' 2>/dev/null)"
-            _local_api="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.local_api_responsive' 2>/dev/null)"
-            _control_online="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.control_online' 2>/dev/null)"
-            _process_generation="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.process_generation' 2>/dev/null)"
-            _process_uptime="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.process_uptime_seconds' 2>/dev/null)"
-            _installed="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.installed' 2>/dev/null)"
-            _service_enabled="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.service_enabled' 2>/dev/null)"
-            _service_running="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.service_running' 2>/dev/null)"
-            _tun="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.tun_available' 2>/dev/null)"
-            _engine="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.in_engine' 2>/dev/null)"
-            KEY_EXPIRY="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.key_expiry' 2>/dev/null)"
-            _condition_since="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.condition_since_at' 2>/dev/null)"
-            _connected_since="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connected_since_at' 2>/dev/null)"
-            _connectivity_uptime="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.connectivity_uptime_seconds' 2>/dev/null)"
-            PEER_STATE="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.peer_state' 2>/dev/null)"
-            _peer="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.peer_reachable' 2>/dev/null)"
-            _attempted="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.recovery_attempted' 2>/dev/null)"
-            _recovery="$(jsonfilter -i "$WATCHDOG_STATUS" -e '@.recovery_count' 2>/dev/null)"
+    if { [ -e "$WATCHDOG_STATUS" ] || [ -L "$WATCHDOG_STATUS" ]; } &&
+       command -v jsonfilter >/dev/null 2>&1; then
+        if ! pin_watchdog_snapshot "$WATCHDOG_STATUS"; then
+            STATUS="watchdog_invalid"
+            REASON="status_invalid"
+        else
+            OBSERVED="$(watchdog_json_value '@.observed_at')"
+            _observed_type="$(watchdog_json_type '@.observed_at')"
+            if is_uint "$OBSERVED" && [ "$OBSERVED" -le $((TS + 5)) ] && [ $((TS - OBSERVED)) -le 45 ]; then
+            _snapshot_schema="$(watchdog_json_value '@.schema')"
+            _snapshot_schema_type="$(watchdog_json_type '@.schema')"
+            _snapshot_status="$(watchdog_json_value '@.status')"
+            _snapshot_status_type="$(watchdog_json_type '@.status')"
+            _snapshot_reason="$(watchdog_json_value '@.reason')"
+            _snapshot_reason_type="$(watchdog_json_type '@.reason')"
+            _snapshot_backend="$(watchdog_json_value '@.backend_state')"
+            _snapshot_backend_type="$(watchdog_json_type '@.backend_state')"
+            _snapshot_ip="$(watchdog_json_value '@.tailscale_ip')"
+            _snapshot_ip_type="$(watchdog_json_type '@.tailscale_ip')"
+            _healthy="$(watchdog_json_value '@.healthy')"
+            _healthy_type="$(watchdog_json_type '@.healthy')"
+            _connected="$(watchdog_json_value '@.connected')"
+            _connected_type="$(watchdog_json_type '@.connected')"
+            _degraded="$(watchdog_json_value '@.degraded')"
+            _degraded_type="$(watchdog_json_type '@.degraded')"
+            _local_api="$(watchdog_json_value '@.local_api_responsive')"
+            _local_api_type="$(watchdog_json_type '@.local_api_responsive')"
+            _control_online="$(watchdog_json_value '@.control_online')"
+            _control_online_type="$(watchdog_json_type '@.control_online')"
+            _process_generation="$(watchdog_json_value '@.process_generation')"
+            _process_generation_type="$(watchdog_json_type '@.process_generation')"
+            _process_uptime="$(watchdog_json_value '@.process_uptime_seconds')"
+            _process_uptime_type="$(watchdog_json_type '@.process_uptime_seconds')"
+            _installed="$(watchdog_json_value '@.installed')"
+            _installed_type="$(watchdog_json_type '@.installed')"
+            _service_enabled="$(watchdog_json_value '@.service_enabled')"
+            _service_enabled_type="$(watchdog_json_type '@.service_enabled')"
+            _service_running="$(watchdog_json_value '@.service_running')"
+            _service_running_type="$(watchdog_json_type '@.service_running')"
+            _tun="$(watchdog_json_value '@.tun_available')"
+            _tun_type="$(watchdog_json_type '@.tun_available')"
+            _health_warnings="$(watchdog_json_value '@.health_warnings')"
+            _health_warnings_type="$(watchdog_json_type '@.health_warnings')"
+            _in_engine="$(watchdog_json_value '@.in_engine')"
+            _in_engine_type="$(watchdog_json_type '@.in_engine')"
+            KEY_EXPIRY="$(watchdog_json_value '@.key_expiry')"
+            _key_expiry_type="$(watchdog_json_type '@.key_expiry')"
+            _condition_since="$(watchdog_json_value '@.condition_since_at')"
+            _condition_since_type="$(watchdog_json_type '@.condition_since_at')"
+            _connected_since="$(watchdog_json_value '@.connected_since_at')"
+            _connected_since_type="$(watchdog_json_type '@.connected_since_at')"
+            _connectivity_uptime="$(watchdog_json_value '@.connectivity_uptime_seconds')"
+            _connectivity_uptime_type="$(watchdog_json_type '@.connectivity_uptime_seconds')"
+            _peer_configured="$(watchdog_json_value '@.peer_configured')"
+            _peer_configured_type="$(watchdog_json_type '@.peer_configured')"
+            _peer_state="$(watchdog_json_value '@.peer_state')"
+            _peer_state_type="$(watchdog_json_type '@.peer_state')"
+            _peer="$(watchdog_json_value '@.peer_reachable')"
+            _peer_type="$(watchdog_json_type '@.peer_reachable')"
+            [ "$_peer_type" = "null" ] && _peer=null
+            _attempted="$(watchdog_json_value '@.recovery_attempted')"
+            _attempted_type="$(watchdog_json_type '@.recovery_attempted')"
+            _recovery="$(watchdog_json_value '@.recovery_count')"
+            _recovery_type="$(watchdog_json_type '@.recovery_count')"
             if watchdog_snapshot_is_valid; then
                 STATUS="$_snapshot_status"
                 REASON="$_snapshot_reason"
@@ -742,6 +1781,7 @@ collect_tailscale_health() {
                 is_uint "$_condition_since" && CONDITION_SINCE_AT="$_condition_since"
                 is_uint "$_connected_since" && CONNECTED_SINCE_AT="$_connected_since"
                 is_uint "$_connectivity_uptime" && CONNECTIVITY_UPTIME="$_connectivity_uptime"
+                PEER_STATE="$_peer_state"
                 [ "$_peer" = "true" ] && PEER_REACHABLE=1
                 [ "$_peer" = "false" ] && PEER_REACHABLE=0
                 is_uint "$_attempted" && RECOVERY_ATTEMPTED="$_attempted"
@@ -754,6 +1794,8 @@ collect_tailscale_health() {
         else
             STATUS="watchdog_stale"
             REASON="status_stale"
+        fi
+            release_watchdog_snapshot
         fi
     fi
 
@@ -795,12 +1837,14 @@ collect_client_traffic() {
     # Build MAC->hostname lookup from DHCP leases
     # Format: timestamp mac ip hostname clientid
     HOSTNAME_MAP=""
-    if [ -f "$DHCP_LEASES" ]; then
+    if pin_root_volatile_snapshot \
+        "$DHCP_LEASES" dhcp "$DHCP_LEASES_MAX_BYTES"; then
         while read -r exp mac ip host rest; do
             [ -n "$mac" ] && [ -n "$host" ] && [ "$host" != "*" ] && \
                 HOSTNAME_MAP="${HOSTNAME_MAP}${mac}=${host}
 "
-        done < "$DHCP_LEASES"
+        done < "$VOLATILE_SNAPSHOT_FILE"
+        release_volatile_snapshot
     fi
 
     # Build IP->MAC lookup from ARP table
@@ -819,8 +1863,12 @@ collect_client_traffic() {
     # First bytes is TX (outgoing), second is RX (incoming)
     CONNTRACK_DUMP="${CLIENT_SNAPSHOT}.conntrack"
     > "$CURRENT_FILE"
-    if ! "$TIMEOUT_CMD" "$CONNTRACK_TIMEOUT_SECONDS" \
-        "$CONNTRACK_CMD" -L > "$CONNTRACK_DUMP" 2>/dev/null; then
+    if ! (
+        ulimit -c 0 || exit 125
+        ulimit -f "$CONNTRACK_SNAPSHOT_BLOCKS" || exit 125
+        exec "$TIMEOUT_CMD" -s TERM -k 2 "$CONNTRACK_TIMEOUT_SECONDS" \
+            "$CONNTRACK_CMD" -L
+    ) > "$CONNTRACK_DUMP" 2>/dev/null; then
         rm -f "$CURRENT_FILE" "$CONNTRACK_DUMP" 2>/dev/null
         ITERATION_WRITE_FAILED=1
         logger -t jammonitor "Conntrack snapshot failed or exceeded ${CONNTRACK_TIMEOUT_SECONDS}s"
@@ -995,10 +2043,77 @@ COMMIT;"
 # Stream each log record once. The previous once-per-minute `tail -100`
 # snapshot duplicated the same ring-buffer lines thousands of times and
 # repeatedly overwrote the only archive.
+syslog_stream_guard() {
+    _syslog_parent_pid="$1"
+    _syslog_parent_ticks="$2"
+    _syslog_child_pid=""
+
+    # Open the descriptor-relative path while the verified mount pin is still
+    # available, then drop both collector-owned descriptors. The guardian and
+    # logread must not preserve either the singleton lock or the mount pin
+    # after a collector SIGKILL.
+    exec 7>>"$LOG_PATH" || return 1
+    exec 8<&-
+    exec 9>&-
+    exec 6<>"$SYSLOG_LOCK_FILE" || return 1
+
+    _syslog_child_cleanup() {
+        if [ -n "$_syslog_child_pid" ]; then
+            kill "$_syslog_child_pid" 2>/dev/null || true
+            _syslog_stop_remaining="$SYSLOG_STOP_GRACE_SECONDS"
+            while kill -0 "$_syslog_child_pid" 2>/dev/null &&
+                  [ "$_syslog_stop_remaining" -gt 0 ]
+            do
+                sleep 1 6>&- 7>&-
+                _syslog_stop_remaining=$((_syslog_stop_remaining - 1))
+            done
+            if kill -0 "$_syslog_child_pid" 2>/dev/null; then
+                kill -KILL "$_syslog_child_pid" 2>/dev/null || true
+            fi
+            wait "$_syslog_child_pid" 2>/dev/null || true
+            _syslog_child_pid=""
+        fi
+    }
+    trap 'exit 0' HUP INT TERM
+    trap '_syslog_child_cleanup' EXIT
+
+    # Serialize a prior orphan guardian and its successor. A nonblocking loop
+    # lets this guardian keep proving its own parent generation while it waits.
+    while collector_generation_is_live \
+        "$_syslog_parent_pid" "$_syslog_parent_ticks" 6>&- 7>&-
+    do
+        if "$FLOCK_CMD" -n 6 7>&-; then
+            break
+        fi
+        sleep 1 6>&- 7>&-
+    done
+    collector_generation_is_live \
+        "$_syslog_parent_pid" "$_syslog_parent_ticks" 6>&- 7>&- ||
+        return 0
+
+    # Only the append descriptor is inherited. In particular, logread cannot
+    # keep the stream lock, collector lock, or mount pin alive.
+    "$LOGREAD_CMD" -f 6>&- 8>&- 9>&- >&7 2>/dev/null &
+    _syslog_child_pid=$!
+
+    while collector_generation_is_live \
+        "$_syslog_parent_pid" "$_syslog_parent_ticks" 6>&- 7>&-
+    do
+        if ! kill -0 "$_syslog_child_pid" 2>/dev/null; then
+            _syslog_child_cleanup
+            return 0
+        fi
+        sleep 1 6>&- 7>&-
+    done
+    # Run cleanup while descriptor 6 is unquestionably still open and locked.
+    # Deferring this solely to an EXIT trap can let a shell release nonstandard
+    # descriptors before the trap has reaped logread.
+    _syslog_child_cleanup
+    return 0
+}
+
 start_syslog_stream() {
-    # The indefinite child must not inherit the singleton lock. Otherwise a
-    # SIGKILL of the collector can leave logread holding descriptor 9 forever.
-    logread -f 9>&- >> "$LOG_PATH" 2>/dev/null &
+    syslog_stream_guard "$$" "$COLLECTOR_START_TICKS" &
     SYSLOG_PID=$!
 }
 
@@ -1020,9 +2135,17 @@ maintain_syslog_stream() {
     SIZE=$(stat -c%s "$LOG_PATH" 2>/dev/null || stat -f%z "$LOG_PATH" 2>/dev/null || echo 0)
     if [ "$SIZE" -gt "$MAX_LOG_SIZE" ]; then
         stop_syslog_stream
-        ROTATED="${LOG_PATH}.$(date +%s)"
-        mv "$LOG_PATH" "$ROTATED" || return
-        start_syslog_stream
+        # One fixed archive bounds steady-state fanout. Atomic replacement
+        # also retires any legacy symlink name without following its target.
+        ROTATED="${LOG_PATH}.old"
+        if mv -f "$LOG_PATH" "$ROTATED"; then
+            start_syslog_stream
+        else
+            start_syslog_stream
+            ITERATION_WRITE_FAILED=1
+            logger -t jammonitor "Syslog rotation failed"
+            return 1
+        fi
     fi
 }
 
@@ -1077,6 +2200,16 @@ dynamic_cleanup() {
 }
 
 # Cleanup old data
+cleanup_syslog_archive() {
+    [ -f "${LOG_PATH}.old" ] || return 0
+    OLDTIME=$(stat -c%Y "${LOG_PATH}.old" 2>/dev/null ||
+        stat -f%m "${LOG_PATH}.old" 2>/dev/null || echo 0)
+    NOW=$(date +%s)
+    if [ $((NOW - OLDTIME)) -gt $((RETENTION_DAYS * 86400)) ]; then
+        rm -f "${LOG_PATH}.old"
+    fi
+}
+
 cleanup() {
     CUTOFF=$(($(date +%s) - RETENTION_DAYS * 86400))
     sqlite_write "DELETE FROM metrics WHERE ts < $CUTOFF;"
@@ -1087,16 +2220,9 @@ cleanup() {
     rollup_client_traffic
     dynamic_cleanup
 
-    # Cleanup the legacy archive and timestamped rotations.
-    if [ -f "${LOG_PATH}.old" ]; then
-        OLDTIME=$(stat -c%Y "${LOG_PATH}.old" 2>/dev/null || stat -f%m "${LOG_PATH}.old" 2>/dev/null || echo 0)
-        NOW=$(date +%s)
-        if [ $((NOW - OLDTIME)) -gt $((RETENTION_DAYS * 86400)) ]; then
-            rm -f "${LOG_PATH}.old"
-        fi
-    fi
-    find "$DATA_DIR" -type f -name 'syslog.txt.*' -mtime +"$RETENTION_DAYS" \
-        -exec rm -f {} \; 2>/dev/null
+    # Pre-start migration collapses every legacy timestamped rotation. The
+    # running producer owns only this fixed descriptor-relative archive.
+    cleanup_syslog_archive
 }
 
 # Stop after defining functions when sourced by the regression suite.
@@ -1175,7 +2301,7 @@ while true; do
         exit 1
     fi
 
-    # As with the log stream, a parent crash must release the singleton lock
-    # immediately instead of waiting for an orphaned sleep to exit.
-    sleep 60 9>&-
+    # A parent crash must not leave sleep holding either the singleton lock or
+    # the descriptor that pins the verified USB mount.
+    sleep 60 8>&- 9>&-
 done

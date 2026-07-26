@@ -34,6 +34,29 @@ class TemplateContractTests(unittest.TestCase):
         self.assertIn("Resource: !GetAtt MonitorLogGroup.Arn", TEMPLATE)
         self.assertNotIn("${MonitorLogGroup.Arn}:*", TEMPLATE)
 
+    def test_customer_key_authorizes_only_the_named_sns_topic(self):
+        self.assertIn("TopicName: !Sub '${AWS::StackName}-alerts'", TEMPLATE)
+        statement = re.search(
+            r"(?ms)^          - Sid: AllowSnsTopicEncryption\n"
+            r"(?P<body>.*?)(?=^          - Sid:|^  [A-Za-z].*:\n)",
+            TEMPLATE,
+        )
+        self.assertIsNotNone(statement)
+        body = statement.group("body")
+        topic_arn = (
+            "arn:${AWS::Partition}:sns:${AWS::Region}:"
+            "${AWS::AccountId}:${AWS::StackName}-alerts"
+        )
+        self.assertIn("Service: sns.amazonaws.com", body)
+        self.assertIn("- kms:Decrypt", body)
+        self.assertIn("- kms:GenerateDataKey*", body)
+        self.assertIn("aws:SourceArn: !Sub", body)
+        self.assertIn(
+            "kms:EncryptionContext:aws:sns:topicArn: !Sub",
+            body,
+        )
+        self.assertEqual(body.count(topic_arn), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

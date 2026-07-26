@@ -4,14 +4,130 @@ START=96
 STOP=01
 USE_PROCD=1
 
+INSTALL_FENCE="/etc/jammonitor/install-transaction"
+INSTALL_RECOVERY_ACTIVE="/etc/jammonitor/recovery/active"
+INSTALL_RECOVERY_UNRESOLVED="/etc/jammonitor/recovery/UNRESOLVED"
+
+is_lower_sha256() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+}
+
+private_regular_fence() {
+    fence_path="$1"
+    fence_max_bytes="$2"
+    [ -f "$fence_path" ] && [ ! -L "$fence_path" ] || return 1
+    [ "$(stat -c '%u:%g:%a:%h' "$fence_path" 2>/dev/null)" = \
+      "0:0:600:1" ] || return 1
+    fence_size="$(wc -c < "$fence_path" 2>/dev/null |
+        tr -d ' \r\n')" || return 1
+    case "$fence_size" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$fence_size" -gt 0 ] && [ "$fence_size" -le "$fence_max_bytes" ]
+}
+
+fence_value() {
+    fence_key="$1"
+    fence_path="$2"
+    awk -F= -v expected="$fence_key" '
+        $1 == expected {
+            count++
+            value = substr($0, length($1) + 2)
+        }
+        END {
+            if (count != 1 || value == "") exit 1
+            print value
+        }
+    ' "$fence_path"
+}
+
+installer_fence_allows_start() {
+    # Recovery residue without this fence must block future mutation, not a
+    # verified runtime after a fence-first commit or rollback cleanup.
+    if [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ]; then
+        return 0
+    fi
+
+    # JAMMONITOR_BOOT_FENCE_V1. Boot has no token and fails closed. Only the
+    # lock-owning installer exports JAMMONITOR_INSTALL_FENCE_TOKEN while the
+    # exact synchronized recovery transaction remains joinable.
+    private_regular_fence "$INSTALL_FENCE" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_FENCE" 2>/dev/null | tr -d ' ')" = "7" ] ||
+        return 1
+    [ -d "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ ! -L "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ "$(stat -c '%u:%g:%a' "$INSTALL_RECOVERY_ACTIVE" 2>/dev/null)" = \
+          "0:0:700" ] ||
+        return 1
+    private_regular_fence "$INSTALL_RECOVERY_UNRESOLVED" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_RECOVERY_UNRESOLVED" 2>/dev/null |
+        tr -d ' ')" = "2" ] &&
+        grep -Fqx 'status=mutation_started' \
+            "$INSTALL_RECOVERY_UNRESOLVED" ||
+        return 1
+
+    install_token="$(fence_value token "$INSTALL_FENCE")" || return 1
+    is_lower_sha256 "$install_token" || return 1
+    [ "${JAMMONITOR_INSTALL_FENCE_TOKEN:-}" = "$install_token" ] ||
+        return 1
+    [ "$(fence_value format "$INSTALL_FENCE")" = \
+      "jammonitor-router-install-fence-v1" ] ||
+        return 1
+    install_source_ref="$(fence_value source_ref "$INSTALL_FENCE")" ||
+        return 1
+    case "$install_source_ref" in
+        local-staged) ;;
+        *)
+            [ "${#install_source_ref}" -eq 40 ] || return 1
+            case "$install_source_ref" in
+                *[!0-9a-f]*) return 1 ;;
+            esac
+            ;;
+    esac
+    install_manifest_sha="$(
+        fence_value manifest_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_manifest_sha" || return 1
+    [ "$(fence_value recovery_bundle "$INSTALL_FENCE")" = \
+      "/etc/jammonitor/recovery/active" ] ||
+        return 1
+    install_transaction_sha="$(
+        fence_value recovery_transaction_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_transaction_sha" || return 1
+    [ "$(fence_value phase "$INSTALL_FENCE")" = "payload_mutation" ] ||
+        return 1
+    private_regular_fence \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" 4096 &&
+        [ "$(sha256sum "$INSTALL_RECOVERY_ACTIVE/transaction" |
+            awk '{print $1}')" = "$install_transaction_sha" ] ||
+        return 1
+    grep -Fqx "source_ref=$install_source_ref" \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" &&
+        grep -Fqx "manifest_sha256=$install_manifest_sha" \
+            "$INSTALL_RECOVERY_ACTIVE/transaction" ||
+        return 1
+    grep -Fqx 'recovery_bundle=/etc/jammonitor/recovery/active' \
+        "$INSTALL_RECOVERY_UNRESOLVED"
+}
+
 start_service() {
+    installer_fence_allows_start || {
+        logger -t jammonitor \
+            "FATAL: unresolved or invalid installer transaction fence; watchdog start refused"
+        return 1
+    }
     mkdir -p /var/run/jammonitor
     chmod 0700 /var/run/jammonitor
 
     procd_open_instance
     procd_set_param command /usr/bin/jammonitor-tailscale-watchdog
     # Use procd's finite default crash budget. The semantic watchdog has its
-    # own one-attempt episode latch and must not become an infinite crash loop.
+    # own bounded three-attempt episode latch and must not become an infinite
+    # crash loop.
     procd_set_param respawn
     procd_set_param stdout 1
     procd_set_param stderr 1

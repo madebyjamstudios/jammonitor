@@ -48,6 +48,8 @@ PRESERVE_PATHS='
 /etc/rc.d/S96jammonitor-tailscale-watchdog
 /etc/rc.d/K01jammonitor-tailscale-watchdog
 /etc/jammonitor/tailscale-critical-peer
+/etc/jammonitor/recovery/
+/etc/jammonitor/install-transaction
 /etc/jammonitor_clients.json
 /etc/jammonitor_wans
 /usr/bin/jammonitor-tailscale-upgrade
@@ -72,10 +74,28 @@ BACKUP_INDEX=""
 TRANSACTION_ACTIVE=0
 TRANSACTION_COMMITTED=0
 BACKUP_READY=0
+RECOVERY_BUNDLE_CREATED=0
 MUTATION_STARTED=0
 MAINTENANCE_CREATED=0
 MAINTENANCE_FILE="/var/run/jammonitor/tailscale-maintenance"
+MAINTENANCE_EXPECTED_EXPIRY=""
+MAINTENANCE_TEMP=""
 SERVICE_TIMEOUT=30
+HISTORY_READY_TIMEOUT=90
+WATCHDOG_READY_TIMEOUT=60
+READINESS_STATUS_MAX_BYTES=16384
+HISTORY_STATUS="/var/run/jammonitor/collector-status.json"
+WATCHDOG_STATUS="/var/run/jammonitor/tailscale-watchdog.json"
+FETCH_TIMEOUT=120
+# POSIX specifies 512-byte ulimit blocks, while some host shells use 1024.
+# Size the kernel fence for the larger unit so neither interpretation can
+# exceed the post-fetch byte ceiling.
+FETCH_FILE_BLOCKS=4096
+FETCH_MAX_BYTES=4194304
+FETCH_SCRIPT_BLOCKS=1024
+FETCH_SCRIPT_MAX_BYTES=1048576
+FETCH_MANIFEST_BLOCKS=64
+FETCH_MANIFEST_MAX_BYTES=65536
 # Eleven bounded forward service operations, eighteen bounded rollback
 # state/action/state operations (including a transient migration daemon),
 # five minutes for the small local
@@ -102,9 +122,23 @@ INSTALL_LOCK_HELD=0
 INIT_DIR="/etc/init.d"
 ROLLBACK_INCOMPLETE=0
 PRESERVE_WORK_DIR=0
-RECOVERY_EVIDENCE="/var/run/jammonitor/router-install-rollback-failed"
+RECOVERY_PARENT="/etc/jammonitor"
+RECOVERY_ROOT="$RECOVERY_PARENT/recovery"
+RECOVERY_BUNDLE="$RECOVERY_ROOT/active"
+RECOVERY_EVIDENCE="$RECOVERY_ROOT/UNRESOLVED"
+RECOVERY_EXPECTED_UID=0
+RECOVERY_EXPECTED_GID=0
+INSTALL_FENCE="$RECOVERY_PARENT/install-transaction"
+INSTALL_FENCE_TEMP=""
+INSTALL_FENCE_TOKEN=""
+INSTALL_FENCE_SHA256=""
+INSTALL_FENCE_CREATED=0
+UPGRADE_PERSISTENT_MOUNT="/mnt/data"
+UPGRADE_RECOVERY_ROOT="$UPGRADE_PERSISTENT_MOUNT/.jammonitor-tailscale-upgrade"
 INSTALLER_TESTING="${JAMMONITOR_INSTALL_TESTING:-0}"
 INSTALLER_LIB_ONLY="${JAMMONITOR_INSTALL_LIB_ONLY:-0}"
+READINESS_SNAPSHOT=""
+READINESS_IDENTITY=""
 
 case "$INSTALLER_TESTING:$INSTALLER_LIB_ONLY" in
     0:0|1:0|1:1)
@@ -151,6 +185,34 @@ is_uint() {
     esac
 }
 
+is_bounded_uint() {
+    bounded_uint="${1:-}"
+    max_digits="${2:-11}"
+    is_uint "$bounded_uint" &&
+        [ "${#bounded_uint}" -le "$max_digits" ]
+}
+
+is_process_generation() {
+    process_generation="${1:-}"
+    [ -n "$process_generation" ] &&
+        [ "${#process_generation}" -le 64 ] ||
+        return 1
+    case "$process_generation" in
+        *:*)
+            generation_pid="${process_generation%%:*}"
+            generation_ticks="${process_generation#*:}"
+            case "$generation_ticks" in *:*) return 1 ;; esac
+            is_bounded_uint "$generation_pid" 18 &&
+                is_bounded_uint "$generation_ticks" 18 &&
+                [ "$generation_pid" -gt 1 ] &&
+                [ "$generation_ticks" -gt 0 ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 is_hex_length() {
     value="$1"
     length="$2"
@@ -163,6 +225,105 @@ is_hex_length() {
 require_command() {
     command -v "$1" >/dev/null 2>&1 ||
         die "required command is unavailable: $1"
+}
+
+readiness_expected_owner() {
+    if [ "$INSTALLER_TESTING" = "1" ]; then
+        printf '%s:%s' "$(id -u)" "$(id -g)"
+    else
+        printf '0:0'
+    fi
+}
+
+capture_secure_status_snapshot() {
+    status_source="$1"
+    status_label="$2"
+    status_snapshot="$WORK_DIR/.readiness-${status_label}.$$"
+    status_expected_owner="$(readiness_expected_owner)"
+
+    READINESS_SNAPSHOT=""
+    READINESS_IDENTITY=""
+    [ -f "$status_source" ] && [ ! -L "$status_source" ] || return 1
+    status_metadata_before="$(
+        stat -c '%u:%g:%a:%h:%s:%d:%i' "$status_source" 2>/dev/null
+    )" || return 1
+    old_ifs="$IFS"
+    IFS=:
+    set -- $status_metadata_before
+    IFS="$old_ifs"
+    [ "$#" -eq 7 ] || return 1
+    status_uid="$1"
+    status_gid="$2"
+    status_mode="$3"
+    status_links="$4"
+    status_size="$5"
+    status_device="$6"
+    status_inode="$7"
+    [ "$status_uid:$status_gid" = "$status_expected_owner" ] &&
+        [ "$status_mode" = "600" ] &&
+        [ "$status_links" = "1" ] &&
+        is_bounded_uint "$status_size" 8 &&
+        [ "$status_size" -gt 2 ] &&
+        [ "$status_size" -le "$READINESS_STATUS_MAX_BYTES" ] ||
+        return 1
+
+    status_sha_before="$(sha256sum "$status_source" 2>/dev/null |
+        awk '{print $1}')" || return 1
+    is_hex_length "$status_sha_before" 64 || return 1
+    rm -f -- "$status_snapshot" 2>/dev/null || return 1
+    (
+        umask 077
+        cp -- "$status_source" "$status_snapshot"
+    ) || {
+        rm -f -- "$status_snapshot" 2>/dev/null || true
+        return 1
+    }
+    chmod 0600 "$status_snapshot" || {
+        rm -f -- "$status_snapshot" 2>/dev/null || true
+        return 1
+    }
+    status_metadata_after="$(
+        stat -c '%u:%g:%a:%h:%s:%d:%i' "$status_source" 2>/dev/null
+    )" || {
+        rm -f -- "$status_snapshot" 2>/dev/null || true
+        return 1
+    }
+    status_sha_after="$(sha256sum "$status_source" 2>/dev/null |
+        awk '{print $1}')" || {
+        rm -f -- "$status_snapshot" 2>/dev/null || true
+        return 1
+    }
+    status_snapshot_sha="$(sha256sum "$status_snapshot" 2>/dev/null |
+        awk '{print $1}')" || {
+        rm -f -- "$status_snapshot" 2>/dev/null || true
+        return 1
+    }
+    [ "$status_metadata_before" = "$status_metadata_after" ] &&
+        [ "$status_sha_before" = "$status_sha_after" ] &&
+        [ "$status_sha_before" = "$status_snapshot_sha" ] &&
+        [ "$(wc -l < "$status_snapshot" 2>/dev/null | tr -d ' ')" = "1" ] ||
+        {
+            rm -f -- "$status_snapshot" 2>/dev/null || true
+            return 1
+        }
+    READINESS_SNAPSHOT="$status_snapshot"
+    READINESS_IDENTITY="$status_device:$status_inode"
+}
+
+readiness_json_value() {
+    jsonfilter -i "$READINESS_SNAPSHOT" -e "$1" 2>/dev/null
+}
+
+readiness_json_type() {
+    jsonfilter -i "$READINESS_SNAPSHOT" -t "$1" 2>/dev/null
+}
+
+readiness_json_exact() {
+    json_path="$1"
+    expected_type="$2"
+    expected_value="$3"
+    [ "$(readiness_json_type "$json_path")" = "$expected_type" ] &&
+        [ "$(readiness_json_value "$json_path")" = "$expected_value" ]
 }
 
 target_for_source() {
@@ -259,17 +420,59 @@ validate_internal_payload_map() {
 fetch_file() {
     url="$1"
     output="$2"
+    fetch_name="${url##*/}"
+    case "$fetch_name" in
+        router-files.sha256)
+            fetch_blocks="$FETCH_MANIFEST_BLOCKS"
+            fetch_max_bytes="$FETCH_MANIFEST_MAX_BYTES"
+            ;;
+        jammonitor.htm|jammonitor.js|jammonitor-i18n.js)
+            fetch_blocks="$FETCH_FILE_BLOCKS"
+            fetch_max_bytes="$FETCH_MAX_BYTES"
+            ;;
+        *)
+            fetch_blocks="$FETCH_SCRIPT_BLOCKS"
+            fetch_max_bytes="$FETCH_SCRIPT_MAX_BYTES"
+            ;;
+    esac
 
     if command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$output" "$url"
+        (
+            exec 7>&- 9>&-
+            timeout -s TERM -k 2 "$FETCH_TIMEOUT" \
+                /bin/sh -c \
+                'ulimit -f "$1" || exit 125; shift; exec "$@"' \
+                jammonitor-fetch-limit "$fetch_blocks" \
+                uclient-fetch -q -O "$output" "$url"
+        ) || return 1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$output" "$url"
+        (
+            exec 7>&- 9>&-
+            timeout -s TERM -k 2 "$FETCH_TIMEOUT" \
+                /bin/sh -c \
+                'ulimit -f "$1" || exit 125; shift; exec "$@"' \
+                jammonitor-fetch-limit "$fetch_blocks" \
+                wget -q -T "$FETCH_TIMEOUT" -O "$output" "$url"
+        ) || return 1
     elif command -v curl >/dev/null 2>&1; then
-        curl --fail --silent --show-error --location \
-            --proto '=https' --tlsv1.2 "$url" -o "$output"
+        (
+            exec 7>&- 9>&-
+            timeout -s TERM -k 2 "$FETCH_TIMEOUT" \
+                /bin/sh -c \
+                'ulimit -f "$1" || exit 125; shift; exec "$@"' \
+                jammonitor-fetch-limit "$fetch_blocks" curl \
+                --fail --silent --show-error --location \
+                --connect-timeout 15 --max-time "$FETCH_TIMEOUT" \
+                --proto '=https' --tlsv1.2 "$url" -o "$output"
+        ) || return 1
     else
         die "uclient-fetch, wget, or curl is required for remote mode"
     fi
+    fetched_size="$(wc -c < "$output" 2>/dev/null | tr -d ' ')" ||
+        return 1
+    is_uint "$fetched_size" &&
+        [ "$fetched_size" -gt 0 ] &&
+        [ "$fetched_size" -le "$fetch_max_bytes" ]
 }
 
 safe_remove_work_dir() {
@@ -283,6 +486,332 @@ safe_remove_work_dir() {
             warn "refusing to remove unexpected work directory: $WORK_DIR"
             ;;
     esac
+}
+
+validate_recovery_layout() {
+    case "$RECOVERY_PARENT" in
+        /*) ;;
+        *) die "recovery parent must be an absolute path" ;;
+    esac
+    [ "$RECOVERY_PARENT" != "/" ] ||
+        die "recovery parent must not be the filesystem root"
+    [ "$RECOVERY_ROOT" = "$RECOVERY_PARENT/recovery" ] ||
+        die "recovery root is outside the protected recovery parent"
+    [ "$RECOVERY_BUNDLE" = "$RECOVERY_ROOT/active" ] ||
+        die "recovery bundle is outside the protected recovery root"
+    [ "$RECOVERY_EVIDENCE" = "$RECOVERY_ROOT/UNRESOLVED" ] ||
+        die "recovery evidence is outside the protected recovery root"
+}
+
+recovery_directory_is_owned() {
+    recovery_directory="$1"
+    [ -d "$recovery_directory" ] && [ ! -L "$recovery_directory" ] ||
+        return 1
+    recovery_owner="$(stat -c '%u:%g' "$recovery_directory" 2>/dev/null)" ||
+        return 1
+    [ "$recovery_owner" = \
+      "$RECOVERY_EXPECTED_UID:$RECOVERY_EXPECTED_GID" ]
+}
+
+inspect_recovery_storage() {
+    validate_recovery_layout
+    for recovery_directory in "$RECOVERY_PARENT" "$RECOVERY_ROOT"; do
+        if [ -e "$recovery_directory" ] ||
+           [ -L "$recovery_directory" ]; then
+            recovery_directory_is_owned "$recovery_directory" ||
+                die "recovery path is not an owned non-symlink directory: $recovery_directory"
+        fi
+    done
+}
+
+ensure_private_recovery_directory() {
+    recovery_directory="$1"
+    if [ -e "$recovery_directory" ] || [ -L "$recovery_directory" ]; then
+        recovery_directory_is_owned "$recovery_directory" ||
+            die "recovery path is not an owned non-symlink directory: $recovery_directory"
+    else
+        mkdir "$recovery_directory" ||
+            die "could not create recovery directory: $recovery_directory"
+    fi
+    chmod 0700 "$recovery_directory" ||
+        die "could not protect recovery directory: $recovery_directory"
+    recovery_directory_is_owned "$recovery_directory" ||
+        die "recovery directory ownership is unsafe: $recovery_directory"
+    recovery_mode="$(stat -c '%a' "$recovery_directory" 2>/dev/null)" ||
+        die "could not read recovery directory mode: $recovery_directory"
+    [ "$recovery_mode" = "700" ] ||
+        die "recovery directory is not mode 0700: $recovery_directory"
+}
+
+sync_recovery_storage() {
+    sync
+}
+
+write_recovery_status() {
+    recovery_status="$1"
+    [ "$RECOVERY_BUNDLE_CREATED" -eq 1 ] ||
+        die "persistent recovery bundle is unavailable"
+    recovery_directory_is_owned "$RECOVERY_BUNDLE" ||
+        die "persistent recovery bundle is not an owned non-symlink directory"
+
+    status_tmp="$(mktemp "$RECOVERY_BUNDLE/.STATUS.XXXXXX")" ||
+        die "could not stage recovery status"
+    {
+        printf 'status=%s\n' "$recovery_status"
+        printf 'recovery_bundle=%s\n' "$RECOVERY_BUNDLE"
+        printf 'backup_index=%s\n' "$BACKUP_INDEX"
+        printf 'maintenance_marker=%s\n' "$MAINTENANCE_FILE"
+        printf 'updated_epoch=%s\n' \
+            "$(date +%s 2>/dev/null || printf unknown)"
+    } > "$status_tmp" ||
+        die "could not write recovery status"
+    chmod 0600 "$status_tmp" ||
+        die "could not protect recovery status"
+    mv -f -- "$status_tmp" "$RECOVERY_BUNDLE/STATUS" ||
+        die "could not publish recovery status"
+
+    evidence_tmp="$(mktemp "$RECOVERY_ROOT/.UNRESOLVED.XXXXXX")" ||
+        die "could not stage recovery evidence"
+    {
+        printf 'status=%s\n' "$recovery_status"
+        printf 'recovery_bundle=%s\n' "$RECOVERY_BUNDLE"
+    } > "$evidence_tmp" ||
+        die "could not write recovery evidence"
+    chmod 0600 "$evidence_tmp" ||
+        die "could not protect recovery evidence"
+    mv -f -- "$evidence_tmp" "$RECOVERY_EVIDENCE" ||
+        die "could not publish recovery evidence"
+    sync_recovery_storage ||
+        die "could not synchronize persistent recovery storage"
+}
+
+prepare_recovery_bundle() {
+    inspect_recovery_storage
+    ensure_private_recovery_directory "$RECOVERY_PARENT"
+    ensure_private_recovery_directory "$RECOVERY_ROOT"
+
+    if [ -e "$RECOVERY_BUNDLE" ] || [ -L "$RECOVERY_BUNDLE" ] ||
+       [ -e "$RECOVERY_EVIDENCE" ] || [ -L "$RECOVERY_EVIDENCE" ]; then
+        die "an unresolved prior installer transaction requires operator recovery"
+    fi
+
+    mkdir "$RECOVERY_BUNDLE" ||
+        die "could not create persistent recovery bundle"
+    RECOVERY_BUNDLE_CREATED=1
+    chmod 0700 "$RECOVERY_BUNDLE" ||
+        die "could not protect persistent recovery bundle"
+    recovery_directory_is_owned "$RECOVERY_BUNDLE" ||
+        die "persistent recovery bundle ownership is unsafe"
+
+    BACKUP_ROOT="$RECOVERY_BUNDLE/backup"
+    BACKUP_INDEX="$RECOVERY_BUNDLE/backup.index"
+    mkdir "$BACKUP_ROOT" ||
+        die "could not create persistent rollback backup directory"
+    chmod 0700 "$BACKUP_ROOT" ||
+        die "could not protect persistent rollback backup directory"
+    recovery_directory_is_owned "$BACKUP_ROOT" ||
+        die "persistent rollback backup directory ownership is unsafe"
+    : > "$BACKUP_INDEX" ||
+        die "could not create persistent rollback index"
+    chmod 0600 "$BACKUP_INDEX" ||
+        die "could not protect persistent rollback index"
+    write_recovery_status preparing
+}
+
+seal_recovery_bundle() {
+    [ -f "$BACKUP_INDEX" ] && [ ! -L "$BACKUP_INDEX" ] ||
+        die "persistent rollback index is not a regular non-symlink file"
+    recovery_directory_is_owned "$BACKUP_ROOT" ||
+        die "persistent rollback backup directory is unsafe"
+
+    metadata_tmp="$(mktemp "$RECOVERY_BUNDLE/.transaction.XXXXXX")" ||
+        die "could not stage recovery transaction metadata"
+    {
+        printf 'source_ref=%s\n' "$REF"
+        printf 'manifest_sha256=%s\n' "$VERIFIED_MANIFEST_SHA256"
+        printf 'legacy_present=%s\n' "$LEGACY_WAS_PRESENT"
+        printf 'legacy_running=%s\n' "$LEGACY_WAS_RUNNING"
+        printf 'history_present=%s\n' "$HISTORY_WAS_PRESENT"
+        printf 'history_running=%s\n' "$HISTORY_WAS_RUNNING"
+        printf 'watchdog_present=%s\n' "$WATCHDOG_WAS_PRESENT"
+        printf 'watchdog_running=%s\n' "$WATCHDOG_WAS_RUNNING"
+        printf 'tailscale_present=%s\n' "$TAILSCALE_WAS_PRESENT"
+        printf 'tailscale_running=%s\n' "$TAILSCALE_WAS_RUNNING"
+        printf 'uhttpd_present=%s\n' "$UHTTPD_WAS_PRESENT"
+        printf 'uhttpd_running=%s\n' "$UHTTPD_WAS_RUNNING"
+    } > "$metadata_tmp" ||
+        die "could not write recovery transaction metadata"
+    chmod 0600 "$metadata_tmp" ||
+        die "could not protect recovery transaction metadata"
+    mv -f -- "$metadata_tmp" "$RECOVERY_BUNDLE/transaction" ||
+        die "could not publish recovery transaction metadata"
+
+    # Flush every verified backup, index record, and captured service state
+    # before declaring the write-ahead bundle ready for a live mutation.
+    sync_recovery_storage ||
+        die "could not synchronize persistent recovery storage"
+    ready_tmp="$(mktemp "$RECOVERY_BUNDLE/.READY.XXXXXX")" ||
+        die "could not stage the recovery readiness marker"
+    printf 'ready\n' > "$ready_tmp" ||
+        die "could not write the recovery readiness marker"
+    chmod 0600 "$ready_tmp" ||
+        die "could not protect the recovery readiness marker"
+    mv -f -- "$ready_tmp" "$RECOVERY_BUNDLE/READY" ||
+        die "could not publish the recovery readiness marker"
+    write_recovery_status ready
+    BACKUP_READY=1
+}
+
+generate_install_fence_token() {
+    fence_seed="$RECOVERY_BUNDLE/.install-fence-seed.$$"
+    [ ! -e "$fence_seed" ] && [ ! -L "$fence_seed" ] || return 1
+    (
+        umask 077
+        dd if=/dev/urandom of="$fence_seed" bs=32 count=1 2>/dev/null
+    ) || return 1
+    [ "$(wc -c < "$fence_seed" 2>/dev/null | tr -d ' ')" = "32" ] ||
+        return 1
+    INSTALL_FENCE_TOKEN="$(sha256sum "$fence_seed" | awk '{print $1}')"
+    rm -f -- "$fence_seed"
+    is_hex_length "$INSTALL_FENCE_TOKEN" 64 || return 1
+    INSTALL_FENCE_TOKEN="$(printf '%s' "$INSTALL_FENCE_TOKEN" |
+        tr 'A-F' 'a-f')"
+}
+
+install_fence_matches_owned_copy() {
+    [ "$INSTALL_FENCE_CREATED" -eq 1 ] &&
+        is_hex_length "$INSTALL_FENCE_SHA256" 64 &&
+        [ -f "$INSTALL_FENCE" ] &&
+        [ ! -L "$INSTALL_FENCE" ] ||
+        return 1
+    if [ "$INSTALLER_TESTING" = "1" ]; then
+        fence_uid="$(id -u)"
+        fence_gid="$(id -g)"
+    else
+        fence_uid=0
+        fence_gid=0
+    fi
+    [ "$(stat -c '%u:%g:%a:%h' "$INSTALL_FENCE" 2>/dev/null)" = \
+      "$fence_uid:$fence_gid:600:1" ] &&
+        [ "$(sha256sum "$INSTALL_FENCE" | awk '{print $1}')" = \
+          "$INSTALL_FENCE_SHA256" ]
+}
+
+publish_install_fence() {
+    [ "$BACKUP_READY" -eq 1 ] &&
+        [ -f "$RECOVERY_BUNDLE/transaction" ] &&
+        [ ! -L "$RECOVERY_BUNDLE/transaction" ] &&
+        [ -f "$RECOVERY_EVIDENCE" ] &&
+        [ ! -L "$RECOVERY_EVIDENCE" ] ||
+        die "installer recovery evidence is incomplete before boot-fence publication"
+    [ "$INSTALL_FENCE" = "$RECOVERY_PARENT/install-transaction" ] ||
+        die "installer boot fence is outside the protected recovery parent"
+    [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ] ||
+        die "an unresolved installer boot fence requires operator recovery"
+    generate_install_fence_token ||
+        die "could not generate the installer boot-fence token"
+    fence_transaction_sha="$(
+        sha256sum "$RECOVERY_BUNDLE/transaction" | awk '{print $1}'
+    )"
+    is_hex_length "$fence_transaction_sha" 64 ||
+        die "could not fingerprint the installer recovery transaction"
+
+    INSTALL_FENCE_TEMP="${INSTALL_FENCE}.tmp.$$"
+    [ ! -e "$INSTALL_FENCE_TEMP" ] && [ ! -L "$INSTALL_FENCE_TEMP" ] ||
+        die "installer boot-fence temporary path already exists"
+    (
+        set -C
+        umask 077
+        {
+            printf 'format=jammonitor-router-install-fence-v1\n'
+            printf 'token=%s\n' "$INSTALL_FENCE_TOKEN"
+            printf 'source_ref=%s\n' "$REF"
+            printf 'manifest_sha256=%s\n' "$VERIFIED_MANIFEST_SHA256"
+            printf 'recovery_bundle=/etc/jammonitor/recovery/active\n'
+            printf 'recovery_transaction_sha256=%s\n' \
+                "$fence_transaction_sha"
+            printf 'phase=payload_mutation\n'
+        } > "$INSTALL_FENCE_TEMP"
+    ) || die "could not stage the installer boot fence"
+    chmod 0600 "$INSTALL_FENCE_TEMP" ||
+        die "could not protect the installer boot fence"
+    if [ "$INSTALLER_TESTING" != "1" ]; then
+        chown 0:0 "$INSTALL_FENCE_TEMP" ||
+            die "could not assign the installer boot fence to root"
+    fi
+    mv -f -- "$INSTALL_FENCE_TEMP" "$INSTALL_FENCE" ||
+        die "could not publish the installer boot fence"
+    INSTALL_FENCE_TEMP=""
+    INSTALL_FENCE_CREATED=1
+    INSTALL_FENCE_SHA256="$(
+        sha256sum "$INSTALL_FENCE" | awk '{print $1}'
+    )"
+    is_hex_length "$INSTALL_FENCE_SHA256" 64 &&
+        [ "$(wc -l < "$INSTALL_FENCE" 2>/dev/null | tr -d ' ')" = "7" ] &&
+        install_fence_matches_owned_copy ||
+        die "published installer boot fence failed exact verification"
+    sync_recovery_storage ||
+        die "could not durably publish the installer boot fence"
+    install_fence_matches_owned_copy ||
+        die "installer boot fence changed after synchronization"
+}
+
+clear_install_fence() {
+    expected_status="${1:-}"
+    [ "$INSTALL_FENCE_CREATED" -eq 1 ] || return 0
+    case "$expected_status" in
+        committed|rolled_back) ;;
+        *) return 1 ;;
+    esac
+    [ -d "$RECOVERY_BUNDLE" ] && [ ! -L "$RECOVERY_BUNDLE" ] &&
+        [ -f "$RECOVERY_EVIDENCE" ] &&
+        [ ! -L "$RECOVERY_EVIDENCE" ] &&
+        grep -Fqx "status=$expected_status" \
+            "$RECOVERY_EVIDENCE" ||
+        return 1
+    install_fence_matches_owned_copy || return 1
+    rm -f -- "$INSTALL_FENCE" || return 1
+    [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ] || return 1
+    sync_recovery_storage || return 1
+    INSTALL_FENCE_CREATED=0
+    INSTALL_FENCE_TOKEN=""
+    INSTALL_FENCE_SHA256=""
+}
+
+begin_live_mutation() {
+    [ "$BACKUP_READY" -eq 1 ] ||
+        die "persistent recovery bundle was not sealed before mutation"
+    [ -f "$RECOVERY_BUNDLE/READY" ] &&
+       [ ! -L "$RECOVERY_BUNDLE/READY" ] ||
+        die "persistent recovery readiness marker is unavailable"
+    # This synchronized write is the final write-ahead boundary. A SIGKILL or
+    # power loss after it leaves /etc recovery evidence that blocks retries.
+    write_recovery_status mutation_started
+    MUTATION_STARTED=1
+}
+
+clear_recovery_bundle() {
+    [ "$RECOVERY_BUNDLE_CREATED" -eq 1 ] || return 0
+    validate_recovery_layout
+    recovery_directory_is_owned "$RECOVERY_ROOT" || return 1
+    recovery_directory_is_owned "$RECOVERY_BUNDLE" || return 1
+    # On rollback this flushes every restored target before either durable
+    # unresolved marker is removed. On commit it is an additional ordering
+    # fence after the synchronized committed status.
+    sync_recovery_storage || return 1
+    if [ -e "$RECOVERY_EVIDENCE" ] || [ -L "$RECOVERY_EVIDENCE" ]; then
+        [ -f "$RECOVERY_EVIDENCE" ] &&
+           [ ! -L "$RECOVERY_EVIDENCE" ] || return 1
+        rm -f -- "$RECOVERY_EVIDENCE" || return 1
+        sync_recovery_storage || return 1
+    fi
+    rm -rf -- "$RECOVERY_BUNDLE" || return 1
+    [ ! -e "$RECOVERY_BUNDLE" ] && [ ! -L "$RECOVERY_BUNDLE" ] ||
+        return 1
+    sync_recovery_storage || return 1
+    RECOVERY_BUNDLE_CREATED=0
+    BACKUP_READY=0
+    return 0
 }
 
 path_matches_proof() {
@@ -378,7 +907,14 @@ run_service_action() {
     action="$2"
     init_script="$(service_file "$service")"
     [ -x "$init_script" ] || return 1
-    timeout "$SERVICE_TIMEOUT" "$init_script" "$action"
+    if [ "$INSTALL_FENCE_CREATED" -eq 1 ]; then
+        install_fence_matches_owned_copy || return 1
+        JAMMONITOR_INSTALL_FENCE_TOKEN="$INSTALL_FENCE_TOKEN" \
+            timeout -s TERM -k 2 "$SERVICE_TIMEOUT" \
+                "$init_script" "$action"
+    else
+        timeout -s TERM -k 2 "$SERVICE_TIMEOUT" "$init_script" "$action"
+    fi
 }
 
 SERVICE_STATE=""
@@ -386,7 +922,7 @@ read_service_state() {
     service="$1"
     init_script="$(service_file "$service")"
     [ -x "$init_script" ] || return 1
-    if timeout "$SERVICE_TIMEOUT" "$init_script" running \
+    if timeout -s TERM -k 2 "$SERVICE_TIMEOUT" "$init_script" running \
         >/dev/null 2>&1; then
         SERVICE_STATE="running"
         return 0
@@ -398,6 +934,163 @@ read_service_state() {
         return 0
     fi
     SERVICE_STATE="unknown"
+    return 1
+}
+
+history_snapshot_is_ready() {
+    restart_epoch="$1"
+    readiness_json_exact '@.schema' int 1 &&
+        readiness_json_exact '@.healthy' boolean true &&
+        readiness_json_exact '@.mounted' boolean true &&
+        readiness_json_exact '@.writable' boolean true &&
+        readiness_json_exact '@.database_quick_check' string ok ||
+        return 1
+
+    history_observed="$(readiness_json_value '@.observed_at')" &&
+        [ "$(readiness_json_type '@.observed_at')" = "int" ] &&
+        history_started="$(readiness_json_value '@.started_at')" &&
+        [ "$(readiness_json_type '@.started_at')" = "int" ] &&
+        history_last_sample="$(readiness_json_value '@.last_sample_at')" &&
+        [ "$(readiness_json_type '@.last_sample_at')" = "int" ] &&
+        history_last_success="$(readiness_json_value '@.last_success_at')" &&
+        [ "$(readiness_json_type '@.last_success_at')" = "int" ] &&
+        history_sample_age="$(readiness_json_value '@.sample_age_secs')" &&
+        [ "$(readiness_json_type '@.sample_age_secs')" = "int" ] &&
+        history_failures="$(
+            readiness_json_value '@.consecutive_write_failures'
+        )" &&
+        [ "$(readiness_json_type '@.consecutive_write_failures')" = "int" ] ||
+        return 1
+    for history_uint in \
+        "$history_observed" "$history_started" "$history_last_sample" \
+        "$history_last_success" "$history_sample_age" "$history_failures"
+    do
+        is_bounded_uint "$history_uint" 11 || return 1
+    done
+    [ "$history_started" -ge "$restart_epoch" ] &&
+        [ "$history_observed" -ge "$history_started" ] &&
+        [ "$history_last_sample" -ge "$history_started" ] &&
+        [ "$history_last_success" -ge "$history_started" ] &&
+        [ "$history_sample_age" -le 180 ] &&
+        [ "$history_failures" -eq 0 ] ||
+        return 1
+
+    history_mount_source="$(readiness_json_value '@.mount_source')" &&
+        [ "$(readiness_json_type '@.mount_source')" = "string" ] &&
+        history_mount_uuid="$(readiness_json_value '@.mount_uuid')" &&
+        [ "$(readiness_json_type '@.mount_uuid')" = "string" ] &&
+        history_kernel_id="$(readiness_json_value '@.mount_kernel_id')" &&
+        [ "$(readiness_json_type '@.mount_kernel_id')" = "string" ] &&
+        history_mount_generation="$(
+            readiness_json_value '@.mount_generation'
+        )" &&
+        [ "$(readiness_json_type '@.mount_generation')" = "string" ] ||
+        return 1
+    case "$history_mount_source" in
+        /dev/sd[a-z][1-9]|/dev/sd[a-z][1-9][0-9]*) ;;
+        *) return 1 ;;
+    esac
+    [ -n "$history_mount_uuid" ] &&
+        [ "${#history_mount_uuid}" -le 64 ] ||
+        return 1
+    case "$history_mount_uuid" in *[!A-Fa-f0-9-]*) return 1 ;; esac
+    case "$history_kernel_id" in
+        *:*)
+            history_kernel_major="${history_kernel_id%%:*}"
+            history_kernel_minor="${history_kernel_id#*:}"
+            case "$history_kernel_minor" in *:*) return 1 ;; esac
+            is_bounded_uint "$history_kernel_major" 10 &&
+                is_bounded_uint "$history_kernel_minor" 10 ||
+                return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    is_bounded_uint "$history_mount_generation" 18
+}
+
+watchdog_snapshot_is_ready() {
+    restart_epoch="$1"
+    readiness_json_exact '@.schema' int 3 &&
+        readiness_json_exact '@.status' string running &&
+        readiness_json_exact '@.backend_state' string Running &&
+        readiness_json_exact '@.installed' boolean true &&
+        readiness_json_exact '@.service_enabled' boolean true &&
+        readiness_json_exact '@.service_running' boolean true &&
+        readiness_json_exact '@.local_api_responsive' boolean true &&
+        readiness_json_exact '@.connected' boolean true &&
+        readiness_json_exact '@.control_online' boolean true &&
+        readiness_json_exact '@.tun_available' boolean true &&
+        readiness_json_exact '@.healthy' boolean true ||
+        return 1
+    watchdog_observed="$(readiness_json_value '@.observed_at')" &&
+        [ "$(readiness_json_type '@.observed_at')" = "int" ] &&
+        is_bounded_uint "$watchdog_observed" 11 &&
+        [ "$watchdog_observed" -ge "$restart_epoch" ] ||
+        return 1
+    watchdog_generation="$(readiness_json_value '@.process_generation')" &&
+        [ "$(readiness_json_type '@.process_generation')" = "string" ] &&
+        is_process_generation "$watchdog_generation" ||
+        return 1
+    watchdog_peer_configured="$(
+        readiness_json_value '@.peer_configured'
+    )" &&
+        [ "$(readiness_json_type '@.peer_configured')" = "boolean" ] &&
+        watchdog_peer_state="$(readiness_json_value '@.peer_state')" &&
+        [ "$(readiness_json_type '@.peer_state')" = "string" ] ||
+        return 1
+    case "$watchdog_peer_configured:$watchdog_peer_state" in
+        true:reachable)
+            readiness_json_exact '@.peer_reachable' boolean true
+            ;;
+        false:not_configured)
+            readiness_json_exact '@.peer_reachable' null null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+wait_history_readiness() {
+    restart_epoch="$1"
+    readiness_deadline=$((restart_epoch + HISTORY_READY_TIMEOUT))
+    while [ "$(date +%s)" -le "$readiness_deadline" ]; do
+        if capture_secure_status_snapshot "$HISTORY_STATUS" history &&
+           history_snapshot_is_ready "$restart_epoch" &&
+           read_service_state jammonitor-history &&
+           [ "$SERVICE_STATE" = "running" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_watchdog_readiness() {
+    restart_epoch="$1"
+    readiness_deadline=$((restart_epoch + WATCHDOG_READY_TIMEOUT))
+    first_identity=""
+    first_observed=""
+    first_generation=""
+    while [ "$(date +%s)" -le "$readiness_deadline" ]; do
+        if capture_secure_status_snapshot "$WATCHDOG_STATUS" watchdog &&
+           watchdog_snapshot_is_ready "$restart_epoch" &&
+           read_service_state jammonitor-tailscale-watchdog &&
+           [ "$SERVICE_STATE" = "running" ]; then
+            if [ -z "$first_identity" ]; then
+                first_identity="$READINESS_IDENTITY"
+                first_observed="$watchdog_observed"
+                first_generation="$watchdog_generation"
+            elif [ "$READINESS_IDENTITY" != "$first_identity" ] &&
+                 [ "$watchdog_observed" -gt "$first_observed" ] &&
+                 [ "$watchdog_generation" = "$first_generation" ]; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
     return 1
 }
 
@@ -439,38 +1132,104 @@ stop_transient_service() {
 
 mark_rollback_incomplete() {
     ROLLBACK_INCOMPLETE=1
-    PRESERVE_WORK_DIR=1
-    bundle_evidence="$WORK_DIR/ROLLBACK_INCOMPLETE"
-    {
-        printf 'status=rollback_incomplete\n'
-        printf 'recovery_bundle=%s\n' "$WORK_DIR"
-        printf 'backup_index=%s\n' "$BACKUP_INDEX"
-        printf 'maintenance_marker=%s\n' "$MAINTENANCE_FILE"
-        printf 'created_epoch=%s\n' \
-            "$(date +%s 2>/dev/null || printf unknown)"
-    } > "$bundle_evidence" 2>/dev/null || true
-    chmod 0600 "$bundle_evidence" 2>/dev/null || true
-    evidence_directory="$(dirname -- "$RECOVERY_EVIDENCE")"
-    evidence_tmp=""
-    if mkdir -p "$evidence_directory" 2>/dev/null &&
-       evidence_tmp="$(
-           mktemp "$evidence_directory/.router-install-rollback.XXXXXX"
-       )"; then
-        cp -- "$bundle_evidence" "$evidence_tmp" &&
-            chmod 0600 "$evidence_tmp" &&
-            mv -f -- "$evidence_tmp" "$RECOVERY_EVIDENCE" ||
-            rm -f -- "$evidence_tmp" 2>/dev/null || true
+    if [ "$RECOVERY_BUNDLE_CREATED" -eq 1 ]; then
+        incomplete_tmp="$(
+            mktemp "$RECOVERY_BUNDLE/.ROLLBACK_INCOMPLETE.XXXXXX" \
+                2>/dev/null
+        )" || incomplete_tmp=""
+        if [ -n "$incomplete_tmp" ]; then
+            {
+                printf 'status=rollback_incomplete\n'
+                printf 'recovery_bundle=%s\n' "$RECOVERY_BUNDLE"
+                printf 'backup_index=%s\n' "$BACKUP_INDEX"
+                printf 'maintenance_marker=%s\n' "$MAINTENANCE_FILE"
+                printf 'created_epoch=%s\n' \
+                    "$(date +%s 2>/dev/null || printf unknown)"
+            } > "$incomplete_tmp" 2>/dev/null &&
+                chmod 0600 "$incomplete_tmp" 2>/dev/null &&
+                mv -f -- "$incomplete_tmp" \
+                    "$RECOVERY_BUNDLE/ROLLBACK_INCOMPLETE" 2>/dev/null ||
+                rm -f -- "$incomplete_tmp" 2>/dev/null || true
+        fi
+        (write_recovery_status rollback_incomplete) 2>/dev/null || true
     fi
     printf 'CRITICAL: JamMonitor rollback is incomplete. Recovery bundle preserved at %s\n' \
-        "$WORK_DIR" >&2
+        "$RECOVERY_BUNDLE" >&2
     printf 'CRITICAL: Do not remove %s until every recorded target and service is recovered.\n' \
         "$RECOVERY_EVIDENCE" >&2
 }
 
 refuse_unresolved_recovery_evidence() {
-    if [ -e "$RECOVERY_EVIDENCE" ] || [ -L "$RECOVERY_EVIDENCE" ]; then
-        die "an unresolved prior installer rollback failure requires operator recovery"
+    inspect_recovery_storage
+    [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ] ||
+        die "an unresolved prior installer boot fence requires operator recovery"
+    if [ -e "$RECOVERY_BUNDLE" ] || [ -L "$RECOVERY_BUNDLE" ] ||
+       [ -e "$RECOVERY_EVIDENCE" ] || [ -L "$RECOVERY_EVIDENCE" ]; then
+        die "an unresolved prior installer transaction requires operator recovery"
     fi
+}
+
+upgrade_recovery_root_has_entries() {
+    for upgrade_recovery_entry in \
+        "$UPGRADE_RECOVERY_ROOT"/.[!.]* \
+        "$UPGRADE_RECOVERY_ROOT"/..?* \
+        "$UPGRADE_RECOVERY_ROOT"/*
+    do
+        [ -e "$upgrade_recovery_entry" ] ||
+            [ -L "$upgrade_recovery_entry" ] || continue
+        return 0
+    done
+    return 1
+}
+
+refuse_unresolved_upgrade_recovery_evidence() {
+    [ "$UPGRADE_PERSISTENT_MOUNT" != "/" ] ||
+        die "Tailscale upgrade recovery mount is unsafe"
+    [ "$UPGRADE_RECOVERY_ROOT" = \
+        "$UPGRADE_PERSISTENT_MOUNT/.jammonitor-tailscale-upgrade" ] ||
+        die "Tailscale upgrade recovery root is outside the exact persistent path"
+
+    if [ ! -e "$UPGRADE_PERSISTENT_MOUNT" ] &&
+       [ ! -L "$UPGRADE_PERSISTENT_MOUNT" ]; then
+        return 0
+    fi
+    [ -d "$UPGRADE_PERSISTENT_MOUNT" ] &&
+        [ ! -L "$UPGRADE_PERSISTENT_MOUNT" ] &&
+        [ -r "$UPGRADE_PERSISTENT_MOUNT" ] &&
+        [ -x "$UPGRADE_PERSISTENT_MOUNT" ] ||
+        die "Tailscale upgrade recovery mount is unsafe or ambiguous"
+
+    if [ ! -e "$UPGRADE_RECOVERY_ROOT" ] &&
+       [ ! -L "$UPGRADE_RECOVERY_ROOT" ]; then
+        return 0
+    fi
+    [ -d "$UPGRADE_RECOVERY_ROOT" ] &&
+        [ ! -L "$UPGRADE_RECOVERY_ROOT" ] &&
+        [ -r "$UPGRADE_RECOVERY_ROOT" ] &&
+        [ -x "$UPGRADE_RECOVERY_ROOT" ] ||
+        die "Tailscale upgrade recovery root is unsafe or ambiguous"
+
+    if upgrade_recovery_root_has_entries; then
+        die "unresolved durable Tailscale upgrade evidence blocks JamMonitor installation"
+    fi
+}
+
+preflight_locked_recovery_evidence() {
+    [ "$INSTALL_LOCK_HELD" -eq 1 ] ||
+        die "shared installer lock is required before recovery preflight"
+    # Recheck this installer's own evidence under the same lock, then inspect
+    # the upgrader's persistent write-ahead root without creating or deleting
+    # anything in either recovery tree.
+    refuse_unresolved_recovery_evidence
+    refuse_unresolved_upgrade_recovery_evidence
+}
+
+is_boot_gated_init_target() {
+    gated_target="$1"
+    [ "$gated_target" = "$(service_file tailscale)" ] ||
+        [ "$gated_target" = "$(service_file jammonitor-history)" ] ||
+        [ "$gated_target" = \
+          "$(service_file jammonitor-tailscale-watchdog)" ]
 }
 
 rollback_transaction() {
@@ -497,9 +1256,29 @@ rollback_transaction() {
     fi
 
     if [ "$BACKUP_READY" -eq 1 ] && [ -f "$BACKUP_INDEX" ]; then
+        # Keep the newly installed boot gates in place while restoring every
+        # runtime/application target. The init payloads are restored only
+        # after the old runtimes are durably back on disk.
         while IFS='|' read -r kind target proof_type proof_fingerprint \
             proof_metadata extra; do
             [ -n "$kind" ] || continue
+            is_boot_gated_init_target "$target" && continue
+            if [ -n "${extra:-}" ] ||
+               ! restore_target "$kind" "$target" "$proof_type" \
+                   "$proof_fingerprint" "$proof_metadata"; then
+                warn "could not restore $target"
+                rollback_failed=1
+            fi
+        done < "$BACKUP_INDEX"
+        sync_recovery_storage || {
+            warn "restored runtime payloads could not be synchronized"
+            rollback_failed=1
+        }
+
+        while IFS='|' read -r kind target proof_type proof_fingerprint \
+            proof_metadata extra; do
+            [ -n "$kind" ] || continue
+            is_boot_gated_init_target "$target" || continue
             if [ "$history_transient_stop_failed" -eq 1 ] &&
                [ "$kind" = "absent" ] &&
                [ "$target" = "$(service_file jammonitor-history)" ]; then
@@ -513,6 +1292,10 @@ rollback_transaction() {
                 rollback_failed=1
             fi
         done < "$BACKUP_INDEX"
+        sync_recovery_storage || {
+            warn "restored init payloads could not be synchronized"
+            rollback_failed=1
+        }
     else
         warn "complete rollback backup is unavailable"
         rollback_failed=1
@@ -551,6 +1334,17 @@ rollback_transaction() {
         mark_rollback_incomplete
         return 1
     fi
+    write_recovery_status rolled_back
+    if ! clear_install_fence rolled_back; then
+        warn "restored files are intact, but the installer boot fence could not be cleared"
+        mark_rollback_incomplete
+        return 1
+    fi
+    if ! clear_recovery_bundle; then
+        warn "restored files are intact, but persistent recovery evidence could not be cleared"
+        mark_rollback_incomplete
+        return 1
+    fi
     printf '%s\n' "Previous router files and service states were restored." >&2
     return 0
 }
@@ -559,16 +1353,43 @@ cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     rollback_transaction || true
+    if [ "$RECOVERY_BUNDLE_CREATED" -eq 1 ] &&
+       [ "$MUTATION_STARTED" -eq 0 ] &&
+       [ "$ROLLBACK_INCOMPLETE" -eq 0 ]; then
+        if [ "$INSTALL_FENCE_CREATED" -eq 1 ]; then
+            if ! (write_recovery_status rolled_back); then
+                warn "pre-mutation rollback status could not be synchronized"
+                mark_rollback_incomplete
+            elif ! clear_install_fence rolled_back; then
+                warn "pre-mutation installer boot fence could not be cleared"
+                mark_rollback_incomplete
+            fi
+        fi
+        if [ "$ROLLBACK_INCOMPLETE" -eq 0 ] &&
+           ! clear_recovery_bundle; then
+            warn "pre-mutation recovery bundle could not be cleared"
+        fi
+    fi
     if [ "$MAINTENANCE_CREATED" -eq 1 ] &&
        [ "$ROLLBACK_INCOMPLETE" -eq 0 ]; then
-        rm -f -- "$MAINTENANCE_FILE"
+        remove_owned_maintenance_marker || true
+    fi
+    if [ -n "$MAINTENANCE_TEMP" ]; then
+        rm -f -- "$MAINTENANCE_TEMP"
+        MAINTENANCE_TEMP=""
+    fi
+    if [ -n "$INSTALL_FENCE_TEMP" ]; then
+        rm -f -- "$INSTALL_FENCE_TEMP"
+        INSTALL_FENCE_TEMP=""
     fi
     if [ -n "$TARGET_TEMP" ]; then
         rm -f -- "$TARGET_TEMP"
     fi
     if [ "$INSTALL_LOCK_HELD" -eq 1 ]; then
-        rm -f -- "$INSTALL_LOCK/pid"
-        rmdir "$INSTALL_LOCK" 2>/dev/null || true
+        # Closing the persistent lock inode is the only ownership transition.
+        # Never unlink it, or two contenders could lock different inodes.
+        exec 7>&-
+        INSTALL_LOCK_HELD=0
     fi
     safe_remove_work_dir
     exit "$status"
@@ -705,6 +1526,15 @@ validate_staged_payloads() {
     validate_init_order \
         "$STAGE_ROOT/router/jammonitor-tailscale-watchdog.init" 96 01
     validate_init_order "$STAGE_ROOT/router/jammonitor-history.init" 99 20
+    for gated_init in \
+        "$STAGE_ROOT/router/tailscale.init" \
+        "$STAGE_ROOT/router/jammonitor-history.init" \
+        "$STAGE_ROOT/router/jammonitor-tailscale-watchdog.init"
+    do
+        grep -Fq 'JAMMONITOR_BOOT_FENCE_V1' "$gated_init" &&
+            grep -Fq 'JAMMONITOR_INSTALL_FENCE_TOKEN' "$gated_init" ||
+            die "init payload lacks the exact installer boot-fence contract: $gated_init"
+    done
 
     if command -v luac >/dev/null 2>&1; then
         luac -p "$STAGE_ROOT/jammonitor.lua" ||
@@ -714,7 +1544,7 @@ validate_staged_payloads() {
             lua -e 'assert(loadfile(os.getenv("JM_LUA_FILE")))' ||
             die "Lua syntax validation failed"
     else
-        warn "luac/lua is unavailable, so Lua syntax validation was skipped"
+        die "luac or lua is required for Lua syntax validation"
     fi
 
     if command -v node >/dev/null 2>&1; then
@@ -790,6 +1620,11 @@ atomic_install() {
     chmod "$mode" "$TARGET_TEMP"
     chown 0:0 "$TARGET_TEMP" 2>/dev/null ||
         die "could not set root ownership on $target"
+    if [ "$TRANSACTION_ACTIVE" -eq 1 ] &&
+       [ "$INSTALL_FENCE_CREATED" -eq 1 ]; then
+        install_fence_matches_owned_copy ||
+            die "installer boot fence changed immediately before payload mutation"
+    fi
     mv -f -- "$TARGET_TEMP" "$target"
     TARGET_TEMP=""
 }
@@ -889,7 +1724,10 @@ capture_service_state() {
 }
 
 backup_transaction_targets() {
-    : > "$BACKUP_INDEX"
+    [ -f "$BACKUP_INDEX" ] && [ ! -L "$BACKUP_INDEX" ] ||
+        die "persistent rollback index is not a regular non-symlink file"
+    : > "$BACKUP_INDEX" ||
+        die "could not initialize persistent rollback index"
 
     printf '%s\n' "$PAYLOADS" |
         while IFS='|' read -r source target mode; do
@@ -951,13 +1789,38 @@ disable_known_legacy_service() {
 refresh_previously_running_services() {
     if [ "$HISTORY_WAS_RUNNING" -eq 1 ] ||
        [ "$LEGACY_WAS_RUNNING" -eq 1 ]; then
+        history_restart_epoch="$(date +%s)" ||
+            die "could not timestamp the history restart boundary"
+        is_bounded_uint "$history_restart_epoch" 11 ||
+            die "history restart boundary is not a valid epoch"
         run_service_action jammonitor-history restart ||
             die "could not activate the canonical history service"
+        wait_history_readiness "$history_restart_epoch" ||
+            die "history restart did not publish fresh healthy storage-backed status"
     fi
     if [ "$WATCHDOG_WAS_RUNNING" -eq 1 ]; then
+        watchdog_restart_epoch="$(date +%s)" ||
+            die "could not timestamp the watchdog restart boundary"
+        is_bounded_uint "$watchdog_restart_epoch" 11 ||
+            die "watchdog restart boundary is not a valid epoch"
         run_service_action jammonitor-tailscale-watchdog restart ||
             die "could not refresh the running Tailscale watchdog"
+        wait_watchdog_readiness "$watchdog_restart_epoch" ||
+            die "watchdog restart did not prove two fresh healthy publications"
     fi
+}
+
+remove_installer_maintenance_before_readiness() {
+    [ "$WATCHDOG_WAS_RUNNING" -eq 1 ] || return 0
+    if [ "$MAINTENANCE_CREATED" -eq 1 ]; then
+        remove_owned_maintenance_marker ||
+            die "could not clear the owned maintenance lease before watchdog readiness"
+        MAINTENANCE_CREATED=0
+        MAINTENANCE_EXPECTED_EXPIRY=""
+        return 0
+    fi
+    [ ! -e "$MAINTENANCE_FILE" ] && [ ! -L "$MAINTENANCE_FILE" ] ||
+        die "an external maintenance lease prevents watchdog readiness proof"
 }
 
 enable_canonical_services() {
@@ -971,17 +1834,24 @@ enable_canonical_services() {
     done
 }
 
+check_timeout_capability() {
+    timeout -s TERM -k 2 1 /bin/sh -c ':' >/dev/null 2>&1 ||
+        die "timeout does not support the required -s TERM -k 2 options"
+}
+
 check_tailscale_prerequisites() {
     [ -x /usr/sbin/tailscale ] ||
         die "/usr/sbin/tailscale is missing; install a verified binary first"
     [ -x /usr/sbin/tailscaled ] ||
         die "/usr/sbin/tailscaled is missing; install a verified binary first"
     require_command timeout
+    check_timeout_capability
     require_command jsonfilter
 }
 
 check_runtime_prerequisites() {
     check_tailscale_prerequisites
+    require_command sync
     require_command sqlite3
     require_command conntrack
     require_command flock
@@ -991,38 +1861,99 @@ prepare_work_dir() {
     umask 077
     WORK_DIR="$(mktemp -d /tmp/jammonitor-install.XXXXXX)"
     STAGE_ROOT="$WORK_DIR/stage"
-    BACKUP_ROOT="$WORK_DIR/backup"
-    BACKUP_INDEX="$WORK_DIR/backup.index"
-    mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
+    BACKUP_ROOT=""
+    BACKUP_INDEX=""
+    mkdir -p "$STAGE_ROOT"
 }
 
 acquire_install_lock() {
-    mkdir -p /var/run/jammonitor
-    chmod 0700 /var/run/jammonitor
-    if mkdir "$INSTALL_LOCK" 2>/dev/null; then
-        printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
-        INSTALL_LOCK_HELD=1
-        return 0
+    lock_parent="${INSTALL_LOCK%/*}"
+    [ "$lock_parent" != "$INSTALL_LOCK" ] ||
+        die "installer lock must have an explicit parent"
+    if [ -e "$lock_parent" ] || [ -L "$lock_parent" ]; then
+        [ -d "$lock_parent" ] && [ ! -L "$lock_parent" ] ||
+            die "installer lock parent is not a real directory"
+    else
+        mkdir -p "$lock_parent" ||
+            die "could not create the installer lock parent"
+    fi
+    if [ "$INSTALLER_TESTING" = "1" ]; then
+        lock_expected_uid="$(id -u)"
+        lock_expected_gid="$(id -g)"
+    else
+        chown 0:0 "$lock_parent" ||
+            die "could not assign the installer lock parent to root"
+        lock_expected_uid=0
+        lock_expected_gid=0
+    fi
+    chmod 0700 "$lock_parent" ||
+        die "could not protect the installer lock parent"
+    [ "$(stat -c '%a:%u:%g' "$lock_parent" 2>/dev/null)" = \
+      "700:$lock_expected_uid:$lock_expected_gid" ] ||
+        die "installer lock parent metadata is unsafe"
+    if [ -e "$INSTALL_LOCK" ] || [ -L "$INSTALL_LOCK" ]; then
+        [ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ] ||
+            die "installer lock is not a regular file"
+    else
+        : > "$INSTALL_LOCK" ||
+            die "could not create the installer lock inode"
+    fi
+    if [ "$INSTALLER_TESTING" != "1" ]; then
+        chown 0:0 "$INSTALL_LOCK" ||
+            die "could not assign the installer lock inode to root"
     fi
 
-    lock_pid="$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)"
-    case "$lock_pid" in
-        ""|*[!0-9]*)
-            ;;
-        *)
-            if kill -0 "$lock_pid" 2>/dev/null; then
-                die "another JamMonitor install or repair is running"
-            fi
-            ;;
-    esac
-
-    rm -f -- "$INSTALL_LOCK/pid"
-    rmdir "$INSTALL_LOCK" 2>/dev/null ||
-        die "could not clear a stale installer lock"
-    mkdir "$INSTALL_LOCK" ||
-        die "could not acquire the installer lock"
-    printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
+    # This inode is shared by install, repair, and Tailscale upgrade. flock
+    # provides kernel ownership, survives PID reuse safely, and closes the
+    # empty-mkdir stale-reclamation race. The inode is deliberately persistent.
+    exec 7>>"$INSTALL_LOCK" ||
+        die "could not open the installer lock"
+    chmod 0600 "$INSTALL_LOCK" || {
+        exec 7>&-
+        die "could not protect the installer lock"
+    }
+    if [ "$(stat -c '%a:%u:%g' "$INSTALL_LOCK" 2>/dev/null)" != \
+         "600:$lock_expected_uid:$lock_expected_gid" ]; then
+        exec 7>&-
+        die "installer lock inode metadata is unsafe"
+    fi
+    if ! flock -n 7; then
+        exec 7>&-
+        die "another JamMonitor install, repair, or Tailscale upgrade is running"
+    fi
     INSTALL_LOCK_HELD=1
+}
+
+maintenance_marker_matches_expected() {
+    [ -n "$MAINTENANCE_EXPECTED_EXPIRY" ] &&
+        [ -f "$MAINTENANCE_FILE" ] &&
+        [ ! -L "$MAINTENANCE_FILE" ] ||
+        return 1
+    if [ "$INSTALLER_TESTING" = "1" ]; then
+        _maintenance_expected_uid="$(id -u)"
+        _maintenance_expected_gid="$(id -g)"
+    else
+        _maintenance_expected_uid=0
+        _maintenance_expected_gid=0
+    fi
+    [ "$(stat -c '%a:%u:%g' "$MAINTENANCE_FILE" 2>/dev/null)" = \
+      "600:${_maintenance_expected_uid}:${_maintenance_expected_gid}" ] ||
+        return 1
+    _maintenance_size="$(wc -c < "$MAINTENANCE_FILE" 2>/dev/null |
+        tr -d ' \r\n')" || return 1
+    is_uint "$_maintenance_size" || return 1
+    _maintenance_expected_size=$((${#MAINTENANCE_EXPECTED_EXPIRY} + 1))
+    [ "$_maintenance_size" -eq "$_maintenance_expected_size" ] || return 1
+    _maintenance_value="$(cat "$MAINTENANCE_FILE" 2>/dev/null)" || return 1
+    [ "$_maintenance_value" = "$MAINTENANCE_EXPECTED_EXPIRY" ]
+}
+
+remove_owned_maintenance_marker() {
+    maintenance_marker_matches_expected || {
+        warn "maintenance marker ownership changed; preserving it"
+        return 1
+    }
+    rm -f -- "$MAINTENANCE_FILE"
 }
 
 create_maintenance_marker() {
@@ -1038,6 +1969,9 @@ create_maintenance_marker() {
         existing_expiry="$(cat "$MAINTENANCE_FILE" 2>/dev/null || true)"
         is_uint "$existing_expiry" ||
             die "preexisting maintenance marker is malformed; verify no maintenance is active, then remove it"
+        MAINTENANCE_EXPECTED_EXPIRY="$existing_expiry"
+        maintenance_marker_matches_expected ||
+            die "preexisting maintenance marker is not an exact private one-line lease"
         remaining=$((existing_expiry - now_epoch))
         [ "$remaining" -ge "$MAINTENANCE_REQUIRED_REMAINING" ] &&
            [ "$remaining" -le 3600 ] ||
@@ -1046,25 +1980,91 @@ create_maintenance_marker() {
     fi
 
     expires_epoch=$((now_epoch + MAINTENANCE_REQUIRED_REMAINING))
-    printf '%s\n' "$expires_epoch" > "$MAINTENANCE_FILE" ||
-        die "could not create the maintenance marker"
+    MAINTENANCE_TEMP="${MAINTENANCE_FILE}.tmp.$$.$now_epoch"
+    [ ! -e "$MAINTENANCE_TEMP" ] && [ ! -L "$MAINTENANCE_TEMP" ] ||
+        die "maintenance marker temporary path already exists"
+    (
+        set -C
+        umask 077
+        printf '%s\n' "$expires_epoch" > "$MAINTENANCE_TEMP"
+    ) || die "could not create the maintenance marker temporary file"
+    chmod 0600 "$MAINTENANCE_TEMP" ||
+        die "could not protect the maintenance marker temporary file"
+    if [ "$INSTALLER_TESTING" = "1" ]; then
+        _maintenance_expected_uid="$(id -u)"
+        _maintenance_expected_gid="$(id -g)"
+    else
+        _maintenance_expected_uid=0
+        _maintenance_expected_gid=0
+    fi
+    [ "$(stat -c '%a:%u:%g' "$MAINTENANCE_TEMP" 2>/dev/null)" = \
+      "600:${_maintenance_expected_uid}:${_maintenance_expected_gid}" ] ||
+        die "maintenance marker temporary file metadata is unsafe"
+    [ "$(cat "$MAINTENANCE_TEMP" 2>/dev/null)" = "$expires_epoch" ] ||
+        die "maintenance marker temporary file readback failed"
+    mv -f -- "$MAINTENANCE_TEMP" "$MAINTENANCE_FILE" ||
+        die "could not atomically publish the maintenance marker"
+    MAINTENANCE_TEMP=""
     MAINTENANCE_CREATED=1
-    chmod 0600 "$MAINTENANCE_FILE" ||
-        die "could not protect the maintenance marker"
+    MAINTENANCE_EXPECTED_EXPIRY="$expires_epoch"
+    maintenance_marker_matches_expected ||
+        die "created maintenance marker failed exact verification"
 }
 
 install_payloads() {
     TRANSACTION_ACTIVE=1
+    prepare_recovery_bundle
     backup_transaction_targets
-    BACKUP_READY=1
+    seal_recovery_bundle
 
     mkdir -p /var/run/jammonitor
     chmod 0700 /var/run/jammonitor
     create_maintenance_marker
 
-    MUTATION_STARTED=1
+    publish_install_fence
+    begin_live_mutation
+
+    # Gate every boot-startable runtime before any corresponding executable or
+    # application payload changes. An interruption between these three init
+    # replacements can only start the still-old runtime. After the global sync
+    # all three services refuse an unattended boot until this exact
+    # transaction fence is resolved.
     for payload in $PAYLOADS; do
         source="${payload%%|*}"
+        case "$source" in
+            router/tailscale.init|\
+            router/jammonitor-history.init|\
+            router/jammonitor-tailscale-watchdog.init)
+                remainder="${payload#*|}"
+                target="${remainder%%|*}"
+                mode="${remainder##*|}"
+                atomic_install "$STAGE_ROOT/$source" "$target" "$mode"
+                ;;
+        esac
+    done
+    sync_recovery_storage ||
+        die "could not durably publish all boot-gated init payloads"
+    for gated_pair in \
+        "router/tailscale.init|/etc/init.d/tailscale" \
+        "router/jammonitor-history.init|/etc/init.d/jammonitor-history" \
+        "router/jammonitor-tailscale-watchdog.init|/etc/init.d/jammonitor-tailscale-watchdog"
+    do
+        gated_source="${gated_pair%%|*}"
+        gated_target="${gated_pair#*|}"
+        [ "$(sha256sum "$gated_target" | awk '{print $1}')" = \
+          "$(sha256sum "$STAGE_ROOT/$gated_source" | awk '{print $1}')" ] ||
+            die "boot-gated init payload changed before runtime mutation"
+    done
+
+    for payload in $PAYLOADS; do
+        source="${payload%%|*}"
+        case "$source" in
+            router/tailscale.init|\
+            router/jammonitor-history.init|\
+            router/jammonitor-tailscale-watchdog.init)
+                continue
+                ;;
+        esac
         remainder="${payload#*|}"
         target="${remainder%%|*}"
         mode="${remainder##*|}"
@@ -1089,6 +2089,7 @@ install_payloads() {
     merge_sysupgrade_preservation
     disable_known_legacy_service
     enable_canonical_services
+    remove_installer_maintenance_before_readiness
     refresh_previously_running_services
 
     if [ -x "$(service_file uhttpd)" ]; then
@@ -1097,7 +2098,12 @@ install_payloads() {
             die "uhttpd restart failed"
     fi
 
+    write_recovery_status committed
+    clear_install_fence committed ||
+        die "installation committed, but the installer boot fence could not be cleared"
     TRANSACTION_COMMITTED=1
+    clear_recovery_bundle ||
+        die "installation committed, but persistent recovery evidence could not be cleared"
     printf '%s\n' "JamMonitor router files installed successfully."
     printf '%s\n' "Canonical services were enabled."
     printf '%s\n' "Previously running JamMonitor services were refreshed."
@@ -1154,19 +2160,59 @@ verify_installed() {
     printf '%s\n' "Installed JamMonitor payloads match the saved manifest."
 }
 
+load_installed_transaction_identity() {
+    REF="$(head -n 1 /usr/share/jammonitor/source-ref 2>/dev/null |
+        tr -d '\r\n')"
+    case "$REF" in
+        local-staged)
+            ;;
+        *)
+            is_hex_length "$REF" 40 &&
+                [ "$REF" = "$(printf '%s' "$REF" | tr 'A-F' 'a-f')" ] ||
+                die "installed source ref cannot authorize a repair transaction"
+            ;;
+    esac
+    VERIFIED_MANIFEST_SHA256="$(
+        head -n 1 /usr/share/jammonitor/router-files.sha256.sha256 \
+            2>/dev/null | tr -d '\r\n'
+    )"
+    is_hex_length "$VERIFIED_MANIFEST_SHA256" 64 &&
+        [ "$VERIFIED_MANIFEST_SHA256" = "$(
+            printf '%s' "$VERIFIED_MANIFEST_SHA256" | tr 'A-F' 'a-f'
+        )" ] ||
+        die "installed manifest digest cannot authorize a repair transaction"
+}
+
+verify_installed_boot_gate_contract() {
+    for installed_gate in \
+        "$(service_file tailscale)" \
+        "$(service_file jammonitor-history)" \
+        "$(service_file jammonitor-tailscale-watchdog)"
+    do
+        [ -f "$installed_gate" ] && [ ! -L "$installed_gate" ] &&
+            grep -Fq 'JAMMONITOR_BOOT_FENCE_V1' "$installed_gate" &&
+            grep -Fq 'JAMMONITOR_INSTALL_FENCE_TOKEN' "$installed_gate" ||
+            die "installed init cannot enforce a repair fence: $installed_gate"
+    done
+}
+
 repair_services() {
     [ "$(id -u)" -eq 0 ] || die "--repair-services must run as root"
     refuse_unresolved_recovery_evidence
+    require_command flock
+    acquire_install_lock
+    preflight_locked_recovery_evidence
     # Sysupgrade recovery is allowed to touch enable links only after the
     # complete installed payload set authenticates against its saved manifest.
     prepare_work_dir
     verify_installed
+    verify_installed_boot_gate_contract
+    load_installed_transaction_identity
     check_tailscale_prerequisites
-    require_command flock
+    require_command sync
     require_command sqlite3
     require_command conntrack
     legacy_service_is_known
-    acquire_install_lock
     capture_service_state
 
     for service in tailscale jammonitor-history jammonitor-tailscale-watchdog; do
@@ -1175,19 +2221,24 @@ repair_services() {
     done
 
     TRANSACTION_ACTIVE=1
+    prepare_recovery_bundle
     backup_transaction_targets
-    BACKUP_READY=1
+    seal_recovery_bundle
     mkdir -p "$(dirname -- "$MAINTENANCE_FILE")"
     create_maintenance_marker
-    MUTATION_STARTED=1
+    publish_install_fence
+    begin_live_mutation
     merge_sysupgrade_preservation
     disable_known_legacy_service
     enable_canonical_services
-    if [ "$LEGACY_WAS_RUNNING" -eq 1 ]; then
-        run_service_action jammonitor-history restart ||
-            die "could not migrate the running legacy collector"
-    fi
+    remove_installer_maintenance_before_readiness
+    refresh_previously_running_services
+    write_recovery_status committed
+    clear_install_fence committed ||
+        die "service repair committed, but the installer boot fence could not be cleared"
     TRANSACTION_COMMITTED=1
+    clear_recovery_bundle ||
+        die "service repair committed, but persistent recovery evidence could not be cleared"
     printf '%s\n' "Canonical services repaired and enabled."
     printf '%s\n' "Tailscale was not restarted and no login command was run."
 }
@@ -1258,6 +2309,8 @@ require_command awk
 require_command grep
 require_command mktemp
 require_command stat
+require_command dd
+require_command wc
 validate_internal_payload_map
 
 case "$MODE" in
@@ -1326,6 +2379,7 @@ fi
 
 check_runtime_prerequisites
 acquire_install_lock
+preflight_locked_recovery_evidence
 prepare_work_dir
 
 if [ -n "$SOURCE_DIR" ]; then

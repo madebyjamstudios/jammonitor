@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 import os
 import sys
 import types
@@ -38,6 +40,11 @@ class DeviceEvaluationTests(unittest.TestCase):
         self.now = datetime(2026, 7, 23, 20, 0, tzinfo=timezone.utc)
 
     def evaluate(self, device):
+        device = {
+            "isExternal": False,
+            "isEphemeral": False,
+            **device,
+        }
         return APP.evaluate_device(
             [device],
             "node-router",
@@ -123,6 +130,84 @@ class DeviceEvaluationTests(unittest.TestCase):
         )
         self.assertFalse(result["healthy"])
         self.assertFalse(result["approved"])
+
+    def test_shared_in_or_ephemeral_nodes_fail_closed(self):
+        for field in ("isExternal", "isEphemeral"):
+            with self.subTest(field=field):
+                result = self.evaluate(
+                    {
+                        "nodeId": "node-router",
+                        "connectedToControl": True,
+                        "keyExpiryDisabled": True,
+                        "authorized": True,
+                        field: True,
+                    }
+                )
+                self.assertFalse(result["healthy"])
+
+    def test_missing_membership_or_durability_fields_fail_closed(self):
+        base = {
+            "nodeId": "node-router",
+            "connectedToControl": True,
+            "keyExpiryDisabled": True,
+            "authorized": True,
+        }
+        for missing in ("isExternal", "isEphemeral"):
+            with self.subTest(missing=missing):
+                device = {
+                    **base,
+                    "isExternal": False,
+                    "isEphemeral": False,
+                }
+                del device[missing]
+                result = APP.evaluate_device(
+                    [device],
+                    "node-router",
+                    self.now,
+                    offline_after_seconds=180,
+                    key_warning_days=7,
+                )
+                self.assertFalse(result["healthy"])
+
+    def test_concurrently_copied_node_state_fails_closed(self):
+        result = self.evaluate(
+            {
+                "nodeId": "node-router",
+                "connectedToControl": True,
+                "keyExpiryDisabled": True,
+                "authorized": True,
+                "multipleConnections": True,
+            }
+        )
+        self.assertFalse(result["healthy"])
+        self.assertFalse(result["identity_unique"])
+
+    def test_omitted_multiple_connections_means_one_or_zero_live_users(self):
+        result = self.evaluate(
+            {
+                "nodeId": "node-router",
+                "connectedToControl": True,
+                "keyExpiryDisabled": True,
+                "authorized": True,
+            }
+        )
+        self.assertTrue(result["healthy"])
+        self.assertTrue(result["identity_unique"])
+
+    def test_malformed_multiple_connections_fails_closed(self):
+        for malformed in (None, "false", 0):
+            with self.subTest(malformed=malformed):
+                result = self.evaluate(
+                    {
+                        "nodeId": "node-router",
+                        "connectedToControl": True,
+                        "keyExpiryDisabled": True,
+                        "authorized": True,
+                        "multipleConnections": malformed,
+                    }
+                )
+                self.assertFalse(result["healthy"])
+                self.assertFalse(result["identity_unique"])
 
     def test_missing_authorized_field_fails_closed(self):
         result = self.evaluate(
@@ -267,6 +352,22 @@ class OAuthAndHandlerTests(unittest.TestCase):
         self.assertEqual(second, "token-2")
         self.assertEqual(read_response.call_count, 2)
 
+    def test_boolean_oauth_expiry_is_rejected(self):
+        with (
+            patch.object(
+                APP,
+                "_load_oauth_secret",
+                return_value={"client_id": "client", "client_secret": "secret"},
+            ),
+            patch.object(
+                APP,
+                "_read_json_response",
+                return_value={"access_token": "token", "expires_in": True},
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "valid expiry"):
+                APP._oauth_access_token("arn:secret", 100.0)
+
     def test_oauth_request_is_downscoped_to_read_only_devices(self):
         captured = {}
 
@@ -314,6 +415,202 @@ class OAuthAndHandlerTests(unittest.TestCase):
         )
 
         self.assertIsNone(redirected)
+
+    def test_http_error_body_is_closed_before_propagation(self):
+        body = io.BytesIO(b'{"error":"sentinel"}')
+        error = APP.urllib.error.HTTPError(
+            "https://api.tailscale.com/api/v2/oauth/token",
+            503,
+            "Unavailable",
+            {},
+            body,
+        )
+        request = APP.urllib.request.Request(
+            "https://api.tailscale.com/api/v2/oauth/token"
+        )
+
+        with patch.object(APP.HTTP_OPENER, "open", side_effect=error):
+            with self.assertRaises(APP.urllib.error.HTTPError):
+                APP._read_json_response(request)
+
+        self.assertTrue(body.closed)
+
+    def test_device_inventory_requests_all_identity_fields(self):
+        captured = {}
+
+        def response_for(request):
+            captured["url"] = request.full_url
+            return {"devices": []}
+
+        with patch.object(APP, "_read_json_response", side_effect=response_for):
+            self.assertEqual(APP._fetch_devices("token"), [])
+
+        self.assertEqual(
+            captured["url"],
+            "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all",
+        )
+
+    def test_malformed_device_entries_reject_the_entire_observation(self):
+        with patch.object(
+            APP,
+            "_read_json_response",
+            return_value={"devices": [{"nodeId": "valid"}, None]},
+        ):
+            with self.assertRaisesRegex(ValueError, "malformed entry"):
+                APP._fetch_devices("token")
+
+    def test_one_unauthorized_response_reloads_secret_and_token_once(self):
+        unauthorized = APP.urllib.error.HTTPError(
+            "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(),
+        )
+        APP._secret_cache = (1.0, {"client_id": "old", "client_secret": "old"})
+        APP._token_cache = (9999.0, "revoked")
+        with (
+            patch.object(
+                APP,
+                "_oauth_access_token",
+                side_effect=["revoked", "fresh"],
+            ) as access_token,
+            patch.object(
+                APP,
+                "_fetch_devices",
+                side_effect=[unauthorized, [{"nodeId": "node-router"}]],
+            ) as fetch_devices,
+        ):
+            devices = APP._fetch_devices_with_one_auth_refresh(
+                "arn:secret", 100.0
+            )
+
+        self.assertEqual(devices, [{"nodeId": "node-router"}])
+        self.assertEqual(access_token.call_count, 2)
+        self.assertEqual(fetch_devices.call_args_list[0].args, ("revoked",))
+        self.assertEqual(fetch_devices.call_args_list[1].args, ("fresh",))
+        self.assertIsNone(APP._secret_cache)
+        self.assertIsNone(APP._token_cache)
+
+    def test_oauth_unauthorized_reloads_rotated_secret_once(self):
+        token_requests = []
+        secret_reads = []
+        APP._secret_cache = (
+            99.0,
+            {"client_id": "old-client", "client_secret": "old-secret"},
+        )
+
+        def get_secret_value(**kwargs):
+            secret_reads.append(kwargs)
+            return {
+                "SecretString": json.dumps(
+                    {
+                        "client_id": "new-client",
+                        "client_secret": "new-secret",
+                    }
+                )
+            }
+
+        def response_for(request):
+            if request.full_url.endswith("/oauth/token"):
+                form = request.data.decode("ascii")
+                token_requests.append(form)
+                if "old-secret" in form:
+                    raise APP.urllib.error.HTTPError(
+                        request.full_url,
+                        401,
+                        "Unauthorized",
+                        {},
+                        io.BytesIO(),
+                    )
+                return {"access_token": "fresh-token", "expires_in": 3600}
+            self.assertEqual(
+                request.get_header("Authorization"), "Bearer fresh-token"
+            )
+            return {"devices": [{"nodeId": "node-router"}]}
+
+        fake_secrets = types.SimpleNamespace(
+            get_secret_value=get_secret_value
+        )
+        with (
+            patch.object(APP, "SECRETS_CLIENT", fake_secrets),
+            patch.object(APP, "_read_json_response", side_effect=response_for),
+        ):
+            devices = APP._fetch_devices_with_one_auth_refresh(
+                "arn:secret", 100.0
+            )
+
+        self.assertEqual(devices, [{"nodeId": "node-router"}])
+        self.assertEqual(len(token_requests), 2)
+        self.assertIn("client_secret=old-secret", token_requests[0])
+        self.assertIn("client_secret=new-secret", token_requests[1])
+        self.assertEqual(secret_reads, [{"SecretId": "arn:secret"}])
+        self.assertEqual(APP._secret_cache[1]["client_secret"], "new-secret")
+        self.assertEqual(APP._token_cache[1], "fresh-token")
+
+    def test_oauth_invalid_client_400_gets_the_same_single_refresh(self):
+        invalid_client = APP.urllib.error.HTTPError(
+            "https://api.tailscale.com/api/v2/oauth/token",
+            400,
+            "Invalid client",
+            {},
+            io.BytesIO(),
+        )
+        with (
+            patch.object(
+                APP,
+                "_oauth_access_token",
+                side_effect=[invalid_client, "fresh"],
+            ) as access_token,
+            patch.object(
+                APP,
+                "_fetch_devices",
+                return_value=[{"nodeId": "node-router"}],
+            ) as fetch_devices,
+        ):
+            devices = APP._fetch_devices_with_one_auth_refresh(
+                "arn:secret", 100.0
+            )
+
+        self.assertEqual(devices, [{"nodeId": "node-router"}])
+        self.assertEqual(access_token.call_count, 2)
+        fetch_devices.assert_called_once_with("fresh")
+
+    def test_a_second_unauthorized_response_is_not_retried(self):
+        first = APP.urllib.error.HTTPError(
+            "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(),
+        )
+        second = APP.urllib.error.HTTPError(
+            "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(),
+        )
+        with (
+            patch.object(
+                APP,
+                "_oauth_access_token",
+                side_effect=["revoked", "still-revoked"],
+            ) as access_token,
+            patch.object(
+                APP,
+                "_fetch_devices",
+                side_effect=[first, second],
+            ) as fetch_devices,
+        ):
+            with self.assertRaises(APP.urllib.error.HTTPError):
+                APP._fetch_devices_with_one_auth_refresh(
+                    "arn:secret", 100.0
+                )
+            second.close()
+
+        self.assertEqual(access_token.call_count, 2)
+        self.assertEqual(fetch_devices.call_count, 2)
 
     def test_duplicate_runtime_device_identifiers_fail_before_api_calls(self):
         environment = {

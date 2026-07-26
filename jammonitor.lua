@@ -94,6 +94,13 @@ local VALID_DEVICE_TYPES = {
     unknown = true
 }
 
+-- Defined after the storage authority primitives. Historical endpoints are
+-- declared earlier in this controller, so they close over these forward
+-- declarations instead of ever opening /mnt/data directly without proof.
+local storage_read_authority
+local storage_readonly_sqlite
+local storage_bounded_authorized_file
+
 local function parse_json_request(http, json)
     local raw = http.content()
     if type(raw) ~= "string" or raw == "" then
@@ -230,65 +237,308 @@ local function validate_hostname(name)
 end
 
 local atomic_write_sequence = 0
-local PRIVATE_FILE_MODE = tonumber("600", 8)
-local PUBLIC_FILE_MODE = tonumber("644", 8)
-local EXECUTABLE_FILE_MODE = tonumber("700", 8)
-local WAN_MUTATION_LOCK = "/tmp/jammonitor-wan.lock"
-local DHCP_MUTATION_LOCK = "/tmp/jammonitor-dhcp.lock"
+-- nixio's Lua API accepts chmod-style octal digits as a number (600, 644,
+-- 700), not the C permission-bit integers returned by tonumber(..., 8).
+local PRIVATE_FILE_MODE = 600
+local PUBLIC_FILE_MODE = 644
+local EXECUTABLE_FILE_MODE = 700
+local PRIVATE_DIRECTORY_MODE = 700
+local LUCI_RUNTIME_DIRECTORY = "/var/run/jammonitor-luci"
+local WAN_MUTATION_LOCK = LUCI_RUNTIME_DIRECTORY .. "/wan.lock"
+local DHCP_MUTATION_LOCK = LUCI_RUNTIME_DIRECTORY .. "/dhcp.lock"
 local BYPASS_FLAG = "/etc/jammonitor_bypass_enabled"
 local BYPASS_BUNDLE = "/etc/jammonitor_bypass_recovery.json"
 local BYPASS_RECOVERY_FAILED = "/etc/jammonitor_bypass_recovery_failed"
 
--- Helper: Atomic file write with a per-process unique temporary path.
+-- All predictable LuCI scratch names live below a root-owned directory whose
+-- parent (/var/run) is not writable by unprivileged users. Reject an existing
+-- symlink or permissive directory instead of trying to repair an untrusted
+-- object in place.
+local function private_luci_runtime_directory()
+    local fs = require "nixio.fs"
+    local stat = fs.lstat(LUCI_RUNTIME_DIRECTORY)
+    if not stat then
+        if not fs.mkdir(LUCI_RUNTIME_DIRECTORY, PRIVATE_DIRECTORY_MODE) or
+           not fs.chmod(LUCI_RUNTIME_DIRECTORY, PRIVATE_DIRECTORY_MODE) then
+            return false
+        end
+        stat = fs.lstat(LUCI_RUNTIME_DIRECTORY)
+    end
+    return stat ~= nil and stat.type == "dir" and
+        stat.uid == 0 and stat.modedec == PRIVATE_DIRECTORY_MODE
+end
+
+-- A rename is not a durable write-ahead boundary until the containing
+-- directory metadata is synchronized. This is especially important for the
+-- bypass recovery journal, whose phase must survive before network or service
+-- state is changed.
+local function sync_parent_directory(path)
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+    local parent = fs.dirname(path)
+    if type(parent) ~= "string" or parent == "" then return false end
+    local descriptor = nixio.open(
+        parent, nixio.open_flags("rdonly")
+    )
+    if not descriptor then return false end
+    local stat = descriptor:stat()
+    local ok = stat ~= nil and stat.type == "dir" and
+        descriptor:sync(false) == true
+    descriptor:close()
+    return ok
+end
+
+-- Create the temporary inode with O_CREAT|O_EXCL, write every byte through
+-- that descriptor, fsync it, and verify the same inode before rename. The
+-- destination is replaced by rename and is therefore never followed.
 local function atomic_write(path, content, mode)
     local fs = require "nixio.fs"
     local nixio = require "nixio"
+    if type(path) ~= "string" or type(content) ~= "string" then return false end
     atomic_write_sequence = atomic_write_sequence + 1
     local tmp = string.format(
         "%s.tmp.%d.%d.%d",
         path, nixio.getpid(), os.time(), atomic_write_sequence
     )
-    local ok = fs.writefile(tmp, content)
-    if ok and mode and not fs.chmod(tmp, mode) then
+    if fs.lstat(tmp) ~= nil then return false end
+    local descriptor = nixio.open(
+        tmp, nixio.open_flags("wronly", "creat", "excl"),
+        mode or PRIVATE_FILE_MODE
+    )
+    if not descriptor then return false end
+
+    local ok = true
+    local offset = 0
+    while offset < #content do
+        local count = descriptor:write(content, offset, #content - offset)
+        if type(count) ~= "number" or count <= 0 then
+            ok = false
+            break
+        end
+        offset = offset + count
+    end
+    if ok and not descriptor:sync(false) then ok = false end
+    local opened = descriptor:stat()
+    if not opened or opened.type ~= "reg" or opened.uid ~= 0 or
+       opened.nlink ~= 1 or opened.size ~= #content then
         ok = false
     end
+    descriptor:close()
+
+    local after = fs.lstat(tmp)
+    if not after or not opened or after.type ~= "reg" or
+       after.dev ~= opened.dev or after.ino ~= opened.ino then
+        ok = false
+    end
+    if ok and mode and not fs.chmod(tmp, mode) then ok = false end
     if ok then
         local renamed = os.rename(tmp, path)
-        if renamed then return true end
+        if renamed then return sync_parent_directory(path) end
     end
     fs.remove(tmp)
     return false
 end
 
--- mkdir is the portable atomic primitive available on the target BusyBox/LuCI
--- stack. A bounded stale lease prevents a crashed request from wedging a
--- mutation forever.
-local function acquire_lock_dir(path, stale_seconds)
+local function durable_remove(path)
     local fs = require "nixio.fs"
-    local stat = fs.stat(path)
-    if stat and tonumber(stat.mtime) and
-       os.time() - tonumber(stat.mtime) > stale_seconds then
-        if stat.type == "dir" then
-            fs.remove(path .. "/owner")
-            fs.rmdir(path)
-        else
-            -- Migrate a stale lock file from pre-directory releases.
-            fs.remove(path)
-        end
-    end
-    if not fs.mkdir(path) then return false end
-    if not fs.writefile(path .. "/owner", tostring(os.time())) then
-        fs.rmdir(path)
-        return false
-    end
-    return true
+    if fs.lstat(path) == nil then return true end
+    if not fs.remove(path) or fs.lstat(path) ~= nil then return false end
+    return sync_parent_directory(path)
 end
 
-local function release_lock_dir(path)
+local lock_claim_sequence = 0
+
+local function lock_process_start_ticks(pid)
+    if type(pid) ~= "string" or not pid:match("^[1-9][0-9]*$") or
+       #pid > 10 then
+        return nil
+    end
     local fs = require "nixio.fs"
-    fs.remove(path .. "/owner")
-    fs.rmdir(path)
-    return fs.stat(path) == nil
+    local content = fs.readfile("/proc/" .. pid .. "/stat")
+    if type(content) ~= "string" or #content == 0 or #content > 4096 then
+        return nil
+    end
+    local _, state, remainder =
+        content:match("^%d+ %((.*)%) (%S) (.+)$")
+    if not state or not remainder or state == "Z" or state == "X" then
+        return nil
+    end
+    local index = 0
+    for value in remainder:gmatch("%S+") do
+        index = index + 1
+        -- remainder begins at field 4; starttime is field 22.
+        if index == 19 then
+            if value:match("^[0-9]+$") and #value <= 20 then
+                return value
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+local function read_lock_owner(path)
+    local fs = require "nixio.fs"
+    local owner_path = path .. "/owner"
+    local before = fs.lstat(owner_path)
+    if not before or before.type ~= "reg" or before.uid ~= 0 or
+       before.modedec ~= PRIVATE_FILE_MODE or before.nlink ~= 1 or
+       type(before.size) ~= "number" or before.size < 1 or before.size > 512 then
+        return nil
+    end
+    local content = fs.readfile(owner_path)
+    local after = fs.lstat(owner_path)
+    if type(content) ~= "string" or #content ~= before.size or
+       not after or after.type ~= "reg" or after.dev ~= before.dev or
+       after.ino ~= before.ino or after.size ~= before.size then
+        return nil
+    end
+    local pid, start_ticks, token = content:match(
+        "^schema=1\npid=([1-9][0-9]*)\nstart_ticks=([0-9]+)\n" ..
+        "token=([A-Za-z0-9:._%-]+)\n$"
+    )
+    if not pid or #pid > 10 or not start_ticks or #start_ticks > 20 or
+       not token or #token > 128 then
+        return nil
+    end
+    return {
+        pid = pid,
+        start_ticks = start_ticks,
+        token = token,
+        content = content,
+        stat = after
+    }
+end
+
+local function lock_owner_is_live(owner)
+    return owner ~= nil and
+        lock_process_start_ticks(owner.pid) == owner.start_ticks
+end
+
+local function remove_stale_lock_dir(path, expected_dir, expected_owner)
+    local fs = require "nixio.fs"
+    local current_dir = fs.lstat(path)
+    if not current_dir or current_dir.type ~= "dir" or
+       current_dir.dev ~= expected_dir.dev or
+       current_dir.ino ~= expected_dir.ino then
+        return false
+    end
+
+    if expected_owner then
+        local current_owner = read_lock_owner(path)
+        if not current_owner or
+           current_owner.stat.dev ~= expected_owner.stat.dev or
+           current_owner.stat.ino ~= expected_owner.stat.ino or
+           current_owner.content ~= expected_owner.content or
+           lock_owner_is_live(current_owner) then
+            return false
+        end
+        if not fs.remove(path .. "/owner") then return false end
+    else
+        -- A final lock directory is published only after a valid owner record
+        -- exists. This branch reclaims pre-hardening or interrupted legacy
+        -- debris, but rmdir still refuses a non-empty or changing directory.
+        local owner_stat = fs.lstat(path .. "/owner")
+        if owner_stat then
+            if owner_stat.type ~= "reg" or owner_stat.uid ~= 0 or
+               not fs.remove(path .. "/owner") then
+                return false
+            end
+        end
+    end
+    if not fs.rmdir(path) then return false end
+    return fs.lstat(path) == nil and sync_parent_directory(path)
+end
+
+-- Build a complete private claim directory, then publish it with one atomic
+-- rename. A live PID plus exact /proc start tick is non-stealable regardless
+-- of transaction duration or wall-clock jumps. Dead owners are reclaimed only
+-- after the directory inode and owner inode/content are re-proven.
+local function acquire_lock_dir(path, _stale_seconds)
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+    if not private_luci_runtime_directory() or
+       type(path) ~= "string" or
+       path:sub(1, #LUCI_RUNTIME_DIRECTORY + 1) ~=
+           LUCI_RUNTIME_DIRECTORY .. "/" then
+        return nil
+    end
+    local existing = fs.lstat(path)
+    if existing then
+        if existing.type ~= "dir" or existing.uid ~= 0 or
+           existing.modedec ~= PRIVATE_DIRECTORY_MODE then
+            return nil
+        end
+        local owner = read_lock_owner(path)
+        if owner and lock_owner_is_live(owner) then return nil end
+        if not remove_stale_lock_dir(path, existing, owner) then return nil end
+    end
+
+    local pid = tostring(nixio.getpid())
+    local start_ticks = lock_process_start_ticks(pid)
+    if not start_ticks then return nil end
+    lock_claim_sequence = lock_claim_sequence + 1
+    local token = string.format(
+        "%s:%s:%d:%d", pid, start_ticks, os.time(), lock_claim_sequence
+    )
+    local claim = string.format(
+        "%s.claim.%s.%d", path, pid, lock_claim_sequence
+    )
+    if fs.lstat(claim) ~= nil or
+       not fs.mkdir(claim, PRIVATE_DIRECTORY_MODE) or
+       not fs.chmod(claim, PRIVATE_DIRECTORY_MODE) then
+        return nil
+    end
+    local owner_content = string.format(
+        "schema=1\npid=%s\nstart_ticks=%s\ntoken=%s\n",
+        pid, start_ticks, token
+    )
+    if not atomic_write(
+        claim .. "/owner", owner_content, PRIVATE_FILE_MODE
+    ) then
+        fs.remove(claim .. "/owner")
+        fs.rmdir(claim)
+        return nil
+    end
+    local claim_stat = fs.lstat(claim)
+    if not claim_stat or claim_stat.type ~= "dir" then
+        fs.remove(claim .. "/owner")
+        fs.rmdir(claim)
+        return nil
+    end
+    if not os.rename(claim, path) then
+        fs.remove(claim .. "/owner")
+        fs.rmdir(claim)
+        return nil
+    end
+    local published = read_lock_owner(path)
+    if not published or published.token ~= token or
+       not lock_owner_is_live(published) then
+        local current = fs.lstat(path)
+        if current and current.type == "dir" and
+           current.dev == claim_stat.dev and current.ino == claim_stat.ino and
+           (not published or published.token == token) then
+            fs.remove(path .. "/owner")
+            fs.rmdir(path)
+            sync_parent_directory(path)
+        end
+        return nil
+    end
+    -- /var/run is volatile; atomic publication plus the exact live owner is
+    -- the synchronization authority. A parent-directory fsync is still
+    -- attempted, but its failure must not orphan a live, unreturnable lock.
+    sync_parent_directory(path)
+    return token
+end
+
+local function release_lock_dir(path, token)
+    local fs = require "nixio.fs"
+    if type(token) ~= "string" or token == "" then return false end
+    if fs.lstat(path) == nil then return true end
+    local owner = read_lock_owner(path)
+    if not owner or owner.token ~= token then return false end
+    if not fs.remove(path .. "/owner") or not fs.rmdir(path) then return false end
+    return fs.lstat(path) == nil and sync_parent_directory(path)
 end
 
 local function checked_call(command)
@@ -309,28 +559,92 @@ local function checked_init_action(path, action, timeout_seconds)
         return false
     end
     return checked_call(
-        "timeout " .. tostring(timeout) .. " " .. path .. " " .. action
+        "timeout -s TERM -k 2 " .. tostring(timeout) .. " " ..
+            path .. " " .. action
     )
 end
 
 local command_capture_sequence = 0
+local COMMAND_CAPTURE_DIRECTORY = LUCI_RUNTIME_DIRECTORY .. "/command"
+
+local function private_command_capture_directory()
+    local fs = require "nixio.fs"
+    if not private_luci_runtime_directory() then return false end
+    local stat = fs.lstat(COMMAND_CAPTURE_DIRECTORY)
+    if not stat then
+        if not fs.mkdir(COMMAND_CAPTURE_DIRECTORY, PRIVATE_DIRECTORY_MODE) or
+           not fs.chmod(COMMAND_CAPTURE_DIRECTORY, PRIVATE_DIRECTORY_MODE) then
+            return false
+        end
+        stat = fs.lstat(COMMAND_CAPTURE_DIRECTORY)
+    end
+    return stat ~= nil and stat.type == "dir" and
+        stat.uid == 0 and stat.modedec == PRIVATE_DIRECTORY_MODE
+end
+
+local function next_private_command_capture_path()
+    local nixio = require "nixio"
+    if not private_command_capture_directory() then return nil end
+    command_capture_sequence = command_capture_sequence + 1
+    return string.format(
+        "%s/%d.%d.%d",
+        COMMAND_CAPTURE_DIRECTORY,
+        nixio.getpid(), os.time(), command_capture_sequence
+    )
+end
 
 -- Capture bounded command output without losing the exit status. Callers may
 -- pass only fixed command text plus values that have already crossed a strict
 -- allowlist validator.
 local function checked_capture(command)
     local fs = require "nixio.fs"
-    local nixio = require "nixio"
     local sys = require "luci.sys"
-    command_capture_sequence = command_capture_sequence + 1
-    local output_path = string.format(
-        "/tmp/jammonitor-command.%d.%d.%d",
-        nixio.getpid(), os.time(), command_capture_sequence
+    local output_path = next_private_command_capture_path()
+    if not output_path then return false, "" end
+    if fs.lstat(output_path) ~= nil then return false, "" end
+    -- Rejecting an oversized file after the command exits is too late for
+    -- tmpfs exhaustion. POSIX ulimit -f is in 512-byte blocks, so the kernel
+    -- stops a producer at the same 64 KiB ceiling enforced below.
+    local rc = sys.call(
+        "(ulimit -f 128 || exit 125; " .. command .. ") >" ..
+        output_path .. " 2>&1"
     )
-    local rc = sys.call(command .. " >" .. output_path .. " 2>&1")
-    local output = fs.readfile(output_path) or ""
+    local stat = fs.lstat(output_path)
+    local output = ""
+    if stat and stat.type == "reg" and stat.uid == 0 and
+       type(stat.size) == "number" and stat.size >= 0 and
+       stat.size <= 65536 then
+        output = fs.readfile(output_path) or ""
+        if #output ~= stat.size then output = "" end
+    else
+        rc = -1
+    end
     fs.remove(output_path)
     return rc == 0, output
+end
+
+-- Query a procd init state behind a hard deadline. Exit 0 is true, exit 1 is
+-- false, and every other outcome is unknown. A timeout or broken supervisor
+-- must never be silently reclassified as a disabled/stopped service.
+local function checked_init_state(path, action, timeout_seconds)
+    if type(path) ~= "string" or
+       not path:match("^/etc/init%.d/[A-Za-z0-9_.%-]+$") or
+       (action ~= "running" and action ~= "enabled") then
+        return nil
+    end
+    local timeout = tonumber(timeout_seconds) or 5
+    if timeout < 1 or timeout > 120 or timeout ~= math.floor(timeout) then
+        return nil
+    end
+    local ok, output = checked_capture(
+        "timeout -s TERM -k 2 " .. tostring(timeout) .. " " ..
+            path .. " " .. action .. " >/dev/null 2>&1; " ..
+            "jammonitor_rc=$?; printf '%s' \"$jammonitor_rc\""
+    )
+    if not ok then return nil end
+    if output == "0" then return true end
+    if output == "1" then return false end
+    return nil
 end
 
 local function snapshot_file(path)
@@ -345,23 +659,20 @@ local function snapshot_file(path)
 end
 
 local function restore_file_snapshot(snapshot, mode)
-    local fs = require "nixio.fs"
     if not snapshot then return false end
     if snapshot.exists then
         return atomic_write(snapshot.path, snapshot.content, mode)
     end
-    if fs.stat(snapshot.path) and not fs.remove(snapshot.path) then
-        return false
-    end
-    return fs.stat(snapshot.path) == nil
+    return durable_remove(snapshot.path)
 end
 
 local function run_locked(lock_path, stale_seconds, busy_error, operation)
-    if not acquire_lock_dir(lock_path, stale_seconds) then
+    local lock_token = acquire_lock_dir(lock_path, stale_seconds)
+    if not lock_token then
         return false, busy_error
     end
     local called, first, second = pcall(operation)
-    local released = release_lock_dir(lock_path)
+    local released = release_lock_dir(lock_path, lock_token)
     if not called then
         return false, "Operation failed"
     end
@@ -382,14 +693,145 @@ local function restore_uci_snapshot(package_name, snapshot)
 end
 
 local TAILSCALE_CLI = "/usr/sbin/tailscale"
+local TAILSCALED_BINARY = "/usr/sbin/tailscaled"
 local TAILSCALE_SOCKET = "/var/run/tailscale/tailscaled.sock"
 local TAILSCALE_WATCHDOG_STATUS = "/var/run/jammonitor/tailscale-watchdog.json"
+local TAILSCALE_CRITICAL_PEER = "/etc/jammonitor/tailscale-critical-peer"
+
+-- Open one inode, reject symlinks and non-regular files, and read exactly the
+-- size proven by fstat. This keeps atomic producer replacement from mixing
+-- generations and closes the lstat/open substitution window by matching the
+-- device and inode observed on both sides of open().
+local function read_bounded_regular_file(path, max_bytes, required_uid)
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+    local before = fs.lstat(path)
+    if not before or before.type ~= "reg" or
+       (required_uid ~= nil and before.uid ~= required_uid) or
+       type(before.size) ~= "number" or before.size < 0 or
+       before.size > max_bytes then
+        return nil
+    end
+
+    local descriptor = nixio.open(path, "r")
+    if not descriptor then return nil end
+    local opened = descriptor:stat()
+    if not opened or opened.type ~= "reg" or
+       (required_uid ~= nil and opened.uid ~= required_uid) or
+       opened.dev ~= before.dev or opened.ino ~= before.ino or
+       type(opened.size) ~= "number" or opened.size < 0 or
+       opened.size > max_bytes then
+        descriptor:close()
+        return nil
+    end
+
+    local chunks = {}
+    local remaining = opened.size
+    while remaining > 0 do
+        local chunk = descriptor:read(math.min(remaining, 4096))
+        if type(chunk) ~= "string" or #chunk == 0 then
+            descriptor:close()
+            return nil
+        end
+        chunks[#chunks + 1] = chunk
+        remaining = remaining - #chunk
+    end
+    local extra = descriptor:read(1)
+    descriptor:close()
+    if type(extra) == "string" and #extra > 0 then return nil end
+
+    local content = table.concat(chunks)
+    if #content ~= opened.size then return nil end
+    return content
+end
+
+-- Read at most the final max_bytes from one proven regular inode. Unlike
+-- fs.readfile()+substring, this never allocates the untrusted prefix of a
+-- large persistent log. Appends after fstat are deliberately excluded from
+-- this point-in-time snapshot.
+local function read_bounded_regular_tail(path, max_bytes, required_uid)
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+    if type(max_bytes) ~= "number" or max_bytes < 1 or
+       max_bytes ~= math.floor(max_bytes) then
+        return nil
+    end
+    local before = fs.lstat(path)
+    if not before or before.type ~= "reg" or
+       (required_uid ~= nil and before.uid ~= required_uid) or
+       type(before.size) ~= "number" or before.size < 0 then
+        return nil
+    end
+    local descriptor = nixio.open(path, "r")
+    if not descriptor then return nil end
+    local opened = descriptor:stat()
+    if not opened or opened.type ~= "reg" or
+       (required_uid ~= nil and opened.uid ~= required_uid) or
+       opened.dev ~= before.dev or opened.ino ~= before.ino or
+       type(opened.size) ~= "number" or opened.size < 0 then
+        descriptor:close()
+        return nil
+    end
+    local start = math.max(0, opened.size - max_bytes)
+    if descriptor:seek(start, "set") ~= start then
+        descriptor:close()
+        return nil
+    end
+    local chunks = {}
+    local remaining = opened.size - start
+    while remaining > 0 do
+        local chunk = descriptor:read(math.min(remaining, 4096))
+        if type(chunk) ~= "string" or #chunk == 0 then
+            descriptor:close()
+            return nil
+        end
+        chunks[#chunks + 1] = chunk
+        remaining = remaining - #chunk
+    end
+    local after = descriptor:stat()
+    descriptor:close()
+    if not after or after.type ~= "reg" or
+       after.dev ~= opened.dev or after.ino ~= opened.ino or
+       type(after.size) ~= "number" or after.size < opened.size then
+        return nil
+    end
+    return table.concat(chunks)
+end
+
+local DHCP_LEASES_FILE = "/tmp/dhcp.leases"
+local DHCP_LEASES_MAX_BYTES = 262144
+
+local function read_dhcp_leases()
+    return read_bounded_regular_file(
+        DHCP_LEASES_FILE, DHCP_LEASES_MAX_BYTES, 0
+    ) or ""
+end
 
 -- Return the first tailscaled PID without accepting any caller-controlled text.
 local function tailscaled_pid()
-    local sys = require "luci.sys"
-    local output = sys.exec("pidof tailscaled 2>/dev/null | awk '{print $1}'") or ""
-    return output:match("^(%d+)")
+    local fs = require "nixio.fs"
+    local entries = fs.dir("/proc")
+    if not entries then return nil end
+    local candidate
+    local matches = 0
+    for entry in entries do
+        if entry:match("^%d+$") then
+            local comm = fs.readfile("/proc/" .. entry .. "/comm")
+            local stat = fs.readfile("/proc/" .. entry .. "/stat")
+            local executable = fs.readlink("/proc/" .. entry .. "/exe")
+            local state = type(stat) == "string" and
+                stat:match("^%d+ %b() (%S)") or nil
+            if (comm == "tailscaled\n" or comm == "tailscaled") and
+               state ~= nil and state ~= "Z" and
+               state ~= "X" and state ~= "x" and
+               executable == TAILSCALED_BINARY then
+                matches = matches + 1
+                candidate = entry
+                if matches > 1 then return nil end
+            end
+        end
+    end
+    return matches == 1 and candidate or nil
 end
 
 -- Process lifetime is distinct from Tailscale connectivity. Bind the reported
@@ -399,15 +841,23 @@ local function tailscaled_process_identity(pid)
     if not pid or not pid:match("^%d+$") then return nil, nil end
 
     local fs = require "nixio.fs"
-    local sys = require "luci.sys"
     local stat = fs.readfile("/proc/" .. pid .. "/stat")
     local uptime_text = fs.readfile("/proc/uptime")
-    if not stat or not uptime_text then return nil end
+    local executable = fs.readlink("/proc/" .. pid .. "/exe")
+    if not stat or not uptime_text or executable ~= TAILSCALED_BINARY then
+        return nil
+    end
 
     -- Strip pid and parenthesized comm. starttime is field 22, which is the
     -- 20th whitespace-delimited field in the remainder beginning with state.
-    local remainder = stat:match("^%d+ %b() (.+)$")
+    local stat_pid, comm, remainder =
+        stat:match("^(%d+) %(([^)]*)%) (.+)$")
+    if stat_pid ~= pid or comm ~= "tailscaled" then return nil end
     if not remainder then return nil end
+    local state = remainder:match("^(%S)")
+    if not state or state == "Z" or state == "X" or state == "x" then
+        return nil
+    end
     local start_ticks
     local index = 0
     for value in remainder:gmatch("%S+") do
@@ -419,28 +869,110 @@ local function tailscaled_process_identity(pid)
     end
 
     local host_uptime = tonumber(uptime_text:match("^([%d%.]+)"))
-    local clock_ticks = tonumber((sys.exec("getconf CLK_TCK 2>/dev/null") or ""):match("%d+")) or 100
+    -- Linux uses USER_HZ=100 for /proc/PID/stat starttime on this supported
+    -- OpenWrt target. Avoid an unbounded getconf subprocess in a LuCI request.
+    local clock_ticks = 100
     if not start_ticks or not host_uptime or clock_ticks <= 0 then return nil end
 
     local process_uptime = math.floor(host_uptime - (start_ticks / clock_ticks))
     if process_uptime < 0 then return nil, nil end
-    return pid .. ":" .. tostring(start_ticks), process_uptime
+    return pid .. ":" .. tostring(start_ticks), process_uptime, executable
+end
+
+-- Capture the complete process identity used for LocalAPI joins. The public
+-- schema keeps the historical PID:start-ticks generation string, while the
+-- internal join also proves the exact supervised executable on every read.
+local function observed_tailscaled_process_identity()
+    local pid = tailscaled_pid()
+    local generation, uptime, executable =
+        tailscaled_process_identity(pid)
+    if not generation or type(uptime) ~= "number" or
+       executable ~= TAILSCALED_BINARY then
+        return nil, nil
+    end
+    return {
+        generation = generation,
+        executable = executable
+    }, uptime
+end
+
+local function same_tailscaled_process_identity(first, second)
+    return type(first) == "table" and type(second) == "table" and
+        first.generation == second.generation and
+        first.executable == second.executable and
+        first.executable == TAILSCALED_BINARY
 end
 
 -- Run status behind an external deadline. Tailscale v1.92.x LocalAPI calls can
 -- otherwise wait indefinitely when the daemon accepts a socket but is wedged.
 local function query_tailscale_status(include_peers)
+    local fs = require "nixio.fs"
     local sys = require "luci.sys"
     local json = require "luci.jsonc"
-    local command = "timeout 3 " .. TAILSCALE_CLI ..
+    local command =
+        "timeout -s TERM -k 2 3 /bin/sh -c " ..
+        "'ulimit -f 128 || exit 125; shift; exec \"$@\"' " ..
+        "jammonitor-status-limit 128 " .. TAILSCALE_CLI ..
         " --socket=" .. TAILSCALE_SOCKET .. " status --json"
     if not include_peers then
         command = command .. " --peers=false"
     end
     command = command .. " 2>/dev/null"
-    local raw = sys.exec(command) or ""
-    if raw == "" then return nil end
-    return json.parse(raw)
+
+    -- Keep the raw LocalAPI document in the same root-only capture directory
+    -- long enough to ask jsonfilter for the exact JSON type of Health. Lua
+    -- tables alone cannot distinguish an empty JSON array from an empty JSON
+    -- object. The document is bounded, parsed locally, removed on every path,
+    -- and never returned across the LuCI boundary.
+    local raw_path = next_private_command_capture_path()
+    if not raw_path or fs.lstat(raw_path) ~= nil then return nil, nil end
+    local rc = sys.call(command .. " >" .. raw_path)
+    local stat = fs.lstat(raw_path)
+    local raw
+    if rc == 0 and stat and stat.type == "reg" and stat.uid == 0 and
+       type(stat.size) == "number" and stat.size > 0 and
+       stat.size <= 65536 then
+        raw = read_bounded_regular_file(raw_path, 65536)
+    end
+
+    local health_type
+    if raw then
+        local type_ok, type_output = checked_capture(
+            "timeout -s TERM -k 2 3 /usr/bin/jsonfilter -i " ..
+                raw_path .. " -t '@.Health' 2>/dev/null"
+        )
+        if type_ok then
+            health_type = type_output:match("^([a-z]+)%s*$")
+        end
+    end
+
+    fs.remove(raw_path)
+    if not raw then return nil, nil end
+    local parsed = json.parse(raw)
+    if type(parsed) ~= "table" then return nil, nil end
+    return parsed, health_type
+end
+
+-- Join one LocalAPI response to the exact daemon generation that was alive on
+-- both sides of the bounded query. A response from a process that exited while
+-- the request was in flight is never eligible to prove connectivity or carry
+-- process uptime into the next generation.
+local function query_joined_tailscale_status(include_peers)
+    local before_identity = observed_tailscaled_process_identity()
+    local status, health_type = query_tailscale_status(include_peers)
+    local after_identity, after_uptime =
+        observed_tailscaled_process_identity()
+
+    if status == nil then
+        return nil, health_type, nil, nil, "unknown"
+    end
+    if same_tailscaled_process_identity(before_identity, after_identity) then
+        return status, health_type, after_identity, after_uptime, "stable"
+    end
+    if before_identity and after_identity then
+        return status, health_type, nil, nil, "restarted"
+    end
+    return status, health_type, nil, nil, "unknown"
 end
 
 local function copy_string_list(values, limit)
@@ -456,18 +988,66 @@ local function copy_string_list(values, limit)
 end
 
 local function is_tailscale_ip(value)
-    if type(value) ~= "string" or #value > 128 then return false end
+    if type(value) ~= "string" or #value == 0 or #value > 39 then
+        return false
+    end
 
     local first, second, third, fourth =
         value:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
     if first then
-        first, second, third, fourth =
-            tonumber(first), tonumber(second), tonumber(third), tonumber(fourth)
+        local function ipv4_octet(part)
+            if part ~= "0" and not part:match("^[1-9]%d?%d?$") then
+                return nil
+            end
+            local numeric = tonumber(part)
+            if not numeric or numeric > 255 then return nil end
+            return numeric
+        end
+        first, second, third, fourth = ipv4_octet(first),
+            ipv4_octet(second), ipv4_octet(third), ipv4_octet(fourth)
+        if not first or not second or not third or not fourth then
+            return false
+        end
         return first == 100 and second >= 64 and second <= 127 and
-            third <= 255 and fourth <= 255
+            third >= 0 and fourth >= 0
     end
 
-    return value:lower():match("^fd7a:115c:a1e0:") ~= nil
+    local candidate = value:lower()
+    if candidate:find("[^0-9a-f:]") or
+       not candidate:match("^fd7a:115c:a1e0:") then
+        return false
+    end
+
+    local function ipv6_part_group_count(part)
+        if part == "" then return 0 end
+        if part:sub(1, 1) == ":" or part:sub(-1) == ":" or
+           part:find("::", 1, true) then
+            return nil
+        end
+        local count = 0
+        for group in part:gmatch("[^:]+") do
+            if #group == 0 or #group > 4 or group:find("[^0-9a-f]") then
+                return nil
+            end
+            count = count + 1
+        end
+        return count
+    end
+
+    local compression = candidate:find("::", 1, true)
+    if compression then
+        if candidate:find("::", compression + 2, true) then
+            return false
+        end
+        local left_count =
+            ipv6_part_group_count(candidate:sub(1, compression - 1))
+        local right_count =
+            ipv6_part_group_count(candidate:sub(compression + 2))
+        return left_count ~= nil and right_count ~= nil and
+            left_count + right_count < 8
+    end
+
+    return ipv6_part_group_count(candidate) == 8
 end
 
 local function copy_tailscale_ip_list(values, limit)
@@ -480,6 +1060,37 @@ local function copy_tailscale_ip_list(values, limit)
         end
     end
     return result
+end
+
+local function critical_peer_contract_state()
+    local fs = require "nixio.fs"
+    local stat = fs.lstat(TAILSCALE_CRITICAL_PEER)
+    if not stat then return false, "not_configured" end
+    if stat.type ~= "reg" then
+        return true, "invalid_configuration"
+    end
+    if type(stat.size) ~= "number" or stat.size < 1 or stat.size > 254 then
+        return true, "invalid_configuration"
+    end
+
+    local content = read_bounded_regular_file(
+        TAILSCALE_CRITICAL_PEER, 254
+    )
+    if type(content) ~= "string" or #content ~= stat.size then
+        return true, "invalid_configuration"
+    end
+    local candidate = content
+    if candidate:sub(-1) == "\n" then
+        candidate = candidate:sub(1, -2)
+    end
+    if content ~= candidate and content ~= candidate .. "\n" then
+        return true, "invalid_configuration"
+    end
+    if candidate == "" or candidate:find("[^0-9A-Fa-f:.]") or
+       not is_tailscale_ip(candidate) then
+        return true, "invalid_configuration"
+    end
+    return true, "unknown"
 end
 
 -- Project the unstable Tailscale status schema onto the small, non-sensitive
@@ -512,56 +1123,112 @@ local function project_tailscale_peers(status)
     return peers
 end
 
-local function count_table_values(values, limit)
-    if type(values) ~= "table" then return 0 end
+local function bounded_string_array_count(values, limit)
+    if type(values) ~= "table" then return nil end
     local count = 0
-    for _ in pairs(values) do
+    local highest = 0
+    for key, value in pairs(values) do
+        if type(key) ~= "number" or key < 1 or
+           key ~= math.floor(key) or key > limit or
+           type(value) ~= "string" or #value > 512 then
+            return nil
+        end
         count = count + 1
-        if count >= limit then break end
+        if key > highest then highest = key end
+        if count > limit then return nil end
     end
+    if highest ~= count then return nil end
     return count
 end
 
-local function live_tailscale_projection(status)
+local function live_tailscale_projection(
+    status, health_type, joined_identity, joined_uptime, join_state
+)
     local fs = require "nixio.fs"
-    local sys = require "luci.sys"
-    local pid = tailscaled_pid()
     local installed = fs.stat(TAILSCALE_CLI) ~= nil
-    local enabled = false
-    local running = false
-    if fs.stat("/etc/init.d/tailscale") then
-        enabled = sys.call("/etc/init.d/tailscale enabled >/dev/null 2>&1") == 0
-        running = sys.call("/etc/init.d/tailscale running >/dev/null 2>&1") == 0
+    local init_present = fs.stat("/etc/init.d/tailscale") ~= nil
+    local enabled
+    local running
+    if init_present then
+        enabled = checked_init_state("/etc/init.d/tailscale", "enabled", 3)
+        if enabled == true then
+            running = checked_init_state(
+                "/etc/init.d/tailscale", "running", 3
+            )
+        end
     end
 
     local backend = type(status) == "table" and status.BackendState or nil
     local self_status = type(status) == "table" and status.Self or nil
     local ips = type(self_status) == "table" and
         copy_tailscale_ip_list(self_status.TailscaleIPs, 4) or {}
-    local health_warnings = type(status) == "table" and count_table_values(status.Health, 100) or 0
+    local health_count = type(status) == "table" and
+        bounded_string_array_count(status.Health, 100) or nil
+    local health_schema_valid =
+        health_type == "array" and health_count ~= nil
+    local health_warnings = health_count or 0
     local control_online = type(self_status) == "table" and self_status.Online or nil
     if type(control_online) ~= "boolean" then control_online = nil end
     local key_expiry = type(self_status) == "table" and self_status.KeyExpiry or nil
     if type(key_expiry) ~= "string" or #key_expiry > 64 then key_expiry = nil end
     local tun_available = type(status) == "table" and status.TUN or nil
     if type(tun_available) ~= "boolean" then tun_available = nil end
-    local in_engine = type(self_status) == "table" and self_status.InEngine or nil
-    if type(in_engine) ~= "boolean" then in_engine = nil end
     local state
     local reason
     local connected = false
     local degraded = false
-    local process_generation, process_uptime_seconds =
-        tailscaled_process_identity(pid)
-    local has_delivery = backend == "Running" and #ips > 0 and
-        tun_available == true and in_engine == true
+    local peer_configured, peer_state = critical_peer_contract_state()
+    local peer_reachable = peer_state == "invalid_configuration" and false or nil
+    local final_identity, final_uptime =
+        observed_tailscaled_process_identity()
+    local process_generation
+    local process_uptime_seconds
+    local process_join_state = join_state
+    if process_join_state == "stable" and
+       same_tailscaled_process_identity(joined_identity, final_identity) and
+       type(joined_uptime) == "number" and
+       type(final_uptime) == "number" then
+        process_generation = final_identity.generation
+        process_uptime_seconds = final_uptime
+    elseif process_join_state == "stable" then
+        process_join_state = final_identity and "restarted" or "unknown"
+    end
+    if process_join_state ~= "stable" then
+        -- The response cannot be attributed to the currently supervised
+        -- daemon. Retain only the fault classification; never project the old
+        -- generation's IP, control, tunnel, key, or Health observations.
+        ips = {}
+        control_online = nil
+        key_expiry = nil
+        tun_available = nil
+        health_schema_valid = false
+        health_warnings = 0
+    end
 
     if not installed then
         state, reason = "not_installed", "cli_missing"
-    elseif not enabled then
+    elseif not init_present then
+        state, reason = "watchdog_error", "supervisor_missing"
+    elseif enabled == nil then
+        state, reason = "watchdog_error", "service_enabled_query_failed"
+    elseif enabled == false then
         state, reason = "disabled", "service_disabled"
-    elseif not running then
+    elseif running == nil then
+        state, reason = "watchdog_error", "service_running_query_failed"
+    elseif running == false then
         state, reason = "daemon_missing", "supervisor_inactive"
+    elseif status ~= nil and process_join_state == "restarted" then
+        state = backend == "Running" and
+            "running_degraded" or "daemon_unresponsive"
+        reason = "process_restarted"
+        connected = false
+        degraded = backend == "Running"
+    elseif status ~= nil and process_join_state ~= "stable" then
+        state = backend == "Running" and
+            "running_degraded" or "daemon_unresponsive"
+        reason = "process_generation_unknown"
+        connected = false
+        degraded = backend == "Running"
     elseif backend == "Running" then
         if #ips == 0 then
             state, reason = "running_degraded", "tailnet_ip_missing"
@@ -572,12 +1239,9 @@ local function live_tailscale_projection(status)
         elseif tun_available ~= true then
             state, reason = "running_degraded", "tun_state_unknown"
             degraded = true
-        elseif in_engine == false then
-            state, reason = "running_degraded", "engine_inactive"
-            degraded = true
-        elseif in_engine ~= true then
-            state, reason = "running_degraded", "engine_state_unknown"
-            degraded = true
+        elseif not health_schema_valid then
+            state, reason = "running_degraded", "health_state_unknown"
+            connected, degraded = false, true
         elseif control_online == false then
             state, reason = "running_degraded", "control_offline"
             connected, degraded = true, true
@@ -586,10 +1250,6 @@ local function live_tailscale_projection(status)
             connected, degraded = true, true
         elseif health_warnings > 0 then
             state, reason = "running_degraded", "health_warning"
-            connected, degraded = true, true
-        elseif not process_generation or
-               type(process_uptime_seconds) ~= "number" then
-            state, reason = "running_degraded", "process_generation_unknown"
             connected, degraded = true, true
         else
             state, reason = "running", "ok"
@@ -614,8 +1274,23 @@ local function live_tailscale_projection(status)
         connected = false
     end
 
+    -- A stale or absent watchdog cannot prove the configured TSMP contract.
+    -- The local fallback may expose point-in-time daemon state, but it must
+    -- never claim delivered connectivity for an unobserved critical peer.
+    if backend == "Running" and peer_configured and
+       process_join_state == "stable" then
+        state = "running_degraded"
+        if peer_state == "invalid_configuration" then
+            reason = "critical_peer_invalid"
+        else
+            reason = "critical_peer_unobserved"
+        end
+        connected = false
+        degraded = true
+    end
+
     return {
-        schema = 2,
+        schema = 3,
         observed_at = os.time(),
         status = state,
         reason = reason,
@@ -633,7 +1308,6 @@ local function live_tailscale_projection(status)
         tailscale_ips = ips,
         key_expiry = key_expiry,
         tun_available = tun_available,
-        in_engine = in_engine,
         health_warnings = health_warnings,
         condition_since_at = os.time(),
         condition_uptime_seconds = 0,
@@ -646,9 +1320,9 @@ local function live_tailscale_projection(status)
         recovery_state = "none",
         recovery_count = 0,
         valid_response_streak = status ~= nil and 1 or 0,
-        peer_configured = false,
-        peer_state = "unknown",
-        peer_reachable = nil,
+        peer_configured = peer_configured,
+        peer_state = peer_state,
+        peer_reachable = peer_reachable,
         peer_last_success_at = 0,
         watchdog_active = false,
         source = "live"
@@ -661,7 +1335,7 @@ local WATCHDOG_FIELDS = {
     "installed", "service_enabled", "service_running", "control_online",
     "process_generation",
     "process_uptime_seconds", "backend_state",
-    "key_expiry", "tun_available", "in_engine", "health_warnings",
+    "key_expiry", "tun_available", "health_warnings",
     "condition_since_at", "condition_uptime_seconds", "connected_since_at",
     "connectivity_uptime_seconds", "last_connected_at", "recoverable",
     "consecutive_failures", "recovery_attempted", "recovery_state",
@@ -695,8 +1369,24 @@ local WATCHDOG_MAINTENANCE_STATES = {
     out_of_bounds = true
 }
 
+local WATCHDOG_PEER_STATES = {
+    not_configured = true,
+    unknown = true,
+    reachable = true,
+    unreachable = true,
+    invalid_configuration = true
+}
+
+local function nonnegative_integer(value)
+    return type(value) == "number" and value >= 0 and
+        value == math.floor(value)
+end
+
 local function watchdog_snapshot_is_valid(parsed)
-    if type(parsed) ~= "table" or tonumber(parsed.schema) ~= 2 or
+    if type(parsed) ~= "table" then return false end
+    local schema = parsed.schema
+    if type(schema) ~= "number" or
+       (schema ~= 2 and schema ~= 3) or
        type(parsed.status) ~= "string" or
        not WATCHDOG_STATES[parsed.status] then
         return false
@@ -704,8 +1394,47 @@ local function watchdog_snapshot_is_valid(parsed)
     if not WATCHDOG_MAINTENANCE_STATES[parsed.maintenance_state] then
         return false
     end
-    local observed_at = tonumber(parsed.observed_at)
-    local maintenance_expiry = tonumber(parsed.maintenance_expires_at)
+    local observed_at = parsed.observed_at
+    local maintenance_expiry = parsed.maintenance_expires_at
+    local required_booleans = {
+        "healthy", "degraded", "installed", "service_enabled",
+        "service_running", "recoverable", "peer_configured"
+    }
+    for _, field in ipairs(required_booleans) do
+        if type(parsed[field]) ~= "boolean" then return false end
+    end
+    local required_integers = {
+        "observed_at", "monotonic_seconds", "health_warnings",
+        "condition_since_at", "condition_uptime_seconds",
+        "connected_since_at", "last_connected_at",
+        "consecutive_failures", "recovery_attempted", "recovery_count",
+        "valid_response_streak", "peer_last_success_at",
+        "maintenance_expires_at"
+    }
+    for _, field in ipairs(required_integers) do
+        if not nonnegative_integer(parsed[field]) then return false end
+    end
+    if parsed.connectivity_uptime_seconds ~= nil and
+       not nonnegative_integer(parsed.connectivity_uptime_seconds) then
+        return false
+    end
+    if type(parsed.reason) ~= "string" or
+       parsed.reason == "" or
+       type(parsed.backend_state) ~= "string" or
+       type(parsed.tailscale_ip) ~= "string" or
+       type(parsed.key_expiry) ~= "string" or
+       type(parsed.recovery_state) ~= "string" then
+        return false
+    end
+    local nullable_booleans = {
+        "connected", "control_online", "local_api_responsive",
+        "tun_available", "peer_reachable"
+    }
+    for _, field in ipairs(nullable_booleans) do
+        if parsed[field] ~= nil and type(parsed[field]) ~= "boolean" then
+            return false
+        end
+    end
     if parsed.maintenance_state == "active" then
         if parsed.status ~= "maintenance" or not observed_at or
            not maintenance_expiry or maintenance_expiry <= observed_at or
@@ -715,14 +1444,28 @@ local function watchdog_snapshot_is_valid(parsed)
     elseif parsed.status == "maintenance" then
         return false
     end
-    if type(parsed.healthy) ~= "boolean" or
-       type(parsed.degraded) ~= "boolean" or
-       (parsed.connected ~= nil and type(parsed.connected) ~= "boolean") or
-       (parsed.control_online ~= nil and
-        type(parsed.control_online) ~= "boolean") or
-       (parsed.local_api_responsive ~= nil and
-        type(parsed.local_api_responsive) ~= "boolean") then
+    if not WATCHDOG_PEER_STATES[parsed.peer_state] then
         return false
+    end
+    if (parsed.peer_configured == false and
+        (parsed.peer_state ~= "not_configured" or
+         parsed.peer_reachable ~= nil)) or
+       (parsed.peer_configured == true and
+        not ((parsed.peer_state == "unknown" and
+              parsed.peer_reachable == nil) or
+             (parsed.peer_state == "reachable" and
+              parsed.peer_reachable == true) or
+             ((parsed.peer_state == "unreachable" or
+               parsed.peer_state == "invalid_configuration") and
+              parsed.peer_reachable == false))) then
+        return false
+    end
+    if schema == 2 then
+        if type(parsed.in_engine) ~= "boolean" then return false end
+        if (parsed.connected == true or parsed.healthy == true) and
+           parsed.in_engine ~= true then
+            return false
+        end
     end
     if parsed.process_generation ~= nil then
         if type(parsed.process_generation) ~= "string" or
@@ -741,13 +1484,57 @@ local function watchdog_snapshot_is_valid(parsed)
 
     local has_delivery = parsed.backend_state == "Running" and
         parsed.tun_available == true and
-        parsed.in_engine == true and
         is_tailscale_ip(parsed.tailscale_ip)
+    if parsed.connected == true and
+       (parsed.status ~= "running" and
+        parsed.status ~= "running_degraded") then
+        return false
+    end
     if parsed.connected == true and not has_delivery then
         return false
     end
+    if parsed.connected == true and
+       (parsed.installed ~= true or parsed.service_enabled ~= true or
+        parsed.service_running ~= true or
+        parsed.local_api_responsive ~= true) then
+        return false
+    end
+    if parsed.connected == true and parsed.peer_configured == true and
+       parsed.peer_reachable ~= true then
+        return false
+    end
+    if parsed.connected == true then
+        if parsed.connected_since_at <= 0 or
+           not nonnegative_integer(parsed.connectivity_uptime_seconds) then
+            return false
+        end
+    elseif parsed.connected_since_at ~= 0 or
+           parsed.connectivity_uptime_seconds ~= nil then
+        return false
+    end
+    if parsed.peer_configured == false and
+       parsed.peer_last_success_at ~= 0 then
+        return false
+    end
+    if parsed.peer_state == "reachable" and
+       parsed.peer_last_success_at <= 0 then
+        return false
+    end
+    if parsed.service_running == true and
+       parsed.service_enabled ~= true then
+        return false
+    end
+    if parsed.service_enabled == true and parsed.installed ~= true then
+        return false
+    end
+    if parsed.local_api_responsive == true and
+       parsed.service_running ~= true then
+        return false
+    end
     if parsed.healthy == true and
-       (parsed.status ~= "running" or parsed.connected ~= true or
+       (parsed.status ~= "running" or parsed.reason ~= "ok" or
+        parsed.connected ~= true or parsed.degraded ~= false or
+        parsed.health_warnings ~= 0 or parsed.installed ~= true or
         parsed.control_online ~= true or
         parsed.local_api_responsive ~= true or
         parsed.service_running ~= true or
@@ -760,8 +1547,14 @@ local function watchdog_snapshot_is_valid(parsed)
     if parsed.status == "running" and parsed.healthy ~= true then
         return false
     end
-    if parsed.peer_configured == true and parsed.peer_reachable == false and
-       parsed.healthy == true then
+    if parsed.status == "running_degraded" then
+        if parsed.backend_state ~= "Running" or
+           parsed.local_api_responsive ~= true or
+           parsed.healthy ~= false or parsed.degraded ~= true then
+            return false
+        end
+    elseif parsed.status ~= "running" and
+           (parsed.healthy ~= false or parsed.connected == true) then
         return false
     end
     return true
@@ -781,22 +1574,81 @@ local function project_watchdog_snapshot(parsed)
     return projected
 end
 
+local function live_projection_reprove_generation(projected, expected_identity)
+    if type(projected) ~= "table" or not expected_identity then
+        return true
+    end
+    local current_identity = observed_tailscaled_process_identity()
+    if same_tailscaled_process_identity(expected_identity, current_identity) then
+        return true
+    end
+
+    if current_identity then
+        projected.status = projected.backend_state == "Running" and
+            "running_degraded" or "daemon_unresponsive"
+        projected.reason = "process_restarted"
+    else
+        projected.status = "daemon_missing"
+        projected.reason = "process_generation_unknown"
+    end
+    projected.healthy = false
+    projected.connected = false
+    projected.degraded =
+        current_identity ~= nil and projected.backend_state == "Running"
+    projected.local_api_responsive = nil
+    projected.control_online = nil
+    projected.service_running = current_identity ~= nil
+    projected.process_generation = nil
+    projected.process_uptime_seconds = nil
+    projected.tailscale_ips = {}
+    projected.key_expiry = nil
+    projected.tun_available = nil
+    projected.health_warnings = 0
+    projected.condition_since_at = os.time()
+    projected.condition_uptime_seconds = 0
+    projected.connected_since_at = 0
+    projected.connectivity_uptime_seconds = nil
+    projected.last_connected_at = 0
+    projected.valid_response_streak = 0
+    if projected.peer_configured == true then
+        projected.peer_state = "unknown"
+        projected.peer_reachable = nil
+    end
+    return false
+end
+
 local function get_tailscale_projection(include_live_peers)
-    local fs = require "nixio.fs"
     local json = require "luci.jsonc"
-    local cached = fs.readfile(TAILSCALE_WATCHDOG_STATUS)
+    local cached = read_bounded_regular_file(
+        TAILSCALE_WATCHDOG_STATUS, 16384
+    )
 
     if cached and cached ~= "" then
         local parsed = json.parse(cached)
         local observed = type(parsed) == "table" and tonumber(parsed.observed_at) or nil
         if observed and observed <= os.time() + 5 and os.time() - observed <= 45 and
            watchdog_snapshot_is_valid(parsed) then
-            return project_watchdog_snapshot(parsed), nil
+            local expected_identity
+            if parsed.process_generation ~= nil then
+                expected_identity = {
+                    generation = parsed.process_generation,
+                    executable = TAILSCALED_BINARY
+                }
+            end
+            return project_watchdog_snapshot(parsed), nil, expected_identity
         end
     end
 
-    local live = query_tailscale_status(include_live_peers == true)
-    return live_tailscale_projection(live), live
+    local live, health_type, identity, uptime, join_state =
+        query_joined_tailscale_status(include_live_peers == true)
+    local projected = live_tailscale_projection(
+        live, health_type, identity, uptime, join_state
+    )
+    if projected.process_generation ~=
+       (identity and identity.generation or nil) then
+        identity = nil
+    end
+    return projected, live, identity
 end
 
 -- System stats: load, cpu, temp, ram, uptime, conntrack
@@ -1040,13 +1892,10 @@ end
 -- Historical ping data from metrics table (for graph on page load)
 function action_ping_history()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
 
     http.prepare_content("application/json")
 
-    local db_path = "/mnt/data/jammonitor/history.db"
     local minutes = tonumber(http.formvalue("minutes")) or 10
 
     -- Limit to reasonable range
@@ -1056,21 +1905,33 @@ function action_ping_history()
     local cutoff = os.time() - (minutes * 60)
     local result = { ok = true, pings = {} }
 
-    if fs.stat(db_path) then
-        local query = string.format(
-            "SELECT ts, wan_pings FROM metrics WHERE ts > %d ORDER BY ts",
-            cutoff
-        )
-        local output = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-        if output and output ~= "" then
-            for line in output:gmatch("[^\n]+") do
-                local ts, pings_json = line:match("([^|]+)|(.+)")
-                if ts and pings_json then
-                    table.insert(result.pings, {
-                        ts = tonumber(ts) * 1000,  -- Convert to JS milliseconds
-                        data = pings_json
-                    })
-                end
+    local authority, authority_error = storage_read_authority()
+    if not authority then
+        result.ok = false
+        result.error = authority_error or "storage_not_authoritative"
+        http.write(json.stringify(result))
+        return
+    end
+    local query = string.format(
+        "SELECT ts, wan_pings FROM metrics WHERE ts > %d " ..
+        "ORDER BY ts LIMIT 3600",
+        cutoff
+    )
+    local query_ok, output, query_error = storage_readonly_sqlite(query)
+    if not query_ok then
+        result.ok = false
+        result.error = query_error or "history_read_failed"
+        http.write(json.stringify(result))
+        return
+    end
+    if output ~= "" then
+        for line in output:gmatch("[^\n]+") do
+            local ts, pings_json = line:match("([^|]+)|(.+)")
+            if ts and pings_json then
+                table.insert(result.pings, {
+                    ts = tonumber(ts) * 1000,  -- Convert to JS milliseconds
+                    data = pings_json
+                })
             end
         end
     end
@@ -1090,7 +1951,7 @@ function action_clients()
     local result = {}
 
     -- DHCP leases
-    result.dhcp_leases = fs.readfile("/tmp/dhcp.leases") or ""
+    result.dhcp_leases = read_dhcp_leases()
 
     -- ARP table
     result.arp = fs.readfile("/proc/net/arp") or ""
@@ -1100,29 +1961,66 @@ function action_clients()
 
     -- Tailscale service state and peers. Prefer the independent watchdog
     -- snapshot; query peers only while the local backend is actually running.
-    local ts_projection, ts_live = get_tailscale_projection(true)
+    local ts_projection, ts_live, ts_identity =
+        get_tailscale_projection(true)
     result.tailscale_status = ts_projection
+    local published_peer_identity
     if ts_projection.backend_state == "Running" then
         -- The status-only watchdog snapshot intentionally has no peer map.
         -- Fetch peers separately, still behind the same three-second bound,
         -- and project only the fields the client table needs.
+        local peer_identity = ts_identity
         if not ts_live then
-            ts_live = query_tailscale_status(true)
+            local peer_health_type
+            local peer_uptime
+            local peer_join_state
+            ts_live, peer_health_type, peer_identity, peer_uptime,
+                peer_join_state =
+                query_joined_tailscale_status(true)
+            if peer_join_state ~= "stable" then
+                ts_live, peer_identity = nil, nil
+            end
         end
-        if type(ts_live) == "table" and ts_live.BackendState == "Running" then
-            result.tailscale_peers = project_tailscale_peers(ts_live)
+        local current_identity = observed_tailscaled_process_identity()
+        if type(ts_live) == "table" and
+           ts_live.BackendState == "Running" and
+           same_tailscaled_process_identity(
+               peer_identity, current_identity
+           ) then
+            local peers = project_tailscale_peers(ts_live)
+            current_identity = observed_tailscaled_process_identity()
+            if same_tailscaled_process_identity(
+                peer_identity, current_identity
+            ) then
+                result.tailscale_peers = peers
+                published_peer_identity = peer_identity
+            end
         end
     end
 
+    if published_peer_identity then
+        local current_identity = observed_tailscaled_process_identity()
+        if not same_tailscaled_process_identity(
+            published_peer_identity, current_identity
+        ) then
+            result.tailscale_peers = nil
+        end
+    end
+    if not live_projection_reprove_generation(
+        ts_projection, ts_identity
+    ) then
+        result.tailscale_peers = nil
+    end
     http.write(json.stringify(result))
 end
 
 function action_tailscale_status()
     local http = require "luci.http"
     local json = require "luci.jsonc"
-    local result = get_tailscale_projection()
+    local result, _, identity = get_tailscale_projection()
 
     http.prepare_content("application/json")
+    live_projection_reprove_generation(result, identity)
     http.write(json.stringify(result))
 end
 
@@ -1178,8 +2076,9 @@ function action_set_client_meta()
         return
     end
 
-    local lock_path = "/tmp/jammonitor-client-meta.lock"
-    if not acquire_lock_dir(lock_path, 30) then
+    local lock_path = LUCI_RUNTIME_DIRECTORY .. "/client-meta.lock"
+    local lock_token = acquire_lock_dir(lock_path, 30)
+    if not lock_token then
         http.write(json.stringify({error = "Client metadata update is busy"}))
         return
     end
@@ -1212,9 +2111,11 @@ function action_set_client_meta()
         end
         return {success = true}
     end)
-    release_lock_dir(lock_path)
+    local released = release_lock_dir(lock_path, lock_token)
     if not ok then
         response = {error = "Client metadata update failed"}
+    elseif not released then
+        response = {error = "Client metadata updated but lock cleanup failed"}
     end
     http.write(json.stringify(response))
 end
@@ -1585,7 +2486,13 @@ function action_update_status()
     end
 
     local job_file = "/tmp/jammonitor_" .. job_id .. ".json"
-    local content = fs.readfile(job_file)
+    local stat = fs.lstat(job_file)
+    local content
+    if stat and stat.type == "reg" and stat.uid == 0 and
+       type(stat.size) == "number" and stat.size >= 0 and
+       stat.size <= 16384 then
+        content = read_bounded_regular_file(job_file, 16384)
+    end
 
     if not content or content == "" then
         http.write(json.stringify({ok = false, error = "Job not found", state = "pending"}))
@@ -1628,24 +2535,67 @@ function action_vnstat()
     end
 end
 
-local function mounted_filesystem_at(path)
+local STORAGE_MOUNT_TABLE_MAX_BYTES = 262144
+local STORAGE_MOUNT_OPTIONS =
+    "rw,noatime,nosuid,nodev,noexec"
+
+local function storage_mount_options_are_confined(options)
+    if type(options) ~= "string" then return false end
+    local padded = "," .. options .. ","
+    return padded:find(",rw,", 1, true) ~= nil and
+        padded:find(",ro,", 1, true) == nil and
+        padded:find(",noatime,", 1, true) ~= nil and
+        padded:find(",nosuid,", 1, true) ~= nil and
+        padded:find(",nodev,", 1, true) ~= nil and
+        padded:find(",noexec,", 1, true) ~= nil
+end
+
+local function read_storage_mount_table()
     local fs = require "nixio.fs"
-    local mounts = fs.readfile("/proc/mounts") or ""
+    local mounts = fs.readfile("/proc/mounts")
+    if type(mounts) ~= "string" or
+       #mounts > STORAGE_MOUNT_TABLE_MAX_BYTES then
+        return nil
+    end
+    return mounts
+end
+
+-- Return an explicit authority classification. A nil mount is not enough:
+-- zero rows and multiple stacked rows require opposite handling.
+local function mounted_filesystem_at(path)
+    if type(path) ~= "string" or
+       not path:match("^/[A-Za-z0-9_./%-]+$") then
+        return nil, "unavailable", nil
+    end
+    local mounts = read_storage_mount_table()
+    if not mounts then return nil, "unavailable", nil end
+    local found
+    local count = 0
     for line in mounts:gmatch("[^\n]+") do
         local source, target, fstype, options =
             line:match("^(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
         if target == path then
-            return {
-                source = source,
-                fstype = fstype,
-                options = options,
-                persistent = fstype ~= "overlay" and fstype ~= "tmpfs",
-                writable = options and
-                    ("," .. options .. ","):find(",rw,", 1, true) ~= nil
-            }
+            count = count + 1
+            -- A stacked or duplicated target is ambiguous. Surface that fact
+            -- instead of making callers confuse it with an unmounted target.
+            if not found then
+                found = {
+                    source = source,
+                    target = target,
+                    fstype = fstype,
+                    options = options,
+                    persistent = fstype == "ext4",
+                    writable = options and
+                        ("," .. options .. ","):find(",rw,", 1, true) ~= nil,
+                    confined =
+                        storage_mount_options_are_confined(options)
+                }
+            end
         end
     end
-    return nil
+    if count == 0 then return nil, "none", 0 end
+    if count > 1 then return nil, "ambiguous", count end
+    return found, "exact", 1
 end
 
 local function collector_service_path()
@@ -1659,8 +2609,14 @@ local function collector_service_path()
     return nil, nil
 end
 
-local STORAGE_LOCK = "/tmp/jammonitor-storage.lock"
+local STORAGE_LOCK = LUCI_RUNTIME_DIRECTORY .. "/storage.lock"
 local FSTAB_CONFIG = "/etc/config/fstab"
+local STORAGE_MOUNT_JOURNAL =
+    "/etc/jammonitor_storage_mount_recovery.json"
+local STORAGE_MOUNT_RECOVERY_FAILED =
+    "/etc/jammonitor_storage_mount_recovery_failed"
+local STORAGE_MOUNT_JOURNAL_MAX_BYTES = 65536
+local STORAGE_FSTAB_SNAPSHOT_MAX_BYTES = 32768
 
 local function storage_partition_identity(device)
     if type(device) ~= "string" then return nil end
@@ -1696,8 +2652,8 @@ end
 
 local function storage_partition_is_system(identity)
     if not identity then return true end
-    local fs = require "nixio.fs"
-    local mounts = fs.readfile("/proc/mounts") or ""
+    local mounts = read_storage_mount_table()
+    if not mounts then return true end
     local protected = {
         ["/"] = true, ["/rom"] = true, ["/overlay"] = true,
         ["/boot"] = true, ["/boot/efi"] = true, ["/usr"] = true
@@ -1712,8 +2668,8 @@ local function storage_partition_is_system(identity)
 end
 
 local function exact_mount_for_source(source)
-    local fs = require "nixio.fs"
-    local mounts = fs.readfile("/proc/mounts") or ""
+    local mounts = read_storage_mount_table()
+    if not mounts then return nil, "Mount table is unavailable" end
     local found
     for line in mounts:gmatch("[^\n]+") do
         local mount_source, target, fstype, options =
@@ -1733,79 +2689,169 @@ end
 
 local function collector_runtime_state()
     local path, name = collector_service_path()
-    if not path then return {path = nil, name = nil, running = false} end
+    if not path then
+        return {
+            present = false, path = "", name = "", running = false,
+            known = true
+        }
+    end
+    local running = checked_init_state(path, "running", 5)
     return {
+        present = true,
         path = path,
         name = name,
-        running = checked_init_action(path, "running", 5)
+        running = running == true,
+        known = running ~= nil
     }
 end
 
 local function stop_collector_checked(state)
-    if not state or not state.path or not state.running then return true end
+    if not state or state.known ~= true then return false end
+    if not state.present or not state.running then return true end
     return checked_init_action(state.path, "stop", 30) and
-        not checked_init_action(state.path, "running", 5)
+        checked_init_state(state.path, "running", 5) == false
 end
 
 local function restore_collector_runtime(state)
-    if not state or not state.path or not state.running then return true end
-    return checked_init_action(state.path, "start", 30) and
-        checked_init_action(state.path, "running", 5)
+    if not state or state.known ~= true or
+       type(state.present) ~= "boolean" or
+       type(state.running) ~= "boolean" then
+        return false
+    end
+    local current_path, current_name = collector_service_path()
+    if not state.present then
+        return current_path == nil and current_name == nil
+    end
+    if current_path ~= state.path or current_name ~= state.name then
+        return false
+    end
+    local running = checked_init_state(state.path, "running", 5)
+    if running == nil then return false end
+    if running ~= state.running then
+        if not checked_init_action(
+            state.path, state.running and "start" or "stop", 30
+        ) then
+            return false
+        end
+    end
+    return checked_init_state(state.path, "running", 5) == state.running
 end
 
 local function unmount_exact(target)
-    local before = mounted_filesystem_at(target)
-    if not before then return true end
+    local before, before_state = mounted_filesystem_at(target)
+    if before_state == "none" then return true end
+    if before_state ~= "exact" or not before then return false end
     if not checked_call("timeout 30 umount " .. target) then return false end
-    return mounted_filesystem_at(target) == nil
+    local _, after_state = mounted_filesystem_at(target)
+    return after_state == "none"
 end
 
 local function mount_exact(source, target)
     if not checked_call(
-        "timeout 30 mount -t ext4 -o rw " .. source .. " " .. target
+        "timeout 30 mount -t ext4 -o " .. STORAGE_MOUNT_OPTIONS ..
+        " " .. source .. " " .. target
     ) then
         return false
     end
-    local mount = mounted_filesystem_at(target)
-    return mount ~= nil and mount.source == source and mount.fstype == "ext4" and
-        mount.writable == true
+    local mount, mount_state = mounted_filesystem_at(target)
+    return mount_state == "exact" and mount ~= nil and
+        mount.source == source and mount.fstype == "ext4" and
+        mount.writable == true and mount.confined == true
+end
+
+local function normalized_storage_mount_options(options)
+    if type(options) ~= "string" or #options < 1 or #options > 512 then
+        return nil
+    end
+    local normalized = {}
+    local seen = {}
+    local consumed = 0
+    for option in options:gmatch("[^,]+") do
+        consumed = consumed + #option
+        if not option:match("^[A-Za-z0-9_.:%-]+[A-Za-z0-9_.:%-=]*$") or
+           seen[option] then
+            return nil
+        end
+        seen[option] = true
+        normalized[#normalized + 1] = option
+    end
+    if #normalized == 0 or consumed + #normalized - 1 ~= #options then
+        return nil
+    end
+    table.sort(normalized)
+    return table.concat(normalized, ",")
 end
 
 local function restore_mount(mount)
     if not mount then return true end
-    if mounted_filesystem_at(mount.target) then return false end
+    local _, before_state = mounted_filesystem_at(mount.target)
+    if before_state ~= "none" then return false end
     if type(mount.target) ~= "string" or
        not mount.target:match("^/[A-Za-z0-9_./%-]+$") or
        not storage_partition_identity(mount.source) then
         return false
     end
-    local options = type(mount.options) == "string" and
-        mount.options:match("^[A-Za-z0-9_,=%.%-]+$") and mount.options or "rw"
+    local options = normalized_storage_mount_options(mount.options)
     local fstype = type(mount.fstype) == "string" and
         mount.fstype:match("^[A-Za-z0-9_.%-]+$") and mount.fstype or "ext4"
+    if not options then return false end
     local restored = checked_call(
         "timeout 30 mount -t " .. fstype .. " -o " .. options .. " " ..
         mount.source .. " " .. mount.target
     )
-    local actual = restored and mounted_filesystem_at(mount.target) or nil
-    return actual ~= nil and actual.source == mount.source and
-        actual.fstype == mount.fstype and
-        actual.writable == (
-            ("," .. (mount.options or "") .. ","):find(",rw,", 1, true) ~= nil
-        )
+    local actual, actual_state
+    if restored then
+        actual, actual_state = mounted_filesystem_at(mount.target)
+    end
+    return actual_state == "exact" and actual ~= nil and
+        actual.source == mount.source and actual.fstype == mount.fstype and
+        normalized_storage_mount_options(actual.options) == options
 end
 
 local function storage_uuid(device)
     local ok, output = checked_capture(
-        "timeout 5 blkid -s UUID -o value " .. device
+        "timeout 5 block info " .. device
     )
     if not ok then return nil end
-    local uuid = output:match("^%s*([A-Fa-f0-9%-]+)%s*$")
+    local found_source, uuid =
+        output:match('^(/dev/sd[a-z][1-9][0-9]*):[^\r\n]* UUID="([^"]+)"[^\r\n]*[\r\n]*$')
+    if found_source ~= device then return nil end
     if not uuid or #uuid < 8 or #uuid > 64 then return nil end
+    if not uuid:match("^[A-Fa-f0-9%-]+$") then return nil end
     return uuid
 end
 
-local function persist_storage_mount(uuid)
+local function storage_uuid_has_exact_authority(uuid, expected_identity)
+    if type(uuid) ~= "string" or
+       not uuid:match("^[A-Fa-f0-9%-]+$") or
+       not expected_identity then
+        return false
+    end
+    local ok, output = checked_capture("timeout 10 block info")
+    if not ok then return false end
+    local count = 0
+    local selected = false
+    for line in output:gmatch("[^\r\n]+") do
+        local source = line:match("^(/dev/sd[a-z][1-9][0-9]*):")
+        local found_uuid = line:match('%sUUID="([^"]+)"')
+        if found_uuid == uuid then
+            count = count + 1
+            local identity = source and storage_partition_identity(source) or nil
+            if not identity or storage_partition_is_system(identity) then
+                return false
+            end
+            if source == expected_identity.path and
+               identity.kernel_id == expected_identity.kernel_id and
+               identity.partition == expected_identity.partition then
+                selected = true
+            end
+        end
+    end
+    return count == 1 and selected
+end
+
+local function persist_storage_mount(uuid, identity)
+    if not storage_uuid_has_exact_authority(uuid, identity) then return false end
     local uci = require "luci.model.uci".cursor()
     local conflicting_sections = {}
     uci:foreach("fstab", "mount", function(section)
@@ -1824,7 +2870,9 @@ local function persist_storage_mount(uuid)
        not uci:set("fstab", "jammonitor", "target", "/mnt/data") or
        not uci:set("fstab", "jammonitor", "uuid", uuid) or
        not uci:set("fstab", "jammonitor", "fstype", "ext4") or
-       not uci:set("fstab", "jammonitor", "options", "rw,noatime") or
+       not uci:set(
+           "fstab", "jammonitor", "options", STORAGE_MOUNT_OPTIONS
+       ) or
        not uci:set("fstab", "jammonitor", "enabled", "1") or
        not uci:commit("fstab") then
         uci:revert("fstab")
@@ -1835,7 +2883,8 @@ local function persist_storage_mount(uuid)
         verify:get("fstab", "jammonitor", "target") == "/mnt/data" and
         verify:get("fstab", "jammonitor", "uuid") == uuid and
         verify:get("fstab", "jammonitor", "fstype") == "ext4" and
-        verify:get("fstab", "jammonitor", "options") == "rw,noatime" and
+        verify:get("fstab", "jammonitor", "options") ==
+            STORAGE_MOUNT_OPTIONS and
         verify:get("fstab", "jammonitor", "enabled") == "1" and
         verify:get("fstab", "jammonitor", "device") == nil and
         verify:get("fstab", "jammonitor", "label") == nil
@@ -1845,31 +2894,951 @@ local function persist_storage_mount(uuid)
             verified = false
         end
     end)
-    return verified
+    if not verified or
+       not storage_uuid_has_exact_authority(uuid, identity) then
+        return false
+    end
+    -- libuci synchronizes its replacement file, but a rename is not durable
+    -- until the containing directory metadata is synchronized too. Callers
+    -- must keep their WAL at fstab_writing when this proof fails.
+    return sync_parent_directory(FSTAB_CONFIG)
+end
+
+local function storage_mount_persistence_is_clear()
+    local clear = true
+    local verify = require "luci.model.uci".cursor()
+    verify:foreach("fstab", "mount", function(section)
+        if section.target == "/mnt/data" then clear = false end
+    end)
+    return clear
+end
+
+local function clear_storage_mount_persistence()
+    local uci = require "luci.model.uci".cursor()
+    local sections = {}
+    uci:foreach("fstab", "mount", function(section)
+        if section.target == "/mnt/data" then
+            sections[#sections + 1] = section[".name"]
+        end
+    end)
+    for _, section_name in ipairs(sections) do
+        if not uci:delete("fstab", section_name) then
+            uci:revert("fstab")
+            return false
+        end
+    end
+    if not uci:commit("fstab") then
+        uci:revert("fstab")
+        return false
+    end
+    if not storage_mount_persistence_is_clear() then return false end
+    return sync_parent_directory(FSTAB_CONFIG)
+end
+
+local function storage_format_boundary_is_safe(expected_identity)
+    if not expected_identity then return false end
+    local current = storage_partition_identity(expected_identity.path)
+    if not current or current.kernel_id ~= expected_identity.kernel_id or
+       current.partition ~= expected_identity.partition or
+       current.disk ~= expected_identity.disk then
+        return false
+    end
+    local mounts = read_storage_mount_table()
+    if not mounts then return false end
+    local protected = {
+        ["/"] = true, ["/rom"] = true, ["/overlay"] = true,
+        ["/boot"] = true, ["/boot/efi"] = true, ["/usr"] = true
+    }
+    for line in mounts:gmatch("[^\n]+") do
+        local source, target = line:match("^(%S+)%s+(%S+)")
+        if source == expected_identity.path or target == "/mnt/data" or
+           (protected[target] and source_uses_disk(source, current.disk)) then
+            return false
+        end
+    end
+    return true
+end
+
+local function open_pinned_storage_format_device(expected_identity)
+    if not expected_identity then return nil end
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+    local before = fs.stat(expected_identity.path)
+    if not before or before.type ~= "blk" or
+       type(before.rdev) ~= "number" then
+        return nil
+    end
+    local descriptor = nixio.open(
+        expected_identity.path, nixio.open_flags("rdwr")
+    )
+    if not descriptor then return nil end
+    local opened = descriptor:stat()
+    local after = fs.stat(expected_identity.path)
+    local current = storage_partition_identity(expected_identity.path)
+    if not opened or opened.type ~= "blk" or
+       type(opened.rdev) ~= "number" or not after or
+       after.type ~= "blk" or opened.dev ~= before.dev or
+       opened.ino ~= before.ino or opened.rdev ~= before.rdev or
+       after.dev ~= opened.dev or after.ino ~= opened.ino or
+       after.rdev ~= opened.rdev or not current or
+       current.kernel_id ~= expected_identity.kernel_id or
+       current.partition ~= expected_identity.partition or
+       current.disk ~= expected_identity.disk or
+       storage_partition_is_system(current) then
+        descriptor:close()
+        return nil
+    end
+    local fd = descriptor:fileno()
+    if type(fd) ~= "number" or fd < 3 or fd > 1024 or
+       fd ~= math.floor(fd) then
+        descriptor:close()
+        return nil
+    end
+    return {
+        descriptor = descriptor,
+        fd = fd,
+        dev = opened.dev,
+        ino = opened.ino,
+        rdev = opened.rdev
+    }
+end
+
+local function pinned_storage_format_device_is_current(pin, identity)
+    if type(pin) ~= "table" or not pin.descriptor or not identity then
+        return false
+    end
+    local fs = require "nixio.fs"
+    local opened = pin.descriptor:stat()
+    local path = fs.stat(identity.path)
+    local current = storage_partition_identity(identity.path)
+    return opened ~= nil and opened.type == "blk" and
+        opened.dev == pin.dev and opened.ino == pin.ino and
+        opened.rdev == pin.rdev and path ~= nil and path.type == "blk" and
+        path.dev == pin.dev and path.ino == pin.ino and
+        path.rdev == pin.rdev and current ~= nil and
+        current.kernel_id == identity.kernel_id and
+        current.partition == identity.partition and
+        current.disk == identity.disk and
+        not storage_partition_is_system(current)
+end
+
+local STORAGE_MOUNT_JOURNAL_PHASES = {
+    prepared = true,
+    collector_stopping = true,
+    collector_stopped = true,
+    old_unmounting = true,
+    old_unmounted = true,
+    new_mounting = true,
+    new_mounted = true,
+    fstab_writing = true,
+    fstab_persisted = true,
+    collector_starting = true,
+    collector_started = true,
+    format_arming = true,
+    format_started = true,
+    format_verified = true,
+    restoring = true,
+    restored = true
+}
+
+local STORAGE_MOUNT_OPERATION_PHASES = {
+    mount = {
+        prepared = true,
+        collector_stopping = true, collector_stopped = true,
+        old_unmounting = true, old_unmounted = true,
+        new_mounting = true, new_mounted = true,
+        fstab_writing = true, fstab_persisted = true,
+        restoring = true, restored = true
+    },
+    init = {
+        prepared = true,
+        fstab_writing = true, fstab_persisted = true,
+        collector_stopping = true, collector_stopped = true,
+        collector_starting = true, collector_started = true,
+        restoring = true, restored = true
+    },
+    format = {
+        prepared = true,
+        fstab_writing = true, fstab_persisted = true,
+        collector_stopping = true, collector_stopped = true,
+        old_unmounting = true, old_unmounted = true,
+        format_arming = true, format_started = true,
+        format_verified = true,
+        restoring = true, restored = true
+    }
+}
+
+local STORAGE_MOUNT_PHASE_TRANSITIONS = {
+    mount = {
+        prepared = {
+            collector_stopping = true, old_unmounting = true,
+            new_mounting = true, fstab_writing = true
+        },
+        collector_stopping = {collector_stopped = true},
+        collector_stopped = {
+            old_unmounting = true, new_mounting = true, fstab_writing = true
+        },
+        old_unmounting = {old_unmounted = true},
+        old_unmounted = {new_mounting = true},
+        new_mounting = {new_mounted = true},
+        new_mounted = {fstab_writing = true},
+        fstab_writing = {fstab_persisted = true}
+    },
+    init = {
+        prepared = {fstab_writing = true},
+        fstab_writing = {fstab_persisted = true},
+        fstab_persisted = {
+            collector_stopping = true, collector_starting = true
+        },
+        collector_stopping = {collector_stopped = true},
+        collector_stopped = {collector_starting = true},
+        collector_starting = {collector_started = true}
+    },
+    format = {
+        prepared = {fstab_writing = true},
+        fstab_writing = {fstab_persisted = true},
+        fstab_persisted = {
+            collector_stopping = true, old_unmounting = true,
+            format_arming = true
+        },
+        collector_stopping = {collector_stopped = true},
+        collector_stopped = {
+            old_unmounting = true, format_arming = true
+        },
+        old_unmounting = {old_unmounted = true},
+        old_unmounted = {format_arming = true},
+        format_arming = {format_started = true},
+        format_started = {format_verified = true}
+    }
+}
+
+local function storage_mount_phase_transition_is_valid(operation, from, to)
+    if to == "restoring" then
+        return from ~= "format_started" and from ~= "format_verified"
+    end
+    if from == "restoring" then return to == "restored" end
+    if from == "restored" then return to == "restoring" end
+    local operation_transitions =
+        STORAGE_MOUNT_PHASE_TRANSITIONS[operation]
+    local transitions = operation_transitions and
+        operation_transitions[from] or nil
+    return transitions ~= nil and transitions[to] == true
+end
+
+local function storage_fstab_snapshot()
+    local fs = require "nixio.fs"
+    local stat = fs.lstat(FSTAB_CONFIG)
+    if not stat then
+        return {path = FSTAB_CONFIG, exists = false, content = ""}
+    end
+    if stat.type ~= "reg" or stat.uid ~= 0 or stat.nlink ~= 1 or
+       type(stat.size) ~= "number" or stat.size < 0 or
+       stat.size > STORAGE_FSTAB_SNAPSHOT_MAX_BYTES then
+        return nil
+    end
+    local content = read_bounded_regular_file(
+        FSTAB_CONFIG, STORAGE_FSTAB_SNAPSHOT_MAX_BYTES, 0
+    )
+    if type(content) ~= "string" or #content ~= stat.size then return nil end
+    return {path = FSTAB_CONFIG, exists = true, content = content}
+end
+
+local function storage_fstab_matches_snapshot(snapshot)
+    local fs = require "nixio.fs"
+    local stat = fs.lstat(FSTAB_CONFIG)
+    if not snapshot.exists then return stat == nil end
+    if not stat or stat.type ~= "reg" or stat.uid ~= 0 or stat.nlink ~= 1 or
+       type(stat.size) ~= "number" or stat.size ~= #snapshot.content then
+        return false
+    end
+    return read_bounded_regular_file(
+        FSTAB_CONFIG, STORAGE_FSTAB_SNAPSHOT_MAX_BYTES, 0
+    ) == snapshot.content
+end
+
+local function storage_mount_record(mount)
+    if not mount then return false end
+    local identity = storage_partition_identity(mount.source)
+    local options = normalized_storage_mount_options(mount.options)
+    if not identity or not options then return nil end
+    return {
+        source = mount.source,
+        target = mount.target,
+        fstype = mount.fstype,
+        options = options,
+        writable = mount.writable == true,
+        kernel_id = identity.kernel_id,
+        partition = identity.partition
+    }
+end
+
+local function storage_mount_record_is_valid(record)
+    return type(record) == "table" and
+        has_only_keys(record, {
+            source = true, target = true, fstype = true, options = true,
+            writable = true, kernel_id = true, partition = true
+        }) and
+        type(record.source) == "string" and
+        record.source:match("^/dev/sd[a-z][1-9][0-9]*$") ~= nil and
+        record.target == "/mnt/data" and
+        type(record.fstype) == "string" and #record.fstype <= 32 and
+        record.fstype:match("^[A-Za-z0-9_.%-]+$") ~= nil and
+        type(record.options) == "string" and #record.options <= 512 and
+        normalized_storage_mount_options(record.options) == record.options and
+        type(record.writable) == "boolean" and
+        type(record.kernel_id) == "string" and
+        record.kernel_id:match("^%d+:%d+$") ~= nil and
+        #record.kernel_id <= 32 and
+        type(record.partition) == "string" and
+        record.partition:match("^[1-9][0-9]*$") ~= nil and
+        #record.partition <= 6
+end
+
+local function storage_collector_record_is_valid(record)
+    if type(record) ~= "table" or
+       not has_only_keys(record, {
+           present = true, path = true, name = true, running = true
+       }) or
+       type(record.present) ~= "boolean" or
+       type(record.path) ~= "string" or type(record.name) ~= "string" or
+       type(record.running) ~= "boolean" then
+        return false
+    end
+    if not record.present then
+        return record.path == "" and record.name == "" and
+            record.running == false
+    end
+    return (record.path == "/etc/init.d/jammonitor-history" and
+            record.name == "jammonitor-history") or
+        (record.path == "/etc/init.d/jammonitor-collect" and
+         record.name == "jammonitor-collect")
+end
+
+local function storage_fstab_record_is_valid(record)
+    return type(record) == "table" and
+        has_only_keys(record, {
+            path = true, exists = true, content = true
+        }) and
+        record.path == FSTAB_CONFIG and
+        type(record.exists) == "boolean" and
+        type(record.content) == "string" and
+        #record.content <= STORAGE_FSTAB_SNAPSHOT_MAX_BYTES and
+        (record.exists or record.content == "")
+end
+
+local function storage_mount_journal_is_valid(bundle)
+    if type(bundle) ~= "table" or
+       not has_only_keys(bundle, {
+           schema = true, operation = true, phase = true, created_at = true,
+           recovery_from_phase = true,
+           requested_source = true, requested_kernel_id = true,
+           requested_partition = true,
+           transaction_mounted_source = true, old_mount = true,
+           fstab = true, collector = true
+       }) or
+       type(bundle.schema) ~= "number" or bundle.schema ~= 1 or
+       (bundle.operation ~= "mount" and bundle.operation ~= "init" and
+        bundle.operation ~= "format") or
+       type(bundle.phase) ~= "string" or
+       not STORAGE_MOUNT_JOURNAL_PHASES[bundle.phase] or
+       not STORAGE_MOUNT_OPERATION_PHASES[bundle.operation][bundle.phase] or
+       type(bundle.recovery_from_phase) ~= "string" or
+       (bundle.recovery_from_phase ~= "" and
+        (bundle.recovery_from_phase == "restoring" or
+         bundle.recovery_from_phase == "restored" or
+         not STORAGE_MOUNT_OPERATION_PHASES[bundle.operation]
+             [bundle.recovery_from_phase])) or
+       ((bundle.phase == "restoring" or bundle.phase == "restored") and
+        bundle.recovery_from_phase == "") or
+       (bundle.phase ~= "restoring" and bundle.phase ~= "restored" and
+        bundle.recovery_from_phase ~= "") or
+       type(bundle.created_at) ~= "number" or
+       bundle.created_at ~= math.floor(bundle.created_at) or
+       bundle.created_at < 1 or bundle.created_at > 32503680000 or
+       type(bundle.requested_source) ~= "string" or
+       bundle.requested_source:match("^/dev/sd[a-z][1-9][0-9]*$") == nil or
+       type(bundle.requested_kernel_id) ~= "string" or
+       bundle.requested_kernel_id:match("^%d+:%d+$") == nil or
+       #bundle.requested_kernel_id > 32 or
+       type(bundle.requested_partition) ~= "string" or
+       bundle.requested_partition:match("^[1-9][0-9]*$") == nil or
+       #bundle.requested_partition > 6 or
+       bundle.transaction_mounted_source ~= bundle.requested_source or
+       not storage_fstab_record_is_valid(bundle.fstab) or
+       not storage_collector_record_is_valid(bundle.collector) then
+        return false
+    end
+    if bundle.old_mount ~= false and
+       not storage_mount_record_is_valid(bundle.old_mount) then
+        return false
+    end
+    if bundle.operation == "init" and
+       (bundle.old_mount == false or
+        bundle.old_mount.source ~= bundle.requested_source or
+        bundle.old_mount.kernel_id ~= bundle.requested_kernel_id or
+        bundle.old_mount.partition ~= bundle.requested_partition) then
+        return false
+    end
+    return true
+end
+
+local function read_storage_mount_journal()
+    local fs = require "nixio.fs"
+    local json = require "luci.jsonc"
+    local before = fs.lstat(STORAGE_MOUNT_JOURNAL)
+    if not before then return nil, "absent" end
+    if before.type ~= "reg" or before.uid ~= 0 or
+       before.modedec ~= PRIVATE_FILE_MODE or before.nlink ~= 1 or
+       type(before.size) ~= "number" or before.size < 1 or
+       before.size > STORAGE_MOUNT_JOURNAL_MAX_BYTES then
+        return nil, "invalid"
+    end
+    local raw = read_bounded_regular_file(
+        STORAGE_MOUNT_JOURNAL, STORAGE_MOUNT_JOURNAL_MAX_BYTES, 0
+    )
+    local after = fs.lstat(STORAGE_MOUNT_JOURNAL)
+    if type(raw) ~= "string" or #raw ~= before.size or
+       not after or after.type ~= "reg" or after.uid ~= 0 or
+       after.modedec ~= PRIVATE_FILE_MODE or after.nlink ~= 1 or
+       after.dev ~= before.dev or after.ino ~= before.ino or
+       after.size ~= before.size then
+        return nil, "invalid"
+    end
+    local bundle = json.parse(raw)
+    if not storage_mount_journal_is_valid(bundle) then
+        return nil, "invalid"
+    end
+    return bundle, "exact"
+end
+
+local function write_storage_mount_journal(bundle)
+    local json = require "luci.jsonc"
+    if not storage_mount_journal_is_valid(bundle) then return false end
+    local raw = json.stringify(bundle)
+    return type(raw) == "string" and
+        #raw > 0 and #raw <= STORAGE_MOUNT_JOURNAL_MAX_BYTES and
+        atomic_write(
+            STORAGE_MOUNT_JOURNAL, raw, PRIVATE_FILE_MODE
+        )
+end
+
+local function write_storage_mount_phase(
+    bundle, phase, recovery_from_phase
+)
+    if not storage_mount_journal_is_valid(bundle) or
+       not STORAGE_MOUNT_JOURNAL_PHASES[phase] or
+       not STORAGE_MOUNT_OPERATION_PHASES[bundle.operation][phase] or
+       not storage_mount_phase_transition_is_valid(
+           bundle.operation, bundle.phase, phase
+       ) then
+        return false
+    end
+    local old_phase = bundle.phase
+    local old_recovery_from_phase = bundle.recovery_from_phase
+    bundle.phase = phase
+    if phase == "restoring" then
+        bundle.recovery_from_phase = recovery_from_phase or
+            old_recovery_from_phase
+    elseif phase ~= "restored" then
+        bundle.recovery_from_phase = ""
+    end
+    if write_storage_mount_journal(bundle) then return true end
+    bundle.phase = old_phase
+    bundle.recovery_from_phase = old_recovery_from_phase
+    return false
+end
+
+local function mark_storage_mount_recovery_failure(reason)
+    local message = type(reason) == "string" and reason or
+        "Storage recovery could not be proven"
+    message = message:gsub("[\r\n]", " "):sub(1, 512)
+    return atomic_write(
+        STORAGE_MOUNT_RECOVERY_FAILED, message .. "\n", PRIVATE_FILE_MODE
+    )
+end
+
+local function storage_mount_matches_record(mount, record)
+    return mount ~= nil and storage_mount_record_is_valid(record) and
+        mount.source == record.source and mount.target == record.target and
+        mount.fstype == record.fstype and mount.writable == record.writable and
+        normalized_storage_mount_options(mount.options) == record.options
+end
+
+local function storage_identity_matches_record(source, kernel_id, partition)
+    local identity = storage_partition_identity(source)
+    return identity ~= nil and identity.kernel_id == kernel_id and
+        identity.partition == partition and
+        not storage_partition_is_system(identity)
+end
+
+local function storage_collector_topology_matches(record, current)
+    return current ~= nil and current.known == true and
+        current.present == record.present and current.path == record.path and
+        current.name == record.name
+end
+
+local function restore_storage_mount_transaction(bundle)
+    local function unresolved(reason)
+        mark_storage_mount_recovery_failure(reason)
+        return false, reason
+    end
+
+    if not storage_mount_journal_is_valid(bundle) then
+        return unresolved("Storage recovery journal is invalid")
+    end
+    if bundle.operation == "format" and bundle.phase == "format_started" then
+        return unresolved(
+            "Formatting may have started; automatic old-data rollback is forbidden"
+        )
+    end
+    if bundle.operation == "format" and bundle.phase == "format_verified" then
+        local source_mount, source_error =
+            exact_mount_for_source(bundle.requested_source)
+        local _, target_state = mounted_filesystem_at("/mnt/data")
+        if source_error or source_mount or target_state ~= "none" or
+           not storage_mount_persistence_is_clear() then
+            return unresolved(
+                "Verified format completion has conflicting mount state"
+            )
+        end
+        if not durable_remove(STORAGE_MOUNT_RECOVERY_FAILED) then
+            return false, "Format recovery marker cleanup could not be proven"
+        end
+        if not durable_remove(STORAGE_MOUNT_JOURNAL) then
+            write_storage_mount_journal(bundle)
+            mark_storage_mount_recovery_failure(
+                "Format journal cleanup could not be proven"
+            )
+            return false, "Format journal cleanup could not be proven"
+        end
+        return true
+    end
+    local interrupted_phase
+    if bundle.phase == "restoring" or bundle.phase == "restored" then
+        interrupted_phase = bundle.recovery_from_phase
+    else
+        interrupted_phase = bundle.phase
+    end
+    if not write_storage_mount_phase(
+        bundle, "restoring", interrupted_phase
+    ) then
+        return unresolved("Storage recovery phase could not be persisted")
+    end
+
+    local current_collector = collector_runtime_state()
+    if not storage_collector_topology_matches(
+        bundle.collector, current_collector
+    ) then
+        return unresolved("History collector identity cannot be proven")
+    end
+    if current_collector.running and
+       not stop_collector_checked(current_collector) then
+        return unresolved("History collector could not be quiesced")
+    end
+
+    local current, current_state = mounted_filesystem_at("/mnt/data")
+    if current_state == "ambiguous" or current_state == "unavailable" then
+        return unresolved("Storage mount authority is ambiguous or unavailable")
+    end
+
+    local old_mount = bundle.old_mount ~= false and bundle.old_mount or nil
+    local current_is_old = current_state == "exact" and old_mount and
+        storage_mount_matches_record(current, old_mount)
+    local mount_ownership_proven =
+        interrupted_phase == "new_mounted" or
+        interrupted_phase == "fstab_writing" or
+        interrupted_phase == "fstab_persisted"
+    local transaction_introduced_mount =
+        bundle.operation == "mount" and mount_ownership_proven and
+        (not old_mount or
+         old_mount.source ~= bundle.transaction_mounted_source)
+
+    if current_state == "exact" and not current_is_old then
+        if transaction_introduced_mount and
+           current.source == bundle.transaction_mounted_source and
+           storage_identity_matches_record(
+               bundle.requested_source, bundle.requested_kernel_id,
+               bundle.requested_partition
+           ) then
+            if not unmount_exact("/mnt/data") then
+                return unresolved("Transaction mount could not be removed")
+            end
+            current = nil
+            current_state = "none"
+        else
+            return unresolved("Unexpected storage mount blocks exact recovery")
+        end
+    end
+
+    if not restore_uci_snapshot("fstab", bundle.fstab) or
+       not storage_fstab_matches_snapshot(bundle.fstab) or
+       not sync_parent_directory(FSTAB_CONFIG) then
+        return unresolved("Prior fstab snapshot could not be restored")
+    end
+
+    if old_mount then
+        if current_state == "none" then
+            if not storage_identity_matches_record(
+                old_mount.source, old_mount.kernel_id, old_mount.partition
+            ) or not restore_mount(old_mount) then
+                return unresolved("Prior storage mount could not be restored")
+            end
+        end
+        local restored, restored_state = mounted_filesystem_at("/mnt/data")
+        if restored_state ~= "exact" or
+           not storage_mount_matches_record(restored, old_mount) then
+            return unresolved("Prior storage mount verification failed")
+        end
+    else
+        local _, restored_state = mounted_filesystem_at("/mnt/data")
+        if restored_state ~= "none" then
+            return unresolved("Unmounted prior storage state was not restored")
+        end
+    end
+
+    if not restore_collector_runtime({
+        present = bundle.collector.present,
+        path = bundle.collector.path,
+        name = bundle.collector.name,
+        running = bundle.collector.running,
+        known = true
+    }) then
+        return unresolved("Prior history collector state could not be restored")
+    end
+    if not write_storage_mount_phase(bundle, "restored") then
+        return unresolved("Restored storage phase could not be persisted")
+    end
+    if not durable_remove(STORAGE_MOUNT_RECOVERY_FAILED) then
+        return false, "Recovery marker cleanup could not be proven"
+    end
+    if not durable_remove(STORAGE_MOUNT_JOURNAL) then
+        -- Re-publish the authority if unlink durability could not be proven.
+        write_storage_mount_journal(bundle)
+        mark_storage_mount_recovery_failure(
+            "Storage recovery journal cleanup could not be proven"
+        )
+        return false, "Storage recovery journal cleanup could not be proven"
+    end
+    return true
+end
+
+local function recover_storage_mount_transaction_locked()
+    local fs = require "nixio.fs"
+    local bundle, journal_state = read_storage_mount_journal()
+    if journal_state == "absent" then
+        if fs.lstat(STORAGE_MOUNT_RECOVERY_FAILED) ~= nil then
+            return false, "Unresolved storage recovery marker requires repair"
+        end
+        return true
+    end
+    if journal_state ~= "exact" then
+        mark_storage_mount_recovery_failure(
+            "Storage recovery journal is untrusted or corrupt"
+        )
+        return false, "Storage recovery journal is untrusted or corrupt"
+    end
+    return restore_storage_mount_transaction(bundle)
+end
+
+local function storage_mount_recovery_required()
+    local fs = require "nixio.fs"
+    return fs.lstat(STORAGE_MOUNT_JOURNAL) ~= nil or
+        fs.lstat(STORAGE_MOUNT_RECOVERY_FAILED) ~= nil
+end
+
+local function new_storage_mount_journal(
+    operation, identity, old_mount, fstab, collector
+)
+    if not identity or not fstab or not collector or
+       collector.known ~= true then
+        return nil
+    end
+    local old_record = storage_mount_record(old_mount)
+    if old_mount and not old_record then return nil end
+    local bundle = {
+        schema = 1,
+        operation = operation,
+        phase = "prepared",
+        recovery_from_phase = "",
+        created_at = os.time(),
+        requested_source = identity.path,
+        requested_kernel_id = identity.kernel_id,
+        requested_partition = identity.partition,
+        transaction_mounted_source = identity.path,
+        old_mount = old_record,
+        fstab = fstab,
+        collector = {
+            present = collector.present,
+            path = collector.path,
+            name = collector.name,
+            running = collector.running
+        }
+    }
+    return storage_mount_journal_is_valid(bundle) and bundle or nil
+end
+
+local function fail_storage_mount_transaction(bundle, error_message)
+    local restored, recovery_error =
+        restore_storage_mount_transaction(bundle)
+    return {
+        success = false,
+        error = restored and error_message or
+            (error_message .. "; recovery unresolved: " ..
+             (recovery_error or "unknown error"))
+    }
+end
+
+local function finish_storage_mount_transaction(bundle)
+    if not durable_remove(STORAGE_MOUNT_RECOVERY_FAILED) then return false end
+    if durable_remove(STORAGE_MOUNT_JOURNAL) then return true end
+    -- If unlink happened but its directory sync failed, recreate the recovery
+    -- authority before reporting failure.
+    write_storage_mount_journal(bundle)
+    mark_storage_mount_recovery_failure(
+        "Storage transaction cleanup could not be proven"
+    )
+    return false
+end
+
+local function storage_mode_has_no_group_or_other_write(mode)
+    if type(mode) ~= "number" or mode < 0 or
+       mode ~= math.floor(mode) then
+        return false
+    end
+    local group_digit = math.floor(mode / 10) % 10
+    local other_digit = mode % 10
+    return group_digit < 8 and other_digit < 8 and
+        group_digit % 4 < 2 and other_digit % 4 < 2
+end
+
+local function storage_leaf_name_is_allowed(name)
+    if type(name) ~= "string" or #name < 1 or #name > 64 then return false end
+    if name == "history.db" or name == "history.db-wal" or
+       name == "history.db-shm" or name == "history.db-journal" or
+       name == "syslog.txt" or name == "syslog.txt.old" or
+       name == "iface_snapshot.current" or
+       name == "iface_snapshot.last" then
+        return true
+    end
+    return name:match("^syslog%.txt%.[1-9][0-9]*$") ~= nil
+end
+
+local function storage_data_directory_is_confined()
+    local fs = require "nixio.fs"
+    local path = "/mnt/data/jammonitor"
+    local stat = fs.lstat(path)
+    if not stat or stat.type ~= "dir" or stat.uid ~= 0 or stat.gid ~= 0 or
+       stat.modedec ~= PRIVATE_DIRECTORY_MODE then
+        return false
+    end
+
+    local entries = fs.dir(path)
+    if not entries then return false end
+    local entry_count = 0
+    for entry in entries do
+        if entry ~= "." and entry ~= ".." then
+            entry_count = entry_count + 1
+            if entry_count > 64 or
+               not storage_leaf_name_is_allowed(entry) then
+                return false
+            end
+            local leaf = fs.lstat(path .. "/" .. entry)
+            -- history.db, syslog.txt, iface_snapshot, SQLite sidecars, and
+            -- rotated logs must all be single-link root-owned regular files.
+            if not leaf or leaf.type ~= "reg" or leaf.uid ~= 0 or
+               leaf.gid ~= 0 or leaf.nlink ~= 1 or
+               not storage_mode_has_no_group_or_other_write(
+                   leaf.modedec
+               ) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function storage_data_directory_is_safe()
+    local fs = require "nixio.fs"
+    local path = "/mnt/data/jammonitor"
+    local stat = fs.lstat(path)
+    if not stat then
+        if not fs.mkdir(path, PRIVATE_DIRECTORY_MODE) then return false end
+        stat = fs.lstat(path)
+    end
+    if not stat or stat.type ~= "dir" then return false end
+    if not fs.chown(path, 0, 0) or
+       not fs.chmod(path, PRIVATE_DIRECTORY_MODE) then
+        return false
+    end
+    return storage_data_directory_is_confined()
+end
+
+-- The mount root is part of the authority boundary, not merely a pathname.
+-- Never repair it from a GET route. An operator-controlled initialization may
+-- prepare storage, but every read path only observes this exact root-owned,
+-- non-group/world-writable directory state.
+local function confined_storage_mount_root()
+    local fs = require "nixio.fs"
+    local stat = fs.lstat("/mnt/data")
+    if not stat or stat.type ~= "dir" or stat.uid ~= 0 or stat.gid ~= 0 or
+       not storage_mode_has_no_group_or_other_write(stat.modedec) then
+        return nil
+    end
+    return stat
+end
+
+local function storage_fstab_matches_live_mount(
+    mount, identity, uuid
+)
+    if not mount or not identity or not uuid then return false end
+    local verify = require "luci.model.uci".cursor()
+    local target_count = 0
+    local exact = true
+    verify:foreach("fstab", "mount", function(section)
+        if section.target == "/mnt/data" then
+            target_count = target_count + 1
+            if section.uuid ~= uuid or section.enabled ~= "1" or
+               (section.fstype ~= nil and section.fstype ~= "ext4") or
+               section.options ~= STORAGE_MOUNT_OPTIONS or
+               section.device ~= nil or section.label ~= nil then
+                exact = false
+            end
+        end
+    end)
+    return exact and target_count == 1 and
+        storage_uuid_has_exact_authority(uuid, identity) and
+        mount.source == identity.path
+end
+
+-- Return one immutable comparison token only after joining the exact mount
+-- row, removable block identity, unique UUID, sole fstab authority, mount-root
+-- inode, and confined data tree. Recovery files are evidence, even if corrupt
+-- or symlinked, and therefore suppress every absolute /mnt/data read.
+storage_read_authority = function()
+    if storage_mount_recovery_required() then
+        return nil, "recovery_required"
+    end
+    local mount, mount_state = mounted_filesystem_at("/mnt/data")
+    if mount_state ~= "exact" or not mount or
+       mount.fstype ~= "ext4" or mount.writable ~= true or
+       mount.confined ~= true then
+        return nil, "mount_not_authoritative"
+    end
+    local identity = storage_partition_identity(mount.source)
+    if not identity or storage_partition_is_system(identity) then
+        return nil, "source_not_authoritative"
+    end
+    local uuid = storage_uuid(mount.source)
+    if not uuid or
+       not storage_fstab_matches_live_mount(mount, identity, uuid) then
+        return nil, "persistence_not_authoritative"
+    end
+    local root = confined_storage_mount_root()
+    if not root then return nil, "mount_root_not_confined" end
+    if not storage_data_directory_is_confined() then
+        return nil, "data_tree_not_confined"
+    end
+    local options = normalized_storage_mount_options(mount.options)
+    if not options then return nil, "mount_options_invalid" end
+    return table.concat({
+        mount.source, identity.kernel_id, identity.partition, uuid,
+        tostring(root.dev), tostring(root.ino), options
+    }, "|"), nil
+end
+
+local function shell_single_quote(value)
+    if type(value) ~= "string" or value:find("\0", 1, true) then return nil end
+    return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+-- SQLite's default open mode can create journals even for SELECT. Force the
+-- CLI into read-only/query-only mode, bound output in checked_capture(), and
+-- rejoin the complete storage authority before publishing any bytes.
+storage_readonly_sqlite = function(query)
+    if type(query) ~= "string" or #query < 1 or #query > 32768 then
+        return false, "", "invalid_query"
+    end
+    local before, authority_error = storage_read_authority()
+    if not before then return false, "", authority_error end
+    local fs = require "nixio.fs"
+    local db_path = "/mnt/data/jammonitor/history.db"
+    local db_before = fs.lstat(db_path)
+    if not db_before or db_before.type ~= "reg" or db_before.uid ~= 0 or
+       db_before.gid ~= 0 or db_before.nlink ~= 1 or
+       not storage_mode_has_no_group_or_other_write(db_before.modedec) then
+        return false, "", "database_not_confined"
+    end
+    local quoted_query = shell_single_quote(
+        "PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; " .. query
+    )
+    if not quoted_query then return false, "", "invalid_query" end
+    local ok, output = checked_capture(
+        "timeout -s TERM -k 2 10 sqlite3 -readonly -batch -noheader " ..
+        "/mnt/data/jammonitor/history.db " .. quoted_query
+    )
+    local db_after = fs.lstat(db_path)
+    local after = storage_read_authority()
+    if not ok or not after or after ~= before or not db_after or
+       db_after.type ~= "reg" or db_after.uid ~= 0 or db_after.gid ~= 0 or
+       db_after.nlink ~= 1 or db_after.dev ~= db_before.dev or
+       db_after.ino ~= db_before.ino then
+        return false, "", "storage_changed_during_read"
+    end
+    return true, output, nil
+end
+
+storage_bounded_authorized_file = function(path, max_bytes)
+    if path ~= "/mnt/data/jammonitor/syslog.txt" or
+       type(max_bytes) ~= "number" or max_bytes < 1 or max_bytes > 65536 or
+       max_bytes ~= math.floor(max_bytes) then
+        return nil, "invalid_path"
+    end
+    local before, authority_error = storage_read_authority()
+    if not before then return nil, authority_error end
+    local content = read_bounded_regular_tail(path, max_bytes, 0)
+    local after = storage_read_authority()
+    if type(content) ~= "string" or not after or after ~= before then
+        return nil, "storage_changed_during_read"
+    end
+    return content, nil
 end
 
 -- Storage status proves current sample freshness, SQLite health, and the
 -- mounted filesystem rather than equating an old DB plus a PID with health.
 function action_storage_status()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
     http.prepare_content("application/json")
 
-    local db_path = "/mnt/data/jammonitor/history.db"
     local collector_status_path = "/var/run/jammonitor/collector-status.json"
-    local mount = mounted_filesystem_at("/mnt/data")
-    local collector_service, collector_service_name = collector_service_path()
+    local recovery_required = storage_mount_recovery_required()
+    local mount, mount_state, mount_count =
+        mounted_filesystem_at("/mnt/data")
+    local read_authority, authority_error = storage_read_authority()
+    local mount_authoritative = read_authority ~= nil
+    local mount_root_safe = confined_storage_mount_root() ~= nil
+    local data_tree_safe = mount_root_safe and
+        storage_data_directory_is_confined()
+    local collector = collector_runtime_state()
 
     local result = {
-        mounted = mount ~= nil and mount.persistent,
-        mount_source = mount and mount.source or nil,
-        mount_fstype = mount and mount.fstype or nil,
-        mount_writable = mount ~= nil and mount.writable,
+        mounted = mount_authoritative and mount.persistent or false,
+        mount_source = mount_authoritative and mount.source or nil,
+        mount_fstype = mount_authoritative and mount.fstype or nil,
+        mount_writable = mount_authoritative and mount.writable or false,
+        mount_authority = mount_state,
+        mount_count = mount_count or -1,
+        mount_ambiguous = mount_state == "ambiguous",
+        recovery_required = recovery_required,
+        recovery_error = recovery_required and
+            "Explicit storage recovery is required" or nil,
+        authority_error = authority_error,
+        mount_root_safe = mount_root_safe,
+        data_tree_safe = data_tree_safe == true,
         collector_running = false,
-        collector_service = collector_service_name,
+        collector_service = collector.present and collector.name or nil,
         database_exists = false,
         database_healthy = false,
         sample_fresh = false,
@@ -1881,16 +3850,18 @@ function action_storage_status()
         recent_anomalies = 0
     }
 
-    -- Prefer procd's own service state, with a process check for legacy installs.
-    if collector_service then
-        result.collector_running =
-            sys.call(collector_service .. " running >/dev/null 2>&1") == 0
-    else
-        local pgrep = sys.exec("pgrep -f '[j]ammonitor-collect' 2>/dev/null") or ""
-        result.collector_running = pgrep:match("%d+") ~= nil
+    -- Never inspect a database or collector status through an ambiguous,
+    -- unavailable, or recovery-pending mount.
+    if not mount_authoritative or not data_tree_safe then
+        result.healthy = false
+        http.write(json.stringify(result))
+        return
     end
+    result.collector_running = collector.known == true and collector.running
 
-    local collector_raw = fs.readfile(collector_status_path)
+    local collector_raw = read_bounded_regular_file(
+        collector_status_path, 16384, 0
+    )
     if collector_raw and collector_raw ~= "" then
         local collector = json.parse(collector_raw)
         local observed = type(collector) == "table" and tonumber(collector.observed_at) or nil
@@ -1905,45 +3876,54 @@ function action_storage_status()
         end
     end
 
-    -- Check if database exists
-    local db_stat = fs.stat(db_path)
-    result.database_exists = db_stat ~= nil
-    if db_stat then
-        result.database_size = db_stat.size
+    local quick_ok, quick = storage_readonly_sqlite("PRAGMA quick_check;")
+    result.database_exists = quick_ok
+    result.database_quick_check =
+        quick_ok and quick:match("^([^\r\n]+)") or nil
+    result.database_healthy = result.database_quick_check == "ok"
 
-        -- Get entry count and date range
-        local quick = sys.exec("timeout 5 sqlite3 '" .. db_path .. "' 'PRAGMA quick_check' 2>/dev/null") or ""
-        result.database_quick_check = quick:match("^([^\r\n]+)")
-        result.database_healthy = result.database_quick_check == "ok"
-
-        local count = sys.exec("timeout 5 sqlite3 '" .. db_path .. "' 'SELECT COUNT(*) FROM metrics' 2>/dev/null") or ""
-        result.entry_count = tonumber(count:match("%d+")) or 0
-
-        local oldest = sys.exec("timeout 5 sqlite3 '" .. db_path .. "' 'SELECT MIN(ts) FROM metrics' 2>/dev/null") or ""
-        result.oldest_ts = tonumber(oldest:match("%d+"))
-
-        local newest = sys.exec("timeout 5 sqlite3 '" .. db_path .. "' 'SELECT MAX(ts) FROM metrics' 2>/dev/null") or ""
-        result.newest_ts = tonumber(newest:match("%d+"))
+    if quick_ok then
+        local cutoff = os.time() - 86400
+        local aggregate_query = string.format([[
+            SELECT COUNT(*), COALESCE(MIN(ts), 0), COALESCE(MAX(ts), 0),
+                SUM(CASE WHEN ts > %d AND (
+                    wan_pings LIKE '%%:-1%%' OR
+                    wan_pings LIKE '%%:null%%' OR
+                    iface_status LIKE '%%wan1":0%%'
+                ) THEN 1 ELSE 0 END)
+            FROM metrics;
+        ]], cutoff):gsub("\n", " ")
+        local aggregate_ok, aggregate =
+            storage_readonly_sqlite(aggregate_query)
+        if aggregate_ok then
+            local count, oldest, newest, anomalies =
+                aggregate:match("^(%d+)|(%d+)|(%d+)|(%d+)")
+            result.entry_count = tonumber(count) or 0
+            result.oldest_ts = tonumber(oldest)
+            result.newest_ts = tonumber(newest)
+            if result.oldest_ts == 0 then result.oldest_ts = nil end
+            if result.newest_ts == 0 then result.newest_ts = nil end
+            result.recent_anomalies = tonumber(anomalies) or 0
+        end
         if result.newest_ts then
-            result.sample_age_secs = math.max(0, os.time() - result.newest_ts)
+            result.sample_age_secs =
+                math.max(0, os.time() - result.newest_ts)
             result.sample_fresh = result.sample_age_secs <= 180
         end
-
-        -- Count recent anomalies (last 24h): packet loss (-1 ping) or interface down
-        local cutoff = os.time() - 86400
-        local anomaly_query = string.format(
-            "SELECT COUNT(*) FROM metrics WHERE ts > %d AND (wan_pings LIKE '%%:-1%%' OR wan_pings LIKE '%%:null%%' OR iface_status LIKE '%%wan1\":0%%')",
-            cutoff
-        )
-        local anomalies = sys.exec("timeout 5 sqlite3 '" .. db_path .. "' \"" .. anomaly_query .. "\" 2>/dev/null") or ""
-        result.recent_anomalies = tonumber(anomalies:match("%d+")) or 0
     end
 
     -- Get free space
     if result.mounted then
-        local df = sys.exec("timeout 5 df /mnt/data 2>/dev/null | tail -1") or ""
-        local available = df:match("%s+%d+%s+%d+%s+(%d+)")
-        result.free_space = tonumber(available)
+        local before = storage_read_authority()
+        local df_ok, df = checked_capture(
+            "timeout -s TERM -k 2 5 df -k /mnt/data"
+        )
+        local after = storage_read_authority()
+        if df_ok and before and after == before then
+            local available =
+                df:match("[^\r\n]*%s+%d+%s+%d+%s+(%d+)%s+%d+%%")
+            result.free_space = tonumber(available)
+        end
     end
 
     result.healthy = result.mounted and result.mount_writable and
@@ -1983,25 +3963,30 @@ end
 -- List available USB storage devices
 function action_storage_devices()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
     http.prepare_content("application/json")
 
+    local recovery_required = storage_mount_recovery_required()
+    local current, current_state, current_count =
+        mounted_filesystem_at("/mnt/data")
+    local read_authority, authority_error = storage_read_authority()
     local result = {
         devices = {},
-        current_mount = nil
+        current_mount = read_authority and current_state == "exact" and
+            current.source or nil,
+        current_mount_authority = current_state,
+        current_mount_count = current_count or -1,
+        current_mount_ambiguous = current_state == "ambiguous",
+        recovery_required = recovery_required,
+        recovery_error = recovery_required and
+            "Explicit storage recovery is required" or nil,
+        authority_error = authority_error
     }
-
-    -- Find what's currently mounted at /mnt/data
-    local mounts = fs.readfile("/proc/mounts") or ""
-    local current = mounted_filesystem_at("/mnt/data")
-    result.current_mount = current and current.source or nil
 
     -- Read /proc/partitions to find block devices
     local partitions = fs.readfile("/proc/partitions") or ""
-    local devices = {}
 
     for line in partitions:gmatch("[^\n]+") do
         -- Match sd* devices (USB drives)
@@ -2026,17 +4011,30 @@ function action_storage_devices()
                     is_system = is_system_device(dev_path)
                 }
 
-                -- Get filesystem info via blkid
-                local blkid = sys.exec("blkid " .. dev_path .. " 2>/dev/null") or ""
-                partition_info.filesystem = blkid:match('TYPE="([^"]+)"')
-                partition_info.label = blkid:match('LABEL="([^"]+)"')
-                partition_info.uuid = blkid:match('UUID="([^"]+)"')
+                -- OpenWrt ships block-mount's `block info`; do not assume the
+                -- optional util-linux blkid binary exists.
+                local block_ok, block_info = checked_capture(
+                    "timeout 5 block info " .. dev_path
+                )
+                if not block_ok then block_info = "" end
+                partition_info.filesystem =
+                    block_info:match('TYPE="([^"]+)"')
+                partition_info.label =
+                    block_info:match('LABEL="([^"]+)"')
+                partition_info.uuid =
+                    block_info:match('UUID="([^"]+)"')
 
-                -- Check mount status
-                local mount_point = mounts:match(dev_path:gsub("%-", "%%-") .. "%s+([^%s]+)")
-                if mount_point then
+                -- A source is mounted only when one exact /proc/mounts row
+                -- proves its target. Duplicate rows and unavailable mount
+                -- tables are surfaced instead of selecting the first row.
+                local source_mount, source_mount_error =
+                    exact_mount_for_source(dev_path)
+                partition_info.mount_authority =
+                    source_mount_error and "ambiguous_or_unavailable" or
+                    (source_mount and "exact" or "none")
+                if source_mount and not source_mount_error then
                     partition_info.mounted = true
-                    partition_info.mount_point = mount_point
+                    partition_info.mount_point = source_mount.target
                 end
 
                 table.insert(result.devices, partition_info)
@@ -2091,6 +4089,15 @@ function action_storage_format()
     local response, lock_error = run_locked(
         STORAGE_LOCK, 600, "Another storage operation is already running",
         function()
+            local recovered, recovery_error =
+                recover_storage_mount_transaction_locked()
+            if not recovered then
+                return {
+                    success = false,
+                    error = recovery_error or
+                        "Unresolved prior storage transaction"
+                }
+            end
             -- Device identity and system-disk exclusion are checked again under
             -- the shared lease so hotplug cannot substitute a target between
             -- request validation and the destructive command.
@@ -2102,44 +4109,186 @@ function action_storage_format()
                 return {success = false, error = "Storage device changed before format"}
             end
 
+            -- Open the selected block generation while the under-lock proof
+            -- still holds and keep that exact file description through mkfs.
+            -- A removed/recreated /dev/sdX node, even with reused major:minor,
+            -- cannot redirect /proc/self/fd/N to its replacement.
+            local format_pin =
+                open_pinned_storage_format_device(current_identity)
+            if not format_pin then
+                return {
+                    success = false,
+                    error = "Storage device generation could not be pinned"
+                }
+            end
+            local format_called, format_response = pcall(function()
+            local target_mount, target_state =
+                mounted_filesystem_at("/mnt/data")
+            if target_state == "ambiguous" or target_state == "unavailable" then
+                return {
+                    success = false,
+                    error = "Storage mount authority is ambiguous or unavailable"
+                }
+            end
+            if target_state == "exact" and target_mount.source ~= device then
+                return {
+                    success = false,
+                    error = "Unmount active JamMonitor storage before formatting another device"
+                }
+            end
+
             local original_mount, mount_error = exact_mount_for_source(device)
             if mount_error then
                 return {success = false, error = mount_error}
             end
+            if original_mount and original_mount.target ~= "/mnt/data" then
+                return {
+                    success = false,
+                    error = "Device is mounted outside JamMonitor storage"
+                }
+            end
             local collector = collector_runtime_state()
-            local collector_stopped = false
-            if original_mount and original_mount.target == "/mnt/data" and
-               collector.running then
-                if not stop_collector_checked(collector) then
-                    return {success = false, error = "Could not stop history collector"}
+            if not collector.known then
+                return {
+                    success = false,
+                    error = "History collector state could not be proven"
+                }
+            end
+            local fstab_snapshot = storage_fstab_snapshot()
+            local bundle = fstab_snapshot and new_storage_mount_journal(
+                "format", current_identity, original_mount,
+                fstab_snapshot, collector
+            ) or nil
+            if not bundle or not write_storage_mount_journal(bundle) then
+                return {
+                    success = false,
+                    error = "Cannot persist format recovery authority"
+                }
+            end
+            if not write_storage_mount_phase(bundle, "fstab_writing") or
+               not clear_storage_mount_persistence() or
+               not write_storage_mount_phase(bundle, "fstab_persisted") then
+                return fail_storage_mount_transaction(
+                    bundle, "Could not neutralize persistent mount authority"
+                )
+            end
+
+            if collector.running then
+                if not write_storage_mount_phase(
+                    bundle, "collector_stopping"
+                ) or not stop_collector_checked(collector) or
+                   not write_storage_mount_phase(
+                       bundle, "collector_stopped"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Could not stop history collector"
+                    )
                 end
-                collector_stopped = true
             end
 
             if original_mount then
-                if not checked_call("timeout 30 umount " .. device) or
-                   exact_mount_for_source(device) ~= nil then
-                    if collector_stopped then restore_collector_runtime(collector) end
-                    return {success = false, error = "Device is still mounted; format aborted"}
+                if not write_storage_mount_phase(
+                    bundle, "old_unmounting"
+                ) or not unmount_exact("/mnt/data") or
+                   not write_storage_mount_phase(
+                       bundle, "old_unmounted"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Device is still mounted; format aborted"
+                    )
                 end
             end
 
+            if not write_storage_mount_phase(bundle, "format_arming") then
+                return fail_storage_mount_transaction(
+                    bundle, "Could not arm durable format recovery"
+                )
+            end
+            if not mark_storage_mount_recovery_failure(
+                "Formatting may have started; automatic rollback is forbidden"
+            ) then
+                return fail_storage_mount_transaction(
+                    bundle, "Could not persist destructive format marker"
+                )
+            end
+            if not write_storage_mount_phase(bundle, "format_started") then
+                return fail_storage_mount_transaction(
+                    bundle, "Could not persist destructive format phase"
+                )
+            end
+            if not storage_format_boundary_is_safe(current_identity) or
+               not pinned_storage_format_device_is_current(
+                   format_pin, current_identity
+               ) then
+                return {
+                    success = false,
+                    error = "Format boundary changed; destructive recovery is unresolved"
+                }
+            end
+            local pinned_device =
+                "/proc/self/fd/" .. tostring(format_pin.fd)
             local format_ok = checked_capture(
-                "timeout 180 mkfs.ext4 -F -L " .. label .. " " .. device
+                "timeout 180 mkfs.ext4 -F -L " .. label .. " " ..
+                pinned_device
             )
             if not format_ok then
-                -- Once mkfs has started, prior data cannot be reconstructed.
-                -- Never claim rollback or remount a partially rewritten volume.
-                return {success = false, error = "Format command failed; device left unmounted"}
+                -- Once format_started is durable, old data may be partially
+                -- rewritten. Leave both records in place and never remount.
+                return {
+                    success = false,
+                    error = "Format command failed; destructive recovery is unresolved"
+                }
             end
 
-            local type_ok, fs_type = checked_capture(
-                "timeout 5 blkid -s TYPE -o value " .. device
+            if not pinned_storage_format_device_is_current(
+                format_pin, current_identity
+            ) then
+                return {
+                    success = false,
+                    error = "Formatted device generation changed; recovery is unresolved"
+                }
+            end
+            local type_ok, fs_info = checked_capture(
+                "timeout 5 block info " .. pinned_device
             )
-            if not type_ok or not fs_type:match("^%s*ext4%s*$") then
-                return {success = false, error = "Formatted filesystem could not be verified"}
+            local fs_type = type_ok and
+                fs_info:match('%sTYPE="([^"]+)"') or nil
+            if fs_type ~= "ext4" then
+                return {
+                    success = false,
+                    error = "Formatted filesystem could not be verified; recovery is unresolved"
+                }
+            end
+            local remaining_mount, remaining_error =
+                exact_mount_for_source(device)
+            if remaining_error or remaining_mount then
+                return {
+                    success = false,
+                    error = "Formatted device mount state could not be verified"
+                }
+            end
+            if not write_storage_mount_phase(bundle, "format_verified") then
+                return {
+                    success = false,
+                    error = "Format completed but durable completion is unresolved"
+                }
+            end
+            if not finish_storage_mount_transaction(bundle) then
+                return {
+                    success = false,
+                    error = "Format completed but recovery cleanup is unresolved"
+                }
             end
             return {success = true, device = device, filesystem = "ext4"}
+            end)
+            format_pin.descriptor:close()
+            if not format_called then
+                return {
+                    success = false,
+                    error = "Format transaction failed; recovery may be required"
+                }
+            end
+            return format_response
         end
     )
     if response == false then
@@ -2172,6 +4321,15 @@ function action_storage_mount()
     local response, lock_error = run_locked(
         STORAGE_LOCK, 600, "Another storage operation is already running",
         function()
+            local recovered, recovery_error =
+                recover_storage_mount_transaction_locked()
+            if not recovered then
+                return {
+                    success = false,
+                    error = recovery_error or
+                        "Unresolved prior storage transaction"
+                }
+            end
             local current_identity = storage_partition_identity(device)
             if not current_identity or
                current_identity.kernel_id ~= identity.kernel_id or
@@ -2179,16 +4337,30 @@ function action_storage_mount()
                storage_partition_is_system(current_identity) then
                 return {success = false, error = "Storage device changed before mount"}
             end
-            if not fs.stat("/mnt/data") and
-               not checked_call("mkdir -p /mnt/data") then
+            local mountpoint = fs.lstat("/mnt/data")
+            if not mountpoint then
+                if not fs.mkdir("/mnt/data", PRIVATE_DIRECTORY_MODE) then
+                    return {success = false, error = "Cannot create mount point"}
+                end
+                mountpoint = fs.lstat("/mnt/data")
+            end
+            if not mountpoint or mountpoint.type ~= "dir" then
                 return {success = false, error = "Cannot create mount point"}
             end
 
-            local fstab_snapshot = snapshot_file(FSTAB_CONFIG)
+            local fstab_snapshot = storage_fstab_snapshot()
             if not fstab_snapshot then
                 return {success = false, error = "Cannot snapshot persistent mount configuration"}
             end
-            local old_mount = mounted_filesystem_at("/mnt/data")
+            local old_mount, old_mount_state =
+                mounted_filesystem_at("/mnt/data")
+            if old_mount_state == "ambiguous" or
+               old_mount_state == "unavailable" then
+                return {
+                    success = false,
+                    error = "Storage mount authority is ambiguous or unavailable"
+                }
+            end
             local requested_mount, requested_mount_error =
                 exact_mount_for_source(device)
             if requested_mount_error then
@@ -2208,77 +4380,96 @@ function action_storage_mount()
                 }
             end
             local collector = collector_runtime_state()
+            if not collector.known then
+                return {
+                    success = false,
+                    error = "History collector state could not be proven"
+                }
+            end
+            local bundle = new_storage_mount_journal(
+                "mount", current_identity, old_mount,
+                fstab_snapshot, collector
+            )
+            if not bundle or not write_storage_mount_journal(bundle) then
+                return {
+                    success = false,
+                    error = "Cannot persist mount recovery authority"
+                }
+            end
             local collector_stopped = false
 
             if (not old_mount or old_mount.source ~= device) and
                collector.running then
-                if not stop_collector_checked(collector) then
-                    return {success = false, error = "Could not stop history collector"}
+                if not write_storage_mount_phase(
+                    bundle, "collector_stopping"
+                ) or not stop_collector_checked(collector) or
+                   not write_storage_mount_phase(
+                       bundle, "collector_stopped"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Could not stop history collector"
+                    )
                 end
                 collector_stopped = true
             end
 
-            local function rollback_mount()
-                local rollback_ok = true
-                local current = mounted_filesystem_at("/mnt/data")
-                if current and (not old_mount or current.source ~= old_mount.source) then
-                    rollback_ok = unmount_exact("/mnt/data") and rollback_ok
+            if old_mount and old_mount.source ~= device then
+                if not write_storage_mount_phase(
+                    bundle, "old_unmounting"
+                ) or not unmount_exact("/mnt/data") or
+                   not write_storage_mount_phase(
+                       bundle, "old_unmounted"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Existing data mount is busy"
+                    )
                 end
-                if old_mount and not mounted_filesystem_at("/mnt/data") then
-                    rollback_ok = restore_mount(old_mount) and rollback_ok
-                end
-                rollback_ok = restore_uci_snapshot("fstab", fstab_snapshot) and rollback_ok
-                if collector_stopped then
-                    rollback_ok = restore_collector_runtime(collector) and rollback_ok
-                end
-                return rollback_ok
             end
 
-            if old_mount and old_mount.source ~= device and
-               not unmount_exact("/mnt/data") then
-                if collector_stopped then restore_collector_runtime(collector) end
-                return {success = false, error = "Existing data mount is busy"}
-            end
-
-            local mounted = mounted_filesystem_at("/mnt/data")
-            if not mounted then
-                if not mount_exact(device, "/mnt/data") then
-                    local restored = rollback_mount()
-                    return {
-                        success = false,
-                        error = restored and "Requested device could not be mounted" or
-                            "Mount failed and prior storage could not be fully restored"
-                    }
+            local mounted, mounted_state =
+                mounted_filesystem_at("/mnt/data")
+            if mounted_state == "none" then
+                if not write_storage_mount_phase(
+                    bundle, "new_mounting"
+                ) or not mount_exact(device, "/mnt/data") or
+                   not write_storage_mount_phase(
+                       bundle, "new_mounted"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Requested device could not be mounted"
+                    )
                 end
-            elseif mounted.source ~= device or mounted.fstype ~= "ext4" or
-                   mounted.writable ~= true then
-                local restored = rollback_mount()
-                return {
-                    success = false,
-                    error = restored and "Requested device is not the active ext4 mount" or
-                        "Mount conflict and rollback failed"
-                }
+            elseif mounted_state ~= "exact" or
+                   mounted.source ~= device or mounted.fstype ~= "ext4" or
+                   mounted.writable ~= true or mounted.confined ~= true then
+                return fail_storage_mount_transaction(
+                    bundle, "Requested device is not the active ext4 mount"
+                )
             end
 
             local uuid = storage_uuid(device)
-            if not uuid or not persist_storage_mount(uuid) then
-                local restored = rollback_mount()
-                return {
-                    success = false,
-                    error = restored and "Persistent mount configuration failed" or
-                        "Persistent mount failed and rollback was incomplete"
-                }
+            if not uuid or
+               not write_storage_mount_phase(bundle, "fstab_writing") or
+               not persist_storage_mount(uuid, current_identity) or
+               not write_storage_mount_phase(bundle, "fstab_persisted") then
+                return fail_storage_mount_transaction(
+                    bundle, "Persistent mount configuration failed"
+                )
             end
 
-            local verified = mounted_filesystem_at("/mnt/data")
-            if not verified or verified.source ~= device or
+            local verified, verified_state =
+                mounted_filesystem_at("/mnt/data")
+            if verified_state ~= "exact" or not verified or
+               verified.source ~= device or
                verified.fstype ~= "ext4" or not verified.writable then
-                local restored = rollback_mount()
-                return {
-                    success = false,
-                    error = restored and "Mounted device verification failed" or
-                        "Mount verification and rollback failed"
-                }
+                return fail_storage_mount_transaction(
+                    bundle, "Mounted device verification failed"
+                )
+            end
+            if not finish_storage_mount_transaction(bundle) then
+                return fail_storage_mount_transaction(
+                    bundle, "Mount committed but recovery cleanup failed"
+                )
             end
 
             return {
@@ -2315,85 +4506,103 @@ function action_storage_init()
     local response, lock_error = run_locked(
         STORAGE_LOCK, 600, "Another storage operation is already running",
         function()
-            local mount = mounted_filesystem_at("/mnt/data")
+            local recovered, recovery_error =
+                recover_storage_mount_transaction_locked()
+            if not recovered then
+                return {
+                    success = false,
+                    error = recovery_error or
+                        "Unresolved prior storage transaction"
+                }
+            end
+            local mount, mount_state =
+                mounted_filesystem_at("/mnt/data")
             local identity = mount and storage_partition_identity(mount.source) or nil
-            if not mount or not identity or storage_partition_is_system(identity) or
-               mount.fstype ~= "ext4" or not mount.writable then
+            if mount_state ~= "exact" or not mount or not identity or
+               storage_partition_is_system(identity) or
+               mount.fstype ~= "ext4" or not mount.writable or
+               mount.confined ~= true then
                 return {
                     success = false,
                     error = "Verified removable ext4 storage is not mounted read-write"
                 }
             end
+            if not confined_storage_mount_root() then
+                return {
+                    success = false,
+                    error = "Storage mount root must be root-owned and not group/world writable"
+                }
+            end
 
             local uuid = storage_uuid(mount.source)
-            local fstab_snapshot = snapshot_file(FSTAB_CONFIG)
-            if not uuid or not fstab_snapshot or not persist_storage_mount(uuid) then
-                if fstab_snapshot then
-                    restore_uci_snapshot("fstab", fstab_snapshot)
-                end
-                return {success = false, error = "Persistent storage configuration is invalid"}
+            local fstab_snapshot = storage_fstab_snapshot()
+            local collector = collector_runtime_state()
+            if not uuid or not fstab_snapshot or not collector.known then
+                return {
+                    success = false,
+                    error = "Storage transaction prerequisites could not be proven"
+                }
             end
-
-            if not checked_call("mkdir -p /mnt/data/jammonitor") then
-                restore_uci_snapshot("fstab", fstab_snapshot)
-                return {success = false, error = "Cannot create JamMonitor data directory"}
-            end
-
-            local collector_service, collector_service_name = collector_service_path()
-            if not collector_service then
-                restore_uci_snapshot("fstab", fstab_snapshot)
+            if not collector.present then
                 return {success = false, error = "JamMonitor history service is not installed"}
             end
+            local bundle = new_storage_mount_journal(
+                "init", identity, mount, fstab_snapshot, collector
+            )
+            if not bundle or not write_storage_mount_journal(bundle) then
+                return {
+                    success = false,
+                    error = "Cannot persist initialization recovery authority"
+                }
+            end
 
-            local before_ok, before_text = checked_capture(
-                "timeout 5 sqlite3 /mnt/data/jammonitor/history.db " ..
-                "'SELECT MAX(ts) FROM metrics'"
+            if not write_storage_mount_phase(bundle, "fstab_writing") or
+               not persist_storage_mount(uuid, identity) or
+               not write_storage_mount_phase(bundle, "fstab_persisted") then
+                return fail_storage_mount_transaction(
+                    bundle, "Persistent storage configuration is invalid"
+                )
+            end
+
+            if collector.running then
+                if not write_storage_mount_phase(
+                    bundle, "collector_stopping"
+                ) or not stop_collector_checked(collector) or
+                   not write_storage_mount_phase(
+                       bundle, "collector_stopped"
+                   ) then
+                    return fail_storage_mount_transaction(
+                        bundle, "Could not quiesce history collector"
+                    )
+                end
+            end
+
+            if not storage_data_directory_is_safe() then
+                return fail_storage_mount_transaction(
+                    bundle, "JamMonitor data tree is not root-confined"
+                )
+            end
+            local before_ok, before_text = storage_readonly_sqlite(
+                "SELECT MAX(ts) FROM metrics;"
             )
             local before_newest = before_ok and
                 (tonumber(before_text:match("%d+")) or 0) or 0
-            local was_running =
-                checked_init_action(collector_service, "running", 5)
-            local function rollback_init()
-                local restored =
-                    restore_uci_snapshot("fstab", fstab_snapshot)
-                local running =
-                    checked_init_action(collector_service, "running", 5)
-                if was_running and not running then
-                    restored = checked_init_action(
-                        collector_service, "start", 30
-                    ) and restored
-                    restored = checked_init_action(
-                        collector_service, "running", 5
-                    ) and restored
-                elseif not was_running and running then
-                    restored = checked_init_action(
-                        collector_service, "stop", 30
-                    ) and restored
-                    restored = not checked_init_action(
-                        collector_service, "running", 5
-                    ) and restored
-                end
-                return restored
-            end
-            if was_running and
-               (not checked_init_action(collector_service, "stop", 30) or
-                checked_init_action(collector_service, "running", 5)) then
-                local restored = rollback_init()
-                return {
-                    success = false,
-                    error = restored and "Could not quiesce history collector" or
-                        "Collector quiesce failed and rollback was incomplete"
-                }
-            end
 
+            local collector_service = collector.path
+            local collector_service_name = collector.name
             local service_start_at = os.time()
-            if not checked_init_action(collector_service, "start", 30) then
-                local restored = rollback_init()
-                return {
-                    success = false,
-                    error = restored and "Could not start history collector" or
-                        "Collector start failed and rollback was incomplete"
-                }
+            if not write_storage_mount_phase(
+                bundle, "collector_starting"
+            ) or not checked_init_action(
+                collector_service, "start", 30
+            ) or checked_init_state(
+                collector_service, "running", 5
+            ) ~= true or not write_storage_mount_phase(
+                bundle, "collector_started"
+            ) then
+                return fail_storage_mount_transaction(
+                    bundle, "Could not start history collector"
+                )
             end
 
             local result = {
@@ -2411,23 +4620,24 @@ function action_storage_init()
             -- assuming one fixed scheduler delay on slower flash media.
             for _ = 1, 10 do
                 os.execute("sleep 1")
-                result.database_exists =
-                    fs.stat("/mnt/data/jammonitor/history.db") ~= nil
                 result.collector_running =
-                    checked_init_action(collector_service, "running", 5)
+                    checked_init_state(
+                        collector_service, "running", 5
+                    ) == true
 
-                local newest_ok, newest_text = checked_capture(
-                    "timeout 5 sqlite3 /mnt/data/jammonitor/history.db " ..
-                    "'SELECT MAX(ts) FROM metrics'"
+                local newest_ok, newest_text = storage_readonly_sqlite(
+                    "SELECT MAX(ts) FROM metrics;"
                 )
+                result.database_exists = newest_ok
                 result.newest_ts = newest_ok and
                     tonumber(newest_text:match("%d+")) or nil
                 result.sample_after_start = result.newest_ts ~= nil and
                     result.newest_ts >= service_start_at and
                     result.newest_ts > before_newest
 
-                local collector_raw =
-                    fs.readfile("/var/run/jammonitor/collector-status.json")
+                local collector_raw = read_bounded_regular_file(
+                    "/var/run/jammonitor/collector-status.json", 16384, 0
+                )
                 local collector =
                     collector_raw and json.parse(collector_raw) or nil
                 local report_started_at = type(collector) == "table" and
@@ -2453,10 +4663,17 @@ function action_storage_init()
             end
 
             if not result.success then
-                local restored = rollback_init()
-                result.error = restored and
-                    "Collector did not produce a fresh verified sample" or
-                    "Collector verification failed and rollback was incomplete"
+                local failure = fail_storage_mount_transaction(
+                    bundle, "Collector did not produce a fresh verified sample"
+                )
+                result.error = failure.error
+                return result
+            end
+            if not finish_storage_mount_transaction(bundle) then
+                return fail_storage_mount_transaction(
+                    bundle,
+                    "Initialization committed but recovery cleanup failed"
+                )
             end
             return result
         end
@@ -2487,7 +4704,7 @@ function action_wifi_status()
 
     -- Build MAC -> hostname map from DHCP leases
     local mac_to_hostname = {}
-    local leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
+    local leases = read_dhcp_leases()
     if leases and leases ~= "" then
         -- Format: timestamp mac ip hostname clientid
         for line in leases:gmatch("[^\n]+") do
@@ -2706,20 +4923,65 @@ function action_wifi_status()
     http.write(json.stringify(result))
 end
 
+local diagnostic_sequence = 0
+
 function action_diag()
     local http = require "luci.http"
     local sys = require "luci.sys"
+    local fs = require "nixio.fs"
+    local nixio = require "nixio"
+
+    if not private_luci_runtime_directory() then
+        http.status(500, "Error")
+        http.prepare_content("text/plain")
+        http.write("Diagnostic runtime state is unavailable")
+        return
+    end
+
+    diagnostic_sequence = diagnostic_sequence + 1
+    local diagnostic_id = string.format(
+        "%d.%d.%d", nixio.getpid(), os.time(), diagnostic_sequence
+    )
+    local diagnostic_dir =
+        LUCI_RUNTIME_DIRECTORY .. "/diagnostics." .. diagnostic_id
+    local filename =
+        LUCI_RUNTIME_DIRECTORY .. "/diagnostics." .. diagnostic_id .. ".tar.gz"
+    local worker_file =
+        LUCI_RUNTIME_DIRECTORY .. "/diagnostics." .. diagnostic_id .. ".worker"
+    if fs.lstat(diagnostic_dir) ~= nil or fs.lstat(filename) ~= nil or
+       fs.lstat(worker_file) ~= nil then
+        http.status(500, "Error")
+        http.prepare_content("text/plain")
+        http.write("Failed to allocate diagnostic bundle")
+        return
+    end
 
     -- Generate diagnostic bundle (use [=[ ]=] to allow nested brackets in shell script)
-    local script = [=[
-#!/bin/sh
+    local script =
+        "#!/bin/sh\n" ..
+        "DIAGDIR='" .. diagnostic_dir .. "'\n" ..
+        "ARCHIVE='" .. filename .. "'\n" ..
+        [=[
 # Jam Monitor Diagnostics Bundle Generator
 # Compatible with BusyBox ash
 # Version: 2.1 - Improved DNS, package detection, route diagnostics
 
-DIAGDIR="/tmp/jamdiag"
-rm -rf "$DIAGDIR"
-mkdir -p "$DIAGDIR"
+umask 077
+# Limit every generated regular file to 1 MiB. Individual reads from volatile
+# paths are capped much lower below. This is a last-resort guard against a
+# diagnostic command unexpectedly streaming forever into tmpfs.
+ulimit -f 2048 || exit 1
+[ ! -e "$DIAGDIR" ] && [ ! -L "$DIAGDIR" ] || exit 1
+mkdir -m 700 "$DIAGDIR" || exit 1
+ARCHIVE_COMPLETE=0
+
+cleanup_diag() {
+    rm -rf "$DIAGDIR"
+    if [ "$ARCHIVE_COMPLETE" != "1" ]; then
+        rm -f "$ARCHIVE"
+    fi
+}
+trap cleanup_diag EXIT HUP INT TERM
 
 # ============================================================
 # HELPER FUNCTIONS
@@ -2730,42 +4992,137 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Read at most 64 KiB from a root-owned regular volatile file. A direct child
+# of sticky /tmp is protected by sticky-bit ownership; nested parents must
+# also be root-owned and not group/world writable. The external deadline
+# bounds a last-moment special-file substitution even if those checks race.
+bounded_root_volatile_file() {
+    _volatile_path="$1"
+    case "$_volatile_path" in
+        /tmp/*|/var/run/*) ;;
+        *) return 1 ;;
+    esac
+    [ ! -L "$_volatile_path" ] && [ -f "$_volatile_path" ] || return 1
+    [ "$(stat -c '%u' "$_volatile_path" 2>/dev/null)" = "0" ] || return 1
+
+    _volatile_parent="${_volatile_path%/*}"
+    [ ! -L "$_volatile_parent" ] && [ -d "$_volatile_parent" ] ||
+        return 1
+    [ "$(stat -c '%u' "$_volatile_parent" 2>/dev/null)" = "0" ] ||
+        return 1
+    if [ "$_volatile_parent" != "/tmp" ]; then
+        _volatile_mode="$(stat -c '%a' "$_volatile_parent" 2>/dev/null)" ||
+            return 1
+        case "$_volatile_mode" in
+            ???) ;;
+            ????) _volatile_mode="${_volatile_mode#?}" ;;
+            *) return 1 ;;
+        esac
+        _volatile_group="${_volatile_mode%?}"
+        _volatile_group="${_volatile_group#?}"
+        _volatile_other="${_volatile_mode#??}"
+        case "$_volatile_group$_volatile_other" in
+            *[2367]*) return 1 ;;
+        esac
+    fi
+
+    timeout -s TERM -k 1 2 dd if="$_volatile_path" \
+        bs=4096 count=16 2>/dev/null
+}
+
 # Robust redaction function - handles multiple formats:
 # - UCI: option token '...', list password '...'
 # - Shell/env: TOKEN=..., password: ...
 # - JSON: "token":"...", "password": "..."
 # Case-insensitive matching for sensitive keys
 redact_sensitive() {
+    _sensitive_keys='token|password|passwd|private[ _-]?key|preshared[ _-]?key|psk|secret|api[ _-]?key|auth[ _-]?key|client[ _-]?secret|jwt|key'
     sed -E \
-        -e "s/(option[[:space:]]+(token|password|passwd|private_key|preshared_key|psk|secret|api_key|jwt|key)[[:space:]]+)['\"]?[^'\"]+['\"]?/\1'<REDACTED>'/gi" \
-        -e "s/(list[[:space:]]+(token|password|passwd|private_key|preshared_key|psk|secret|api_key|jwt|key)[[:space:]]+)['\"]?[^'\"]+['\"]?/\1'<REDACTED>'/gi" \
-        -e "s/((token|password|passwd|private_key|preshared_key|psk|secret|api_key|jwt|key)[[:space:]]*=[[:space:]]*)['\"]?[^'\"[:space:]]+['\"]?/\1<REDACTED>/gi" \
-        -e "s/((token|password|passwd|private_key|preshared_key|psk|secret|api_key|jwt|key)[[:space:]]*:[[:space:]]*)['\"]?[^'\"[:space:],}]+['\"]?/\1<REDACTED>/gi" \
-        -e "s/(\"(token|password|passwd|private_key|preshared_key|psk|secret|api_key|jwt|key)\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\1<REDACTED>\3/gi" \
+        -e "s/(\"(${_sensitive_keys})\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\1<REDACTED>\3/gi" \
+        -e "s/(option[[:space:]]+(${_sensitive_keys})[[:space:]]+)['\"]?[^'\"]+['\"]?/\1'<REDACTED>'/gi" \
+        -e "s/(list[[:space:]]+(${_sensitive_keys})[[:space:]]+)['\"]?[^'\"]+['\"]?/\1'<REDACTED>'/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1<REDACTED>/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*=[[:space:]]*)'[^']*'/\1<REDACTED>/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*=[[:space:]]*)[^'\"[:space:],}]+/\1<REDACTED>/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\1<REDACTED>/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*:[[:space:]]*)'[^']*'/\1<REDACTED>/gi" \
+        -e "s/((${_sensitive_keys})[[:space:]]*:[[:space:]]*)[^'\"[:space:],}]+/\1<REDACTED>/gi" \
+        -e "s#https?://login\.tailscale\.com/a/[A-Za-z0-9_-]+#https://login.tailscale.com/a/<REDACTED>#gi" \
+        -e "s/(tskey-(auth|client|api|scoped)-)[A-Za-z0-9_-]+/<TAILSCALE_KEY_REDACTED>/gi" \
+        -e "s/(Bearer[[:space:]]+)[A-Za-z0-9._~-]+/\1<REDACTED>/gi" \
+        -e "s/((nodekey|machinekey|privkey):)[A-Za-z0-9_-]+/\1<REDACTED>/gi" \
         -e "s/(eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*)/<JWT_REDACTED>/g"
+}
+
+# Every diagnostic source, including logs, process listings, status output and
+# command errors, passes through one final atomic redaction boundary. Keeping
+# this centralized prevents a newly added diagnostic command from bypassing
+# redaction by accident.
+redact_all_diagnostics() {
+    for _diagnostic_file in "$DIAGDIR"/*.txt; do
+        [ -f "$_diagnostic_file" ] && [ ! -L "$_diagnostic_file" ] ||
+            return 1
+        _redacted_file="${_diagnostic_file}.redacted"
+        [ ! -e "$_redacted_file" ] && [ ! -L "$_redacted_file" ] ||
+            return 1
+        if ! redact_sensitive <"$_diagnostic_file" >"$_redacted_file"; then
+            rm -f "$_redacted_file"
+            return 1
+        fi
+        chmod 0600 "$_redacted_file" || {
+            rm -f "$_redacted_file"
+            return 1
+        }
+        mv -f "$_redacted_file" "$_diagnostic_file" || {
+            rm -f "$_redacted_file"
+            return 1
+        }
+    done
+}
+
+# Return success when any known secret representation survives redaction.
+# Match content only. Never capture or print the matching line.
+diagnostic_secret_detected() {
+    # Redaction must be idempotent. If a second pass changes even one byte,
+    # the first pass left a recognized sensitive grammar behind. Comparing
+    # whole files avoids the unsafe shortcut of whitelisting an entire line
+    # merely because some other value on it was already redacted.
+    for _diagnostic_file in "$DIAGDIR"/*.txt; do
+        [ -f "$_diagnostic_file" ] && [ ! -L "$_diagnostic_file" ] ||
+            return 0
+        _verification_file="${_diagnostic_file}.verify"
+        [ ! -e "$_verification_file" ] &&
+            [ ! -L "$_verification_file" ] || return 0
+        if ! redact_sensitive <"$_diagnostic_file" \
+            >"$_verification_file"; then
+            rm -f "$_verification_file"
+            return 0
+        fi
+        if ! cmp -s "$_diagnostic_file" "$_verification_file"; then
+            rm -f "$_verification_file"
+            return 0
+        fi
+        rm -f "$_verification_file" || return 0
+    done
+
+    if grep -iE \
+        '(eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*|tskey-(auth|client|api|scoped)-[A-Za-z0-9_-]+|https?://login\.tailscale\.com/a/[A-Za-z0-9_-]+|Bearer[[:space:]]+[A-Za-z0-9._~-]+|(nodekey|machinekey|privkey):[A-Za-z0-9_-]+)' \
+        "$DIAGDIR"/*.txt >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 # Write with truncation markers (prevents mid-block truncation confusion)
 write_truncated() {
     local max_lines="$1"
-    local total_lines
-    local content
-    content=$(cat)
-    total_lines=$(echo "$content" | wc -l)
-
-    if [ "$total_lines" -le "$max_lines" ]; then
-        echo "$content"
-    else
-        local head_lines=$((max_lines * 2 / 3))
-        local tail_lines=$((max_lines / 3))
-        echo "$content" | head -n "$head_lines"
-        echo ""
-        echo "=== TRUNCATED: Showing $head_lines of $total_lines lines (first part) ==="
-        echo "=== ... $((total_lines - head_lines - tail_lines)) lines omitted ... ==="
-        echo "=== Showing last $tail_lines lines: ==="
-        echo ""
-        echo "$content" | tail -n "$tail_lines"
-    fi
+    awk -v max_lines="$max_lines" '
+        NR <= max_lines { print; next }
+        NR == max_lines + 1 {
+            print ""
+            print "=== TRUNCATED: additional lines omitted ==="
+        }
+    '
 }
 
 # ============================================================
@@ -2948,8 +5305,8 @@ write_truncated() {
     echo ""
 
     echo "--- /tmp/resolv.conf Status ---"
-    if [ -f /tmp/resolv.conf ]; then
-        echo "Lines: $(wc -l < /tmp/resolv.conf)"
+    if bounded_root_volatile_file /tmp/resolv.conf >/dev/null; then
+        echo "Lines: $(bounded_root_volatile_file /tmp/resolv.conf | wc -l)"
         ls -l /tmp/resolv.conf
         if [ ! -s /tmp/resolv.conf ]; then
             echo "WARNING: /tmp/resolv.conf exists but is EMPTY"
@@ -2967,7 +5324,13 @@ write_truncated() {
 
     echo "--- Effective resolv.conf Content ---"
     if [ -n "$RESOLVED_PATH" ] && [ -f "$RESOLVED_PATH" ]; then
-        cat "$RESOLVED_PATH" 2>/dev/null
+        case "$RESOLVED_PATH" in
+            /tmp/*|/var/run/*)
+                bounded_root_volatile_file "$RESOLVED_PATH" ||
+                    echo "(volatile resolver file rejected)"
+                ;;
+            *) cat "$RESOLVED_PATH" 2>/dev/null ;;
+        esac
     else
         cat /etc/resolv.conf 2>/dev/null || echo "(not found)"
     fi
@@ -3018,15 +5381,16 @@ write_truncated() {
 
     echo ""
     echo "=== /tmp/resolv.conf.auto ==="
-    cat /tmp/resolv.conf.auto 2>/dev/null || echo "(not found)"
+    bounded_root_volatile_file /tmp/resolv.conf.auto || echo "(not found or rejected)"
     echo ""
 
     echo "=== /tmp/resolv.conf.d/* ==="
-    if [ -d /tmp/resolv.conf.d ]; then
+    if [ -d /tmp/resolv.conf.d ] && [ ! -L /tmp/resolv.conf.d ] &&
+       [ "$(stat -c '%u' /tmp/resolv.conf.d 2>/dev/null)" = "0" ]; then
         for f in /tmp/resolv.conf.d/*; do
-            if [ -f "$f" ]; then
+            if [ -f "$f" ] && [ ! -L "$f" ]; then
                 echo "--- $f ---"
-                cat "$f"
+                bounded_root_volatile_file "$f" || echo "(rejected)"
                 echo ""
             fi
         done
@@ -3058,7 +5422,8 @@ write_truncated() {
 # ============================================================
 {
     echo "=== DHCP LEASES ==="
-    cat /tmp/dhcp.leases 2>/dev/null || echo "(no leases file)"
+    bounded_root_volatile_file /tmp/dhcp.leases ||
+        echo "(no leases file or file rejected)"
 } > "$DIAGDIR/08_dhcp_leases.txt"
 
 # ============================================================
@@ -3210,7 +5575,13 @@ write_truncated() {
     # Method 5: OMR tracking state
     echo ""
     echo "--- OMR Tracking State ---"
-    cat /tmp/openmptcprouter_* 2>/dev/null || echo "(no tracking files)"
+    omr_tracking_found=0
+    for f in /tmp/openmptcprouter_*; do
+        if bounded_root_volatile_file "$f"; then
+            omr_tracking_found=1
+        fi
+    done
+    [ "$omr_tracking_found" -eq 1 ] || echo "(no safe tracking files)"
 
     # Method 6: VPS connection info
     echo ""
@@ -3525,9 +5896,10 @@ write_truncated() {
         echo ""
         echo "OpenVPN status files:"
         for f in /var/run/openvpn*.status /tmp/openvpn*.status; do
-            if [ -f "$f" ]; then
+            if [ -f "$f" ] && [ ! -L "$f" ]; then
                 echo "=== $f ==="
-                cat "$f" | head -30
+                bounded_root_volatile_file "$f" | head -30 ||
+                    echo "(status file rejected)"
             fi
         done
     else
@@ -3583,103 +5955,77 @@ write_truncated() {
 } > "$DIAGDIR/24_route_get.txt"
 
 # ============================================================
-# 99 - REDACTION SELF-TEST (security verification)
+# 99 - REDACTION VERIFICATION (security boundary)
 # ============================================================
+redact_all_diagnostics || exit 1
+if diagnostic_secret_detected; then
+    echo "diagnostic redaction verification failed" >&2
+    exit 1
+fi
 {
-    echo "=== REDACTION SELF-TEST ==="
-    echo "Checking for leaked secrets in diagnostic files..."
-    echo ""
-    WARNINGS=0
-
-    # Check for JWT tokens (eyJ prefix)
-    JWT_LEAKS=$(grep -r "eyJ[A-Za-z0-9]" "$DIAGDIR" 2>/dev/null | grep -v "99_redaction" | grep -v "<JWT_REDACTED>" || true)
-    if [ -n "$JWT_LEAKS" ]; then
-        echo "!!! WARNING: Possible JWT token leak detected !!!"
-        echo "$JWT_LEAKS"
-        echo ""
-        WARNINGS=$((WARNINGS + 1))
-    fi
-
-    # Check for unredacted 'option token'
-    TOKEN_LEAKS=$(grep -ri "option token " "$DIAGDIR" 2>/dev/null | grep -v "99_redaction" | grep -v "REDACTED" || true)
-    if [ -n "$TOKEN_LEAKS" ]; then
-        echo "!!! WARNING: Unredacted 'option token' found !!!"
-        echo "$TOKEN_LEAKS"
-        echo ""
-        WARNINGS=$((WARNINGS + 1))
-    fi
-
-    # Check for unredacted 'option password'
-    PASS_LEAKS=$(grep -ri "option password " "$DIAGDIR" 2>/dev/null | grep -v "99_redaction" | grep -v "REDACTED" || true)
-    if [ -n "$PASS_LEAKS" ]; then
-        echo "!!! WARNING: Unredacted 'option password' found !!!"
-        echo "$PASS_LEAKS"
-        echo ""
-        WARNINGS=$((WARNINGS + 1))
-    fi
-
-    # Check for private keys
-    KEY_LEAKS=$(grep -ri "private_key\|preshared_key" "$DIAGDIR" 2>/dev/null | grep -v "99_redaction" | grep -v "REDACTED" | grep -v "^#" || true)
-    if [ -n "$KEY_LEAKS" ]; then
-        echo "!!! WARNING: Possible private key leak detected !!!"
-        echo "$KEY_LEAKS"
-        echo ""
-        WARNINGS=$((WARNINGS + 1))
-    fi
-
-    if [ $WARNINGS -eq 0 ]; then
-        echo "OK: No obvious secret leaks detected."
-        echo "Redaction appears to be working correctly."
-    else
-        echo "=============================================="
-        echo "!!! $WARNINGS POTENTIAL SECRET LEAK(S) FOUND !!!"
-        echo "Review the warnings above before sharing this bundle."
-        echo "=============================================="
-    fi
-
-    echo ""
-    echo "Files checked:"
-    ls -la "$DIAGDIR"/*.txt 2>/dev/null | wc -l
-    echo "diagnostic files generated."
-} > "$DIAGDIR/99_redaction_warnings.txt"
+    echo "=== REDACTION VERIFICATION ==="
+    echo "OK: all diagnostic text passed centralized redaction."
+    echo "No known secret representation survived the post-redaction scan."
+} > "$DIAGDIR/99_redaction_verification.txt"
 
 # ============================================================
 # Create tarball
 # ============================================================
-cd /tmp
-tar -czf jammonitor-diag.tar.gz jamdiag/
-rm -rf "$DIAGDIR"
-echo "/tmp/jammonitor-diag.tar.gz"
+ulimit -f unlimited || exit 1
+tar -C "$DIAGDIR" -czf "$ARCHIVE" . || exit 1
+ARCHIVE_COMPLETE=1
+cleanup_diag
+trap - EXIT HUP INT TERM
 ]=]
 
-    sys.exec(script)
+    local generated = atomic_write(
+        worker_file, script, EXECUTABLE_FILE_MODE
+    ) and sys.call(
+        "timeout -s TERM -k 2 90 " .. worker_file .. " >/dev/null 2>&1"
+    ) == 0
+    fs.remove(worker_file)
 
-    -- Send the file
-    local fs = require "nixio.fs"
-    local filename = "/tmp/jammonitor-diag.tar.gz"
-    local stat = fs.stat(filename)
-
-    if stat then
-        http.header("Content-Disposition", 'attachment; filename="jammonitor-diag-' .. os.date("%Y%m%d-%H%M%S") .. '.tar.gz"')
-        http.header("Content-Length", stat.size)
-        http.prepare_content("application/octet-stream")
-
-        local nixio = require "nixio"
-        local f = nixio.open(filename, "r")
-        if f then
-            while true do
-                local chunk = f:read(8192)
-                if not chunk or #chunk == 0 then break end
-                http.write(chunk)
-            end
-            f:close()
-        end
+    local before = fs.lstat(filename)
+    if not generated or not before or before.type ~= "reg" or
+       before.uid ~= 0 or type(before.size) ~= "number" or
+       before.size < 1 or before.size > 32 * 1024 * 1024 then
         fs.remove(filename)
-    else
         http.status(500, "Error")
         http.prepare_content("text/plain")
         http.write("Failed to generate diagnostic bundle")
+        return
     end
+
+    local f = nixio.open(filename, "r")
+    local opened = f and f:stat() or nil
+    if not opened or opened.type ~= "reg" or opened.uid ~= 0 or
+       opened.dev ~= before.dev or opened.ino ~= before.ino or
+       opened.size ~= before.size then
+        if f then f:close() end
+        fs.remove(filename)
+        http.status(500, "Error")
+        http.prepare_content("text/plain")
+        http.write("Diagnostic bundle validation failed")
+        return
+    end
+
+    http.header(
+        "Content-Disposition",
+        'attachment; filename="jammonitor-diag-' ..
+            os.date("%Y%m%d-%H%M%S") .. '.tar.gz"'
+    )
+    http.header("Content-Length", opened.size)
+    http.prepare_content("application/octet-stream")
+
+    local remaining = opened.size
+    while remaining > 0 do
+        local chunk = f:read(math.min(remaining, 8192))
+        if type(chunk) ~= "string" or #chunk == 0 then break end
+        http.write(chunk)
+        remaining = remaining - #chunk
+    end
+    f:close()
+    fs.remove(filename)
 end
 
 -- Apply WAN policy changes. The read endpoint below is deliberately separate
@@ -4668,23 +7014,131 @@ function action_wan_ifaces()
     http.write(json.stringify(result))
 end
 
--- Historical metrics download - ONE bundle with EVERYTHING
+local HISTORY_EXPORT_SECRET_MARKERS = {
+    "password", "passwd", "secret", "token", "authkey", "authurl",
+    "authorization", "bearer", "cookie", "jwt", "private key",
+    "private_key", "privatekey", "privkey", "nodekey", "machinekey",
+    "presharedkey", "api key", "api_key", "tskey-",
+    "login.tailscale.com/a/"
+}
+
+local function history_string_contains_secret(value)
+    if type(value) ~= "string" then return false end
+    local lowered = value:lower()
+    for _, marker in ipairs(HISTORY_EXPORT_SECRET_MARKERS) do
+        if lowered:find(marker, 1, true) then
+            return true
+        end
+    end
+    -- JWTs do not necessarily carry a "jwt" label. Limit the structural
+    -- check to the base64url JSON prefix so ordinary dotted addresses and
+    -- version numbers are not mistaken for credentials.
+    return lowered:find(
+        "eyj[%w_%-]*%.[%w_%-]+%.[%w_%-]+"
+    ) ~= nil
+end
+
+local function redact_history_string(value, max_bytes)
+    if type(value) ~= "string" then return "" end
+    if history_string_contains_secret(value) then
+        return "[content removed]"
+    end
+    return value:sub(1, max_bytes)
+end
+
+local function redact_history_log_line(line)
+    return redact_history_string(line, 2048)
+end
+
+-- This is deliberately a second, response-wide boundary after per-source
+-- redaction. If a future history field bypasses its source sanitizer, the
+-- export is rejected generically instead of publishing suspected bytes.
+local function history_export_secret_detected(value, depth, budget)
+    depth = depth or 0
+    budget = budget or {remaining = 50000}
+    if depth > 8 or budget.remaining < 1 then return true end
+    budget.remaining = budget.remaining - 1
+    if type(value) == "string" then
+        return history_string_contains_secret(value)
+    end
+    if type(value) ~= "table" then return false end
+    for _, child in pairs(value) do
+        if history_export_secret_detected(child, depth + 1, budget) then
+            return true
+        end
+    end
+    return false
+end
+
+local function bounded_history_command(command, redact)
+    if type(command) ~= "string" or #command < 1 or #command > 512 then
+        return ""
+    end
+    local ok, output = checked_capture(command)
+    if not ok or type(output) ~= "string" then return "" end
+    if not redact then return output end
+    local lines = {}
+    for line in output:gmatch("[^\r\n]+") do
+        lines[#lines + 1] = redact_history_log_line(line)
+        if #lines >= 500 then break end
+    end
+    return table.concat(lines, "\n")
+end
+
+local HISTORY_MAX_TIMESTAMP = 4102444800
+
+local function parse_history_integer(raw, minimum, maximum)
+    if type(raw) ~= "string" or #raw < 1 or #raw > 16 or
+       not raw:match("^%d+$") then
+        return nil
+    end
+    local value = tonumber(raw)
+    if not value or value ~= value or value == math.huge or
+       value == -math.huge or value ~= math.floor(value) or
+       value < minimum or value > maximum then
+        return nil
+    end
+    return value
+end
+
+local function write_history_input_error(http, json)
+    http.status(400, "Bad Request")
+    http.prepare_content("application/json")
+    http.write(json.stringify({ok = false, error = "invalid_time_range"}))
+end
+
+-- Historical metrics download - one bounded, authority-checked bundle.
 function action_history()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
 
     -- Support both hours-based and custom date range queries
-    local from_ts = tonumber(http.formvalue("from"))
-    local to_ts = tonumber(http.formvalue("to"))
-    local hours = tonumber(http.formvalue("hours")) or 24
+    local from_raw = http.formvalue("from")
+    local to_raw = http.formvalue("to")
+    local hours_raw = http.formvalue("hours")
+    local custom_range = from_raw ~= nil or to_raw ~= nil
+    local from_ts, to_ts, hours
+    if custom_range then
+        from_ts = parse_history_integer(from_raw, 0, HISTORY_MAX_TIMESTAMP)
+        to_ts = parse_history_integer(to_raw, 0, HISTORY_MAX_TIMESTAMP)
+        if not from_ts or not to_ts or from_ts >= to_ts then
+            write_history_input_error(http, json)
+            return
+        end
+    elseif hours_raw == nil or hours_raw == "" then
+        hours = 24
+    else
+        hours = parse_history_integer(hours_raw, 1, 720)
+        if not hours then
+            write_history_input_error(http, json)
+            return
+        end
+    end
 
-    local db_path = "/mnt/data/jammonitor/history.db"
     local log_path = "/mnt/data/jammonitor/syslog.txt"
     local cutoff, end_time
 
-    if from_ts and to_ts then
+    if custom_range then
         -- Custom date range mode (cap to 720 hours max)
         local max_range = 720 * 3600
         if (to_ts - from_ts) > max_range then
@@ -4696,13 +7150,22 @@ function action_history()
         hours = math.ceil((to_ts - from_ts) / 3600)
     else
         -- Hours-based mode (backward compatible)
-        if hours < 1 then hours = 1 end
-        if hours > 720 then hours = 720 end
         cutoff = os.time() - (hours * 3600)
         end_time = os.time()
     end
 
+    local authority, authority_error = storage_read_authority()
+    if not authority then
+        http.prepare_content("application/json")
+        http.write(json.stringify({
+            ok = false,
+            error = authority_error or "storage_not_authoritative"
+        }))
+        return
+    end
+
     local bundle = {
+        ok = true,
         generated_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         hours = hours,
         from_ts = cutoff,
@@ -4711,18 +7174,27 @@ function action_history()
         snapshots = {},
         tailscale_health = {},
         syslog = "",
-        current_state = {}
+        current_state = {},
+        limits = {
+            metrics = 500,
+            snapshots = 100,
+            tailscale_health = 500,
+            syslog_bytes = 65536,
+            syslog_lines = 2048
+        }
     }
 
-    -- Check if database exists
-    if fs.stat(db_path) then
+    do
         -- Query fast metrics (with upper bound for custom range)
         local query = string.format(
-            "SELECT ts, load, ram_pct, temp, wan_pings, iface_status FROM metrics WHERE ts > %d AND ts <= %d ORDER BY ts",
+            "SELECT ts, load, ram_pct, temp, wan_pings, iface_status " ..
+            "FROM (SELECT ts, load, ram_pct, temp, wan_pings, iface_status " ..
+            "FROM metrics WHERE ts > %d AND ts <= %d " ..
+            "ORDER BY ts DESC LIMIT 500) ORDER BY ts",
             cutoff, end_time
         )
-        local result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-        if result and result ~= "" then
+        local query_ok, result = storage_readonly_sqlite(query)
+        if query_ok and result ~= "" then
             for line in result:gmatch("[^\n]+") do
                 local ts, load, ram, temp, pings, ifaces = line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)|(.+)")
                 if ts then
@@ -4731,8 +7203,8 @@ function action_history()
                         load = load,
                         ram_pct = tonumber(ram),
                         temp = tonumber(temp),
-                        wan_pings = pings,
-                        iface_status = ifaces
+                        wan_pings = redact_history_string(pings, 16384),
+                        iface_status = redact_history_string(ifaces, 16384)
                     })
                 end
             end
@@ -4740,21 +7212,24 @@ function action_history()
 
         -- Query slow snapshots (MPTCP, VPN, routes, conntrack, DNS)
         query = string.format(
-            "SELECT ts, mptcp, vpn, routes, conntrack_count, dns FROM snapshots WHERE ts > %d AND ts <= %d ORDER BY ts",
+            "SELECT ts, mptcp, vpn, routes, conntrack_count, dns " ..
+            "FROM (SELECT ts, mptcp, vpn, routes, conntrack_count, dns " ..
+            "FROM snapshots WHERE ts > %d AND ts <= %d " ..
+            "ORDER BY ts DESC LIMIT 100) ORDER BY ts",
             cutoff, end_time
         )
-        result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-        if result and result ~= "" then
+        query_ok, result = storage_readonly_sqlite(query)
+        if query_ok and result ~= "" then
             for line in result:gmatch("[^\n]+") do
                 local ts, mptcp, vpn, routes, ct, dns = line:match("([^|]+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)")
                 if ts then
                     table.insert(bundle.snapshots, {
                         ts = tonumber(ts),
-                        mptcp = mptcp or "",
-                        vpn = vpn or "",
-                        routes = routes or "",
+                        mptcp = redact_history_string(mptcp or "", 16384),
+                        vpn = redact_history_string(vpn or "", 16384),
+                        routes = redact_history_string(routes or "", 16384),
                         conntrack_count = tonumber(ct) or 0,
-                        dns = dns or ""
+                        dns = redact_history_string(dns or "", 16384)
                     })
                 end
             end
@@ -4787,30 +7262,40 @@ function action_history()
             )
             FROM service_health
             WHERE service = 'tailscale' AND ts > %d AND ts <= %d
-            ORDER BY ts
+            ORDER BY ts DESC
+            LIMIT 500
         ]], cutoff, end_time):gsub("\n", " ")
-        result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
-        if result and result ~= "" then
+        query_ok, result = storage_readonly_sqlite(query)
+        if query_ok and result ~= "" then
             for line in result:gmatch("[^\n]+") do
                 local sample = json.parse(line)
                 if type(sample) == "table" then
+                    for _, key in ipairs({
+                        "boot_id", "status", "reason", "process_generation",
+                        "backend_state", "key_expiry", "condition_since_at",
+                        "connected_since_at", "peer_state"
+                    }) do
+                        if type(sample[key]) == "string" then
+                            sample[key] =
+                                redact_history_string(sample[key], 2048)
+                        end
+                    end
                     table.insert(bundle.tailscale_health, sample)
                 end
             end
         end
     end
 
-    -- Include syslog as array of lines (last 2MB max)
-    if fs.stat(log_path) then
-        local log_content = fs.readfile(log_path) or ""
-        -- Limit to last 2MB to keep bundle manageable
-        if #log_content > 2097152 then
-            log_content = log_content:sub(-2097152)
-        end
+    -- Include at most 64 KiB of syslog and suppress lines likely to contain
+    -- credentials. A replaced mount or file generation yields no log bytes.
+    do
+        local log_content =
+            storage_bounded_authorized_file(log_path, 65536) or ""
         -- Split into lines array (JSON encodes strings char-by-char otherwise)
         local lines = {}
         for line in log_content:gmatch("[^\r\n]+") do
-            lines[#lines + 1] = line
+            lines[#lines + 1] = redact_history_log_line(line)
+            if #lines >= bundle.limits.syslog_lines then break end
         end
         bundle.syslog = lines
     end
@@ -4818,23 +7303,60 @@ function action_history()
     -- Include current system state (like diagnostic bundle)
     bundle.current_state = {
         timestamp = os.time(),
-        uptime = sys.exec("cat /proc/uptime 2>/dev/null"):gsub("%s+$", ""),
-        uname = sys.exec("uname -a 2>/dev/null"):gsub("%s+$", ""),
-        ip_addr = sys.exec("ip addr 2>/dev/null"),
-        ip_route = sys.exec("ip route 2>/dev/null"),
-        mptcp_endpoints = sys.exec("ip mptcp endpoint show 2>/dev/null"),
-        mptcp_limits = sys.exec("ip mptcp limits 2>/dev/null"),
-        conntrack_count = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null"):gsub("%s+$", ""),
-        conntrack_max = sys.exec("cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null"):gsub("%s+$", ""),
-        memory = sys.exec("free 2>/dev/null"),
-        load = sys.exec("cat /proc/loadavg 2>/dev/null"):gsub("%s+$", ""),
-        dmesg_tail = sys.exec("dmesg 2>/dev/null | tail -200"),
-        errors = sys.exec("logread 2>/dev/null | grep -iE '(error|fail|warn|crit|down|timeout)' | tail -100")
+        uptime = bounded_history_command(
+            "timeout -s TERM -k 1 2 cat /proc/uptime", true
+        ):gsub("%s+$", ""),
+        uname = bounded_history_command(
+            "timeout -s TERM -k 1 2 uname -a", true
+        ):gsub("%s+$", ""),
+        ip_addr = bounded_history_command(
+            "timeout -s TERM -k 1 3 ip addr", true
+        ),
+        ip_route = bounded_history_command(
+            "timeout -s TERM -k 1 3 ip route", true
+        ),
+        mptcp_endpoints = bounded_history_command(
+            "timeout -s TERM -k 1 3 ip mptcp endpoint show", true
+        ),
+        mptcp_limits = bounded_history_command(
+            "timeout -s TERM -k 1 3 ip mptcp limits", true
+        ),
+        conntrack_count = bounded_history_command(
+            "timeout -s TERM -k 1 2 cat " ..
+            "/proc/sys/net/netfilter/nf_conntrack_count", true
+        ):gsub("%s+$", ""),
+        conntrack_max = bounded_history_command(
+            "timeout -s TERM -k 1 2 cat " ..
+            "/proc/sys/net/netfilter/nf_conntrack_max", true
+        ):gsub("%s+$", ""),
+        memory = bounded_history_command(
+            "timeout -s TERM -k 1 2 free", true
+        ),
+        load = bounded_history_command(
+            "timeout -s TERM -k 1 2 cat /proc/loadavg", true
+        ):gsub("%s+$", ""),
+        dmesg_tail = bounded_history_command(
+            "timeout -s TERM -k 1 3 dmesg | tail -200", true
+        ),
+        errors = bounded_history_command(
+            "timeout -s TERM -k 1 3 logread | " ..
+            "grep -iE '(error|fail|warn|crit|down|timeout)' | tail -100",
+            true
+        )
     }
 
     bundle.sample_count = #bundle.metrics
     bundle.snapshot_count = #bundle.snapshots
     bundle.tailscale_health_count = #bundle.tailscale_health
+
+    if history_export_secret_detected(bundle) then
+        http.status(500, "Error")
+        http.prepare_content("application/json")
+        http.write(json.stringify({
+            ok = false, error = "history_export_redaction_failed"
+        }))
+        return
+    end
 
     http.header("Content-Disposition", 'attachment; filename="jammonitor-history-' .. hours .. 'h-' .. os.date("%Y%m%d-%H%M%S") .. '.json"')
     http.prepare_content("application/json")
@@ -4844,16 +7366,29 @@ end
 -- Per-client traffic for a specific time bucket (hourly/daily/monthly popup)
 function action_history_clients()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
 
     local range = http.formvalue("range") or "hourly"
-    local start_ts = tonumber(http.formvalue("start")) or 0
+    local start_raw = http.formvalue("start")
 
     -- Validate range
     if range ~= "hourly" and range ~= "daily" and range ~= "monthly" then
-        range = "hourly"
+        write_history_input_error(http, json)
+        return
+    end
+    local max_duration = range == "hourly" and 3600 or
+        (range == "daily" and 86400 or 31 * 86400)
+    local start_ts
+    if start_raw == nil or start_raw == "" then
+        start_ts = 0
+    else
+        start_ts = parse_history_integer(
+            start_raw, 0, HISTORY_MAX_TIMESTAMP - max_duration
+        )
+        if not start_ts then
+            write_history_input_error(http, json)
+            return
+        end
     end
 
     -- Calculate time range based on bucket type
@@ -4866,11 +7401,22 @@ function action_history_clients()
         end_ts = start_ts + 31 * 86400
     end
 
-    local db_path = "/mnt/data/jammonitor/history.db"
     local devices = {}
+    local authority, authority_error = storage_read_authority()
+    if not authority then
+        http.prepare_content("application/json")
+        http.write(json.stringify({
+            ok = false,
+            error = authority_error or "storage_not_authoritative",
+            range = range,
+            start = start_ts,
+            ["end"] = end_ts,
+            devices = {}
+        }))
+        return
+    end
 
-    -- Check if database exists
-    if fs.stat(db_path) then
+    do
         -- Query both raw and hourly rollup tables, union and aggregate
         -- For raw: match ts in range
         -- For hourly: match hour_ts in range (hourly buckets that overlap)
@@ -4890,12 +7436,12 @@ function action_history_clients()
 
         -- Escape for shell
         query = query:gsub("\n", " ")
-        local result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. query .. "\" 2>/dev/null")
+        local query_ok, result = storage_readonly_sqlite(query)
 
-        if result and result ~= "" then
+        if query_ok and result ~= "" then
             -- Build current DHCP hostname map for enrichment
             local dhcp_map = {}
-            local dhcp_leases = sys.exec("cat /tmp/dhcp.leases 2>/dev/null")
+            local dhcp_leases = read_dhcp_leases()
             if dhcp_leases and dhcp_leases ~= "" then
                 for line in dhcp_leases:gmatch("[^\n]+") do
                     local mac, ip, host = line:match("^%S+%s+(%S+)%s+(%S+)%s+(%S+)")
@@ -4943,12 +7489,28 @@ end
 -- Returns interface totals, client totals, and unattributed delta
 function action_traffic_summary()
     local http = require "luci.http"
-    local sys = require "luci.sys"
     local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
 
     local range = http.formvalue("range") or "hourly"
-    local start_ts = tonumber(http.formvalue("start")) or 0
+    local start_raw = http.formvalue("start")
+    if range ~= "hourly" and range ~= "daily" and range ~= "monthly" then
+        write_history_input_error(http, json)
+        return
+    end
+    local max_duration = range == "hourly" and 3600 or
+        (range == "daily" and 86400 or 31 * 86400)
+    local start_ts
+    if start_raw == nil or start_raw == "" then
+        start_ts = 0
+    else
+        start_ts = parse_history_integer(
+            start_raw, 0, HISTORY_MAX_TIMESTAMP - max_duration
+        )
+        if not start_ts then
+            write_history_input_error(http, json)
+            return
+        end
+    end
 
     -- Calculate time range based on bucket type
     local end_ts
@@ -4960,14 +7522,26 @@ function action_traffic_summary()
         end_ts = start_ts + 31 * 86400
     end
 
-    local db_path = "/mnt/data/jammonitor/history.db"
     local result = {
         interfaces = {},
         client_total = { rx = 0, tx = 0 },
         unattributed = { rx = 0, tx = 0 }
     }
+    local authority, authority_error = storage_read_authority()
+    if not authority then
+        http.prepare_content("application/json")
+        http.write(json.stringify({
+            ok = false,
+            error = authority_error or "storage_not_authoritative",
+            range = range,
+            start = start_ts,
+            ["end"] = end_ts,
+            data = result
+        }))
+        return
+    end
 
-    if fs.stat(db_path) then
+    do
         -- Get interface totals for time range
         local iface_query = string.format([[
             SELECT iface, SUM(rx_bytes) as rx, SUM(tx_bytes) as tx
@@ -4977,11 +7551,11 @@ function action_traffic_summary()
         ]], start_ts, end_ts)
         iface_query = iface_query:gsub("\n", " ")
 
-        local iface_result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. iface_query .. "\" 2>/dev/null")
+        local iface_ok, iface_result = storage_readonly_sqlite(iface_query)
         local total_iface_rx = 0
         local total_iface_tx = 0
 
-        if iface_result and iface_result ~= "" then
+        if iface_ok and iface_result ~= "" then
             for line in iface_result:gmatch("[^\n]+") do
                 local iface, rx, tx = line:match("^([^|]+)|([^|]+)|([^|]+)")
                 if iface then
@@ -5010,8 +7584,9 @@ function action_traffic_summary()
         ]], start_ts, end_ts, start_ts, end_ts)
         client_query = client_query:gsub("\n", " ")
 
-        local client_result = sys.exec("timeout 10 sqlite3 '" .. db_path .. "' \"" .. client_query .. "\" 2>/dev/null")
-        if client_result and client_result ~= "" then
+        local client_ok, client_result =
+            storage_readonly_sqlite(client_query)
+        if client_ok and client_result ~= "" then
             local rx, tx = client_result:match("^([^|]*)|([^|]*)")
             result.client_total.rx = tonumber(rx) or 0
             result.client_total.tx = tonumber(tx) or 0
@@ -5121,12 +7696,19 @@ local function capture_bypass_bundle(uci, selected)
 
     for _, spec in ipairs(BYPASS_SERVICE_SPECS) do
         local installed = fs.stat(spec.path) ~= nil
+        local enabled = false
+        local running = false
+        if installed then
+            enabled = checked_init_state(spec.path, "enabled", 5)
+            running = checked_init_state(spec.path, "running", 5)
+            if enabled == nil or running == nil then
+                return nil, "Cannot prove current bypass service state"
+            end
+        end
         bundle.services[spec.id] = {
             installed = installed,
-            enabled = installed and
-                checked_init_action(spec.path, "enabled", 5) or false,
-            running = installed and
-                checked_init_action(spec.path, "running", 5) or false
+            enabled = enabled,
+            running = running
         }
     end
     return bundle
@@ -5277,6 +7859,10 @@ local function apply_bypass_hotplug(original_state, bypass_enabled)
            not os.rename(BYPASS_HOTPLUG, BYPASS_HOTPLUG_DISABLED) then
             return false
         end
+        if original_state == "active" and
+           not sync_parent_directory(BYPASS_HOTPLUG_DISABLED) then
+            return false
+        end
         local expected = original_state == "active" and "disabled" or original_state
         return bypass_hotplug_state() == expected
     end
@@ -5286,8 +7872,12 @@ local function apply_bypass_hotplug(original_state, bypass_enabled)
         if not os.rename(BYPASS_HOTPLUG_DISABLED, BYPASS_HOTPLUG) then
             return false
         end
+        if not sync_parent_directory(BYPASS_HOTPLUG) then return false end
     elseif original_state == "disabled" and current == "active" then
         if not os.rename(BYPASS_HOTPLUG, BYPASS_HOTPLUG_DISABLED) then
+            return false
+        end
+        if not sync_parent_directory(BYPASS_HOTPLUG_DISABLED) then
             return false
         end
     elseif original_state == "absent" and current ~= "absent" then
@@ -5300,48 +7890,63 @@ end
 local function service_state_matches(spec, expected_running, expected_enabled)
     local fs = require "nixio.fs"
     if not fs.stat(spec.path) then return false end
-    local running = checked_init_action(spec.path, "running", 5)
-    local enabled = checked_init_action(spec.path, "enabled", 5)
+    local running = checked_init_state(spec.path, "running", 5)
+    local enabled = checked_init_state(spec.path, "enabled", 5)
+    if running == nil or enabled == nil then return false end
     return running == expected_running and enabled == expected_enabled
 end
 
 local function apply_bypass_services(bundle, bypass_enabled)
     local fs = require "nixio.fs"
-    local ok = true
+    local observed = {}
+
+    -- Prove every installed/topology and tri-state service observation before
+    -- changing the first service. A timeout or init rc>1 is unknown, never
+    -- equivalent to disabled/stopped.
     for _, spec in ipairs(BYPASS_SERVICE_SPECS) do
         local state = bundle.services[spec.id]
         if state.installed then
-            if not fs.stat(spec.path) then
-                ok = false
-            else
-                local want_running = not bypass_enabled and state.running
-                local want_enabled = state.enabled
-                local enabled =
-                    checked_init_action(spec.path, "enabled", 5)
-                if enabled ~= want_enabled then
-                    checked_init_action(
-                        spec.path, want_enabled and "enable" or "disable", 30
-                    )
-                end
-                local running =
-                    checked_init_action(spec.path, "running", 5)
-                if running ~= want_running then
-                    checked_init_action(
-                        spec.path, want_running and "start" or "stop", 30
-                    )
-                end
-                if not service_state_matches(
-                    spec, want_running, want_enabled
-                ) then
-                    ok = false
-                end
-            end
+            if not fs.stat(spec.path) then return false end
+            local enabled = checked_init_state(spec.path, "enabled", 5)
+            local running = checked_init_state(spec.path, "running", 5)
+            if enabled == nil or running == nil then return false end
+            observed[spec.id] = {enabled = enabled, running = running}
         elseif fs.stat(spec.path) then
             -- Installation topology changed while recovery state was active.
-            ok = false
+            return false
         end
     end
-    return ok
+
+    for _, spec in ipairs(BYPASS_SERVICE_SPECS) do
+        local state = bundle.services[spec.id]
+        if state.installed then
+            local want_running = not bypass_enabled and state.running
+            local want_enabled = state.enabled
+            local before = observed[spec.id]
+            if before.enabled ~= want_enabled and
+               not checked_init_action(
+                   spec.path, want_enabled and "enable" or "disable", 30
+               ) then
+                return false
+            end
+            local enabled = checked_init_state(spec.path, "enabled", 5)
+            if enabled == nil or enabled ~= want_enabled then return false end
+            if before.running ~= want_running and
+               not checked_init_action(
+                   spec.path, want_running and "start" or "stop", 30
+               ) then
+                return false
+            end
+            local running = checked_init_state(spec.path, "running", 5)
+            if running == nil or running ~= want_running or
+               not service_state_matches(
+                   spec, want_running, want_enabled
+               ) then
+                return false
+            end
+        end
+    end
+    return true
 end
 
 local function bypass_runtime_matches(bundle)
@@ -5426,7 +8031,7 @@ local function restore_bypass_bundle(bundle)
         mark_bypass_recovery_failure("cannot_record_restored_phase")
         return false
     end
-    if fs.stat(BYPASS_FLAG) and not fs.remove(BYPASS_FLAG) then
+    if fs.stat(BYPASS_FLAG) and not durable_remove(BYPASS_FLAG) then
         mark_bypass_recovery_failure("cannot_remove_active_flag")
         return false
     end
@@ -5435,7 +8040,7 @@ local function restore_bypass_bundle(bundle)
         return false
     end
     if fs.stat(BYPASS_RECOVERY_FAILED) and
-       not fs.remove(BYPASS_RECOVERY_FAILED) then
+       not durable_remove(BYPASS_RECOVERY_FAILED) then
         return false
     end
     return true
@@ -5443,10 +8048,10 @@ end
 
 local function cleanup_bypass_bundle()
     local fs = require "nixio.fs"
-    fs.remove(BYPASS_BUNDLE)
-    fs.remove("/etc/jammonitor_bypass_saved")
-    fs.remove("/etc/jammonitor_bypass_vpn")
-    return fs.stat(BYPASS_BUNDLE) == nil and
+    local removed = durable_remove(BYPASS_BUNDLE) and
+        durable_remove("/etc/jammonitor_bypass_saved") and
+        durable_remove("/etc/jammonitor_bypass_vpn")
+    return removed and fs.stat(BYPASS_BUNDLE) == nil and
         fs.stat("/etc/jammonitor_bypass_saved") == nil and
         fs.stat("/etc/jammonitor_bypass_vpn") == nil
 end
@@ -5506,7 +8111,7 @@ local function action_bypass_set_transactional()
             if data.enable and flag_exists then
                 if bypass_state_is_active(bundle) then
                     if fs.stat(BYPASS_RECOVERY_FAILED) and
-                       not fs.remove(BYPASS_RECOVERY_FAILED) then
+                       not durable_remove(BYPASS_RECOVERY_FAILED) then
                         return {
                             success = false,
                             bypass_enabled = true,
@@ -5660,7 +8265,7 @@ local function action_bypass_set_transactional()
                 }
             end
             if fs.stat(BYPASS_RECOVERY_FAILED) and
-               not fs.remove(BYPASS_RECOVERY_FAILED) then
+               not durable_remove(BYPASS_RECOVERY_FAILED) then
                 return {
                     success = false,
                     bypass_enabled = true,
@@ -5742,7 +8347,8 @@ function action_bypass()
 end
 
 local speedtest_job_sequence = 0
-local SPEEDTEST_LOCK = "/tmp/jammonitor_speedtest.lock"
+local SPEEDTEST_LOCK = LUCI_RUNTIME_DIRECTORY .. "/speedtest.lock"
+local SPEEDTEST_JOB_PREFIX = LUCI_RUNTIME_DIRECTORY .. "/speedtest."
 
 local function release_speedtest_lock(job_id)
     local fs = require "nixio.fs"
@@ -5933,7 +8539,8 @@ function action_speedtest_start()
 
     -- A single global lease prevents concurrent curls from saturating every
     -- WAN. Crashed jobs are reclaimable after twice the maximum test timeout.
-    if not acquire_lock_dir(SPEEDTEST_LOCK, 120) then
+    local speedtest_lock_token = acquire_lock_dir(SPEEDTEST_LOCK, 120)
+    if not speedtest_lock_token then
         http.write(json.stringify({ok = false, error = "Another speed test is already running"}))
         return
     end
@@ -5945,8 +8552,8 @@ function action_speedtest_start()
         "%s_%s_%d_%d_%d",
         job_iface, direction, os.time(), nixio.getpid(), speedtest_job_sequence
     )
-    local job_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".json"
-    local worker_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".worker"
+    local job_file = SPEEDTEST_JOB_PREFIX .. job_id .. ".json"
+    local worker_file = SPEEDTEST_JOB_PREFIX .. job_id .. ".worker"
     local started_at = os.time()
     local deadline_at = started_at + timeout_s + 15
     local bytes = size_mb * 1024 * 1024
@@ -5962,7 +8569,7 @@ function action_speedtest_start()
         deadline_at = deadline_at
     }), PRIVATE_FILE_MODE) then
         release_speedtest_lock(job_id)
-        release_lock_dir(SPEEDTEST_LOCK)
+        release_lock_dir(SPEEDTEST_LOCK, speedtest_lock_token)
         http.write(json.stringify({ok = false, error = "Failed to create speed test job"}))
         return
     end
@@ -6096,18 +8703,17 @@ function action_speedtest_status()
         return
     end
 
-    local job_file = "/tmp/jammonitor_speedtest_" .. job_id .. ".json"
-    local content = fs.readfile(job_file)
+    if not private_luci_runtime_directory() then
+        http.write(json.stringify({ok = false, error = "Runtime state is unavailable"}))
+        return
+    end
+    local job_file = SPEEDTEST_JOB_PREFIX .. job_id .. ".json"
+    local content = read_bounded_regular_file(job_file, 16384)
 
     if not content or content == "" then
         http.write(json.stringify({ok = false, error = "Job not found"}))
         return
     end
-    if #content > 16384 then
-        http.write(json.stringify({ok = false, error = "Invalid job data"}))
-        return
-    end
-
     local data = json.parse(content)
     if not speedtest_status_is_valid(data, job_id) then
         http.write(json.stringify({ok = false, error = "Invalid job data"}))
@@ -6149,7 +8755,7 @@ function action_speedtest_status()
                 }))
                 return
             end
-            fs.remove("/tmp/jammonitor_speedtest_" .. job_id .. ".worker")
+            fs.remove(SPEEDTEST_JOB_PREFIX .. job_id .. ".worker")
             release_speedtest_lock(job_id)
         end
     else

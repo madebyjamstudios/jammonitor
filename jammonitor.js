@@ -2489,17 +2489,13 @@ var JamMonitor = (function() {
                 tone: 'bad',
                 detail: _('The backend is Running, but the tunnel state is missing or unsupported.')
             },
-            engine_inactive: {
-                tone: 'bad',
-                detail: _('The backend is Running, but this node is not active in the network engine.')
-            },
-            engine_state_unknown: {
-                tone: 'bad',
-                detail: _('The backend is Running, but the network-engine state is missing or unsupported.')
-            },
             health_warning: {
                 tone: 'warn',
                 detail: _('The local backend is connected but reports one or more health warnings.')
+            },
+            health_state_unknown: {
+                tone: 'bad',
+                detail: _('The local data plane is ready, but the Tailscale health array is missing or malformed.')
             },
             control_offline: {
                 tone: 'warn',
@@ -2513,6 +2509,22 @@ var JamMonitor = (function() {
                 tone: 'warn',
                 detail: _('The local data plane is ready, but JamMonitor cannot bind daemon uptime to a verified process generation.')
             },
+            service_enabled_query_failed: {
+                tone: 'bad',
+                detail: _('JamMonitor could not verify that the Tailscale service is enabled before the supervisor deadline.')
+            },
+            service_running_query_failed: {
+                tone: 'bad',
+                detail: _('JamMonitor could not verify that the Tailscale service is running before the supervisor deadline.')
+            },
+            supervisor_missing: {
+                tone: 'bad',
+                detail: _('The Tailscale supervisor script is missing.')
+            },
+            state_persistence_failed: {
+                tone: 'bad',
+                detail: _('JamMonitor could not persist watchdog continuity state, so connectivity uptime and automatic recovery were suppressed.')
+            },
             localapi_socket_missing: {
                 tone: 'bad',
                 detail: _('The Tailscale process exists, but its expected local API socket is missing.')
@@ -2520,6 +2532,10 @@ var JamMonitor = (function() {
             critical_peer_unreachable: {
                 tone: 'bad',
                 detail: _('The local backend is connected, but the configured critical peer is unreachable.')
+            },
+            critical_peer_invalid: {
+                tone: 'bad',
+                detail: _('The critical-peer configuration is invalid. Correct the protected peer file before trusting delivered connectivity.')
             },
             maintenance_marker_invalid: {
                 tone: 'warn',
@@ -2606,7 +2622,7 @@ var JamMonitor = (function() {
                     status.local_api_responsive !== true ||
                     status.service_running !== true ||
                     status.tun_available !== true ||
-                    status.in_engine !== true || ips.length === 0)) {
+                    ips.length === 0)) {
             presentation = {
                 tone: 'bad',
                 title: _('Status conflict'),
@@ -2710,11 +2726,19 @@ var JamMonitor = (function() {
             if (status.peer_reachable === true) {
                 addTailscaleFact(facts, _('Critical peer') + ': ' + _('reachable'), 'good');
             } else if (status.peer_reachable === false) {
-                addTailscaleFact(facts, _('Critical peer') + ': ' + _('unreachable'), 'bad');
+                addTailscaleFact(
+                    facts,
+                    _('Critical peer') + ': ' +
+                        (status.peer_state === 'invalid_configuration' ?
+                            _('invalid configuration') : _('unreachable')),
+                    'bad'
+                );
                 panelTone = strongerTailscaleTone(panelTone, 'bad');
             } else {
                 var peerState = status.peer_state === 'reachable' ? _('reachable') :
-                    (status.peer_state === 'unreachable' ? _('unreachable') : _('unknown'));
+                    (status.peer_state === 'unreachable' ? _('unreachable') :
+                        (status.peer_state === 'invalid_configuration' ?
+                            _('invalid configuration') : _('unknown')));
                 addTailscaleFact(facts, _('Critical peer') + ': ' + peerState, 'warn');
                 panelTone = strongerTailscaleTone(panelTone, 'warn');
             }

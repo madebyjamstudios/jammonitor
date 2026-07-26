@@ -12,20 +12,486 @@ USE_PROCD=1
 TAILSCALED="/usr/sbin/tailscaled"
 STATE_FILE="/etc/tailscale/tailscaled.state"
 SOCKET_FILE="/var/run/tailscale/tailscaled.sock"
+INSTALL_FENCE="/etc/jammonitor/install-transaction"
+INSTALL_RECOVERY_ACTIVE="/etc/jammonitor/recovery/active"
+INSTALL_RECOVERY_UNRESOLVED="/etc/jammonitor/recovery/UNRESOLVED"
+UPGRADE_FENCE="/etc/jammonitor/tailscale-upgrade-fence"
+CLEANUP_TIMEOUT=10
+
+bounded_tailscaled_cleanup() {
+    timeout -s TERM -k 2 "$CLEANUP_TIMEOUT" \
+        "$TAILSCALED" --cleanup >/dev/null 2>&1
+}
+
+is_lower_sha256() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+}
+
+is_safe_directory_mode() {
+    case "${1:-}" in
+        [0-7][0-7][0-7]) ;;
+        *) return 1 ;;
+    esac
+    group_digit="${1#?}"
+    group_digit="${group_digit%?}"
+    other_digit="${1#??}"
+    case "$group_digit:$other_digit" in
+        *[2367]:*|*:*[2367]) return 1 ;;
+    esac
+}
+
+private_regular_fence() {
+    fence_path="$1"
+    fence_max_bytes="$2"
+    [ -f "$fence_path" ] && [ ! -L "$fence_path" ] || return 1
+    [ "$(stat -c '%u:%g:%a:%h' "$fence_path" 2>/dev/null)" = \
+      "0:0:600:1" ] || return 1
+    fence_size="$(wc -c < "$fence_path" 2>/dev/null |
+        tr -d ' \r\n')" || return 1
+    case "$fence_size" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$fence_size" -gt 0 ] && [ "$fence_size" -le "$fence_max_bytes" ]
+}
+
+fence_value() {
+    fence_key="$1"
+    fence_path="$2"
+    awk -F= -v expected="$fence_key" '
+        $1 == expected {
+            count++
+            value = substr($0, length($1) + 2)
+        }
+        END {
+            if (count != 1 || value == "") exit 1
+            print value
+        }
+    ' "$fence_path"
+}
+
+bounded_capture() {
+    capture_path="$1"
+    shift
+    : > "$capture_path" || return 1
+    timeout -s TERM -k 2 5 /bin/sh -c \
+        'ulimit -f 128 || exit 125; exec "$@"' \
+        jammonitor-init-fence "$@" > "$capture_path" 2>/dev/null
+}
+
+installer_fence_allows_start() {
+    # Recovery evidence without this fence means either mutation never began
+    # or the exact old/new state already passed its durable readiness gate.
+    # It must block future mutation, but it must not take a verified runtime
+    # offline after a power loss between fence cleanup and evidence cleanup.
+    if [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ]; then
+        return 0
+    fi
+
+    # JAMMONITOR_BOOT_FENCE_V1. This is the exact contract shared by the
+    # Tailscale, history, and watchdog init payloads. Boot has no token and
+    # therefore fails closed. Only the lock-owning installer exports the
+    # token while its exact write-ahead recovery bundle remains joinable.
+    private_regular_fence "$INSTALL_FENCE" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_FENCE" 2>/dev/null | tr -d ' ')" = "7" ] ||
+        return 1
+    [ -d "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ ! -L "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ "$(stat -c '%u:%g:%a' "$INSTALL_RECOVERY_ACTIVE" 2>/dev/null)" = \
+          "0:0:700" ] ||
+        return 1
+    private_regular_fence "$INSTALL_RECOVERY_UNRESOLVED" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_RECOVERY_UNRESOLVED" 2>/dev/null |
+        tr -d ' ')" = "2" ] &&
+        grep -Fqx 'status=mutation_started' \
+            "$INSTALL_RECOVERY_UNRESOLVED" ||
+        return 1
+
+    install_token="$(fence_value token "$INSTALL_FENCE")" || return 1
+    is_lower_sha256 "$install_token" || return 1
+    [ "${JAMMONITOR_INSTALL_FENCE_TOKEN:-}" = "$install_token" ] ||
+        return 1
+    [ "$(fence_value format "$INSTALL_FENCE")" = \
+      "jammonitor-router-install-fence-v1" ] ||
+        return 1
+    install_source_ref="$(fence_value source_ref "$INSTALL_FENCE")" ||
+        return 1
+    case "$install_source_ref" in
+        local-staged) ;;
+        *)
+            [ "${#install_source_ref}" -eq 40 ] || return 1
+            case "$install_source_ref" in
+                *[!0-9a-f]*) return 1 ;;
+            esac
+            ;;
+    esac
+    install_manifest_sha="$(
+        fence_value manifest_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_manifest_sha" || return 1
+    [ "$(fence_value recovery_bundle "$INSTALL_FENCE")" = \
+      "/etc/jammonitor/recovery/active" ] ||
+        return 1
+    install_transaction_sha="$(
+        fence_value recovery_transaction_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_transaction_sha" || return 1
+    [ "$(fence_value phase "$INSTALL_FENCE")" = "payload_mutation" ] ||
+        return 1
+    private_regular_fence \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" 4096 &&
+        [ "$(sha256sum "$INSTALL_RECOVERY_ACTIVE/transaction" |
+            awk '{print $1}')" = "$install_transaction_sha" ] ||
+        return 1
+    grep -Fqx "source_ref=$install_source_ref" \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" &&
+        grep -Fqx "manifest_sha256=$install_manifest_sha" \
+            "$INSTALL_RECOVERY_ACTIVE/transaction" ||
+        return 1
+    grep -Fqx 'recovery_bundle=/etc/jammonitor/recovery/active' \
+        "$INSTALL_RECOVERY_UNRESOLVED"
+}
+
+upgrade_fence_allows_start() {
+    if [ ! -e "$UPGRADE_FENCE" ] && [ ! -L "$UPGRADE_FENCE" ]; then
+        return 0
+    fi
+    private_regular_fence "$UPGRADE_FENCE" 1024 || return 1
+    [ "$(wc -l < "$UPGRADE_FENCE" 2>/dev/null | tr -d ' ')" = "9" ] ||
+        return 1
+
+    upgrade_token="$(fence_value token "$UPGRADE_FENCE")" || return 1
+    is_lower_sha256 "$upgrade_token" || return 1
+    [ "${JAMMONITOR_TAILSCALE_UPGRADE_FENCE_TOKEN:-}" = \
+      "$upgrade_token" ] ||
+        return 1
+    [ "$(fence_value format "$UPGRADE_FENCE")" = \
+      "jammonitor-tailscale-upgrade-fence-v1" ] ||
+        return 1
+    upgrade_source="$(fence_value source "$UPGRADE_FENCE")" || return 1
+    case "$upgrade_source" in
+        /dev/sd[a-z][1-9]|/dev/sd[a-z][1-9][0-9]*) ;;
+        *) return 1 ;;
+    esac
+    upgrade_source_identity="$(
+        fence_value source_identity "$UPGRADE_FENCE"
+    )" || return 1
+    case "$upgrade_source_identity" in
+        *[!0-9A-Fa-f:]*|"") return 1 ;;
+    esac
+    upgrade_uuid="$(fence_value uuid "$UPGRADE_FENCE")" || return 1
+    case "$upgrade_uuid" in
+        *[!0-9A-Za-z-]*|"") return 1 ;;
+    esac
+    [ "$(fence_value bundle "$UPGRADE_FENCE")" = \
+      "/mnt/data/.jammonitor-tailscale-upgrade/pending" ] ||
+        return 1
+    upgrade_bundle_identity="$(
+        fence_value bundle_identity "$UPGRADE_FENCE"
+    )" || return 1
+    case "$upgrade_bundle_identity" in
+        *[!0-9:]*|"") return 1 ;;
+    esac
+    upgrade_manifest_sha="$(
+        fence_value bundle_manifest_sha256 "$UPGRADE_FENCE"
+    )" || return 1
+    is_lower_sha256 "$upgrade_manifest_sha" || return 1
+    [ "$(fence_value phase "$UPGRADE_FENCE")" = \
+      "ready_for_binary_mutation" ] ||
+        return 1
+
+    mount_source="$(
+        awk '
+            $2 == "/mnt/data" {
+                matches++
+                source = $1
+                fstype = $3
+                options_text = $4
+            }
+            END {
+                rw = 0
+                ro = 0
+                noatime = 0
+                nosuid = 0
+                nodev = 0
+                noexec = 0
+                rw_count = 0
+                noatime_count = 0
+                nosuid_count = 0
+                nodev_count = 0
+                noexec_count = 0
+                n = split(options_text, options, ",")
+                for (i = 1; i <= n; i++) {
+                    if (options[i] == "rw") {
+                        rw = 1
+                        rw_count++
+                    }
+                    if (options[i] == "ro") ro = 1
+                    if (options[i] == "noatime") {
+                        noatime = 1
+                        noatime_count++
+                    }
+                    if (options[i] == "nosuid") {
+                        nosuid = 1
+                        nosuid_count++
+                    }
+                    if (options[i] == "nodev") {
+                        nodev = 1
+                        nodev_count++
+                    }
+                    if (options[i] == "noexec") {
+                        noexec = 1
+                        noexec_count++
+                    }
+                }
+                if (matches != 1 || fstype != "ext4" ||
+                    rw != 1 || ro != 0 || noatime != 1 ||
+                    nosuid != 1 || nodev != 1 || noexec != 1 ||
+                    n != 5 || rw_count != 1 ||
+                    noatime_count != 1 || nosuid_count != 1 ||
+                    nodev_count != 1 || noexec_count != 1) exit 1
+                print source
+            }
+        ' /proc/mounts
+    )" || return 1
+    [ "$mount_source" = "$upgrade_source" ] || return 1
+    [ -b "$upgrade_source" ] && [ ! -L "$upgrade_source" ] ||
+        return 1
+    [ "$(stat -c '%d:%i:%t:%T' "$upgrade_source" 2>/dev/null)" = \
+      "$upgrade_source_identity" ] ||
+        return 1
+
+    partition_name="${upgrade_source#/dev/}"
+    partition_number="$(
+        printf '%s\n' "$partition_name" | sed 's/^sd[a-z]//'
+    )"
+    parent_name="$(
+        printf '%s\n' "$partition_name" | sed 's/[0-9][0-9]*$//'
+    )"
+    [ "$(tr -d ' \r\n' \
+        < "/sys/class/block/$partition_name/partition" 2>/dev/null)" = \
+      "$partition_number" ] &&
+        [ "$(tr -d ' \r\n' \
+            < "/sys/class/block/$parent_name/removable" 2>/dev/null)" = \
+          "1" ] ||
+        return 1
+
+    mount_metadata="$(stat -c '%u:%g:%a' /mnt/data 2>/dev/null)" ||
+        return 1
+    old_ifs="$IFS"
+    IFS=:
+    set -- $mount_metadata
+    IFS="$old_ifs"
+    [ "$#" -eq 3 ] && [ "$1:$2" = "0:0" ] &&
+        is_safe_directory_mode "$3" ||
+        return 1
+
+    mkdir -p /var/run/jammonitor || return 1
+    chmod 0700 /var/run/jammonitor || return 1
+    capture="/var/run/jammonitor/.tailscale-init-fence.$$"
+    if ! bounded_capture "$capture" uci -q -c /etc/config show fstab; then
+        rm -f -- "$capture"
+        return 1
+    fi
+    configured_uuid="$(
+        awk '
+            function unquote(value) {
+                if (value !~ /^\047[^\047]*\047$/) return ""
+                return substr(value, 2, length(value) - 2)
+            }
+            {
+                split($0, fields, "=")
+                key = fields[1]
+                value = substr($0, length(key) + 2)
+                plain = unquote(value)
+                if (key ~ /^fstab\.[^.]+$/ ||
+                    key ~ /^fstab\.@mount\[[0-9]+\]$/) {
+                    type_count[key]++
+                    type_value[key] = value
+                }
+                if (key ~ /^fstab\..*\.target$/ &&
+                    plain == "/mnt/data") {
+                    all_target_count++
+                    authority = key
+                    sub(/\.target$/, "", authority)
+                }
+                values[key] = plain
+                counts[key]++
+            }
+            END {
+                if (all_target_count != 1 ||
+                    type_count[authority] != 1 ||
+                    type_value[authority] != "mount" ||
+                    counts[authority ".target"] != 1 ||
+                    counts[authority ".uuid"] != 1 ||
+                    values[authority ".uuid"] == "" ||
+                    counts[authority ".enabled"] != 1 ||
+                    values[authority ".enabled"] != "1") exit 1
+                fstype_count = counts[authority ".fstype"] + 0
+                if (fstype_count > 1 ||
+                    (fstype_count == 1 &&
+                     values[authority ".fstype"] != "ext4")) exit 1
+                options_count = counts[authority ".options"] + 0
+                if (options_count != 1 ||
+                    values[authority ".options"] != "rw,noatime,nosuid,nodev,noexec") exit 1
+                print values[authority ".uuid"]
+            }
+        ' "$capture"
+    )" || {
+        rm -f -- "$capture"
+        return 1
+    }
+    [ "$configured_uuid" = "$upgrade_uuid" ] || {
+        rm -f -- "$capture"
+        return 1
+    }
+    if ! bounded_capture "$capture" /sbin/block info "$upgrade_source"; then
+        rm -f -- "$capture"
+        return 1
+    fi
+    selected_block_uuid="$(
+        awk -v expected="$upgrade_source" '
+            NR > 1 { exit 2 }
+            {
+                if ($1 != expected ":") exit 2
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^UUID="[^"]+"$/) {
+                        uuid_count++
+                        uuid = substr($i, 7, length($i) - 7)
+                    } else if ($i ~ /^MOUNT="[^"]*"$/) {
+                        mount_count++
+                        mount_value = substr($i, 8, length($i) - 8)
+                    } else if ($i ~ /^TYPE="[^"]+"$/) {
+                        type_count++
+                        type_value = substr($i, 7, length($i) - 7)
+                    }
+                }
+            }
+            END {
+                if (NR != 1 || uuid_count != 1 ||
+                    mount_count != 1 || mount_value != "/mnt/data" ||
+                    type_count != 1 || type_value != "ext4") exit 1
+                print uuid
+            }
+        ' "$capture"
+    )" || {
+        rm -f -- "$capture"
+        return 1
+    }
+    [ "$selected_block_uuid" = "$upgrade_uuid" ] || {
+        rm -f -- "$capture"
+        return 1
+    }
+
+    candidate_count=0
+    for candidate_class in \
+        /sys/class/block/sd[a-z][1-9] \
+        /sys/class/block/sd[a-z][1-9][0-9]*
+    do
+        [ -e "$candidate_class" ] || [ -L "$candidate_class" ] ||
+            continue
+        candidate_name="${candidate_class##*/}"
+        candidate_partition="$(
+            printf '%s\n' "$candidate_name" | sed 's/^sd[a-z]//'
+        )"
+        candidate_parent="$(
+            printf '%s\n' "$candidate_name" |
+                sed 's/[0-9][0-9]*$//'
+        )"
+        [ "$(tr -d ' \r\n' \
+            < "/sys/class/block/$candidate_name/partition" 2>/dev/null)" = \
+          "$candidate_partition" ] || {
+            rm -f -- "$capture"
+            return 1
+        }
+        [ "$(tr -d ' \r\n' \
+            < "/sys/class/block/$candidate_parent/removable" 2>/dev/null)" = \
+          "1" ] || continue
+        candidate_count=$((candidate_count + 1))
+        [ "$candidate_count" -le 64 ] && [ -b "/dev/$candidate_name" ] &&
+            [ ! -L "/dev/$candidate_name" ] || {
+            rm -f -- "$capture"
+            return 1
+        }
+        bounded_capture "$capture" /sbin/block info "/dev/$candidate_name" || {
+            rm -f -- "$capture"
+            return 1
+        }
+        candidate_uuid="$(
+            awk -v expected="/dev/$candidate_name" '
+                NR > 1 { exit 2 }
+                {
+                    if ($1 != expected ":") exit 2
+                    for (i = 2; i <= NF; i++) {
+                        if ($i ~ /^UUID="[^"]+"$/) {
+                            count++
+                            uuid = substr($i, 7, length($i) - 7)
+                        }
+                    }
+                }
+                END {
+                    if (NR != 1 || count != 1) exit 1
+                    print uuid
+                }
+            ' "$capture"
+        )" || {
+            rm -f -- "$capture"
+            return 1
+        }
+        if [ "$candidate_uuid" = "$upgrade_uuid" ] &&
+           [ "/dev/$candidate_name" != "$upgrade_source" ]; then
+            rm -f -- "$capture"
+            return 1
+        fi
+    done
+    [ "$candidate_count" -ge 1 ] || {
+        rm -f -- "$capture"
+        return 1
+    }
+    rm -f -- "$capture"
+
+    bundle="/mnt/data/.jammonitor-tailscale-upgrade/pending"
+    [ -d "$bundle" ] && [ ! -L "$bundle" ] &&
+        [ "$(stat -c '%d:%i' "$bundle" 2>/dev/null)" = \
+          "$upgrade_bundle_identity" ] &&
+        [ -f "$bundle/manifest" ] && [ ! -L "$bundle/manifest" ] &&
+        [ "$(sha256sum "$bundle/manifest" | awk '{print $1}')" = \
+          "$upgrade_manifest_sha" ]
+}
+
+boot_fences_allow_start() {
+    installer_fence_allows_start &&
+        upgrade_fence_allows_start
+}
 
 start_service() {
+    boot_fences_allow_start || {
+        logger -t tailscale \
+            "startup refused: unresolved or invalid JamMonitor transaction fence"
+        return 1
+    }
     mkdir -p /etc/tailscale /var/run/tailscale
     chmod 0700 /etc/tailscale
     chmod 0755 /var/run/tailscale
 
     # Remove stale routes/firewall state from a prior unclean exit.
-    "$TAILSCALED" --cleanup >/dev/null 2>&1 || true
+    bounded_tailscaled_cleanup || {
+        logger -t tailscale \
+            "startup refused: bounded stale-state cleanup failed"
+        return 1
+    }
 
     procd_open_instance
     procd_set_param command "$TAILSCALED"
     procd_append_param command --state="$STATE_FILE"
     procd_append_param command --socket="$SOCKET_FILE"
     procd_append_param command --tun=tailscale0
+    # netfilter-mode=off cannot discover or authorize a random listener port.
+    # Pin the WireGuard UDP listener so the OMR firewall can allow one exact
+    # inbound port instead of relying on broad WAN input.
+    procd_append_param command --port=41641
     # Match the upstream OpenWrt package's finite default respawn policy.
     procd_set_param respawn
     procd_set_param stdout 1
@@ -35,5 +501,11 @@ start_service() {
 }
 
 stop_service() {
-    "$TAILSCALED" --cleanup >/dev/null 2>&1 || true
+    # Shutdown must never hang indefinitely. A failed bounded cleanup is
+    # logged and retried before the next start, where failure is authoritative.
+    bounded_tailscaled_cleanup || {
+        logger -t tailscale \
+            "shutdown cleanup failed within the bounded deadline"
+        return 0
+    }
 }

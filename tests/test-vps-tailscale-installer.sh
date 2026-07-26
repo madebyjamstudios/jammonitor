@@ -24,8 +24,12 @@ CASE_STATE=""
 CASE_OUTPUT=""
 CASE_ERROR=""
 BAD_STAT_BASENAME=""
+FAIL_BACKUP_LABEL=""
 FAIL_RESTORE_LABEL=""
 FAIL_POST_VERIFY=""
+FAIL_SYNC_LABEL=""
+KILL_AT_LABEL=""
+HOLD_AFTER_LOCK_FILE=""
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -96,6 +100,76 @@ exit 0
 EOF
 chmod 0755 "${TOOLS_DIR}/mock-sleep"
 
+cat >"${TOOLS_DIR}/mock-timeout" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${1:-}" = "-s" ] || exit 2
+shift 2
+[ "${1:-}" = "-k" ] || exit 2
+shift 2
+[ "$#" -ge 2 ] || exit 2
+shift
+_command="$1"
+shift
+_operation="${1:-unknown}"
+_state="${MOCK_SYSTEMCTL_STATE:?}"
+if [ "${_command##*/}" = "mock-systemctl" ]; then
+    if [ -f "${_state}/hang-${_operation}-always" ]; then
+        printf 'timeout %s\n' "$_operation" >>"${_state}/timeouts.log"
+        exit 124
+    fi
+    if [ -f "${_state}/hang-${_operation}-once" ]; then
+        rm -f "${_state}/hang-${_operation}-once"
+        printf 'timeout %s\n' "$_operation" >>"${_state}/timeouts.log"
+        exit 124
+    fi
+fi
+if [ "${_command##*/}" = "mock-systemd-analyze" ]; then
+    if [ -f "${_state}/hang-systemd-analyze-${_operation}-always" ]; then
+        printf 'timeout systemd-analyze-%s\n' "$_operation" \
+            >>"${_state}/timeouts.log"
+        exit 124
+    fi
+    if [ -f "${_state}/hang-systemd-analyze-${_operation}-once" ]; then
+        rm -f "${_state}/hang-systemd-analyze-${_operation}-once"
+        printf 'timeout systemd-analyze-%s\n' "$_operation" \
+            >>"${_state}/timeouts.log"
+        exit 124
+    fi
+fi
+"$_command" "$@"
+EOF
+chmod 0755 "${TOOLS_DIR}/mock-timeout"
+
+cat >"${TOOLS_DIR}/mock-flock" <<'EOF'
+#!/bin/sh
+set -eu
+_state="${MOCK_SYSTEMCTL_STATE:?}"
+case "${1:-}" in
+    -n)
+        [ "$#" -eq 2 ] || exit 2
+        if mkdir "${_state}/kernel-lock-held" 2>/dev/null; then
+            exit 0
+        fi
+        exit 1
+        ;;
+    -u)
+        [ "$#" -eq 2 ] || exit 2
+        rmdir "${_state}/kernel-lock-held" 2>/dev/null || true
+        ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod 0755 "${TOOLS_DIR}/mock-flock"
+
+cat >"${TOOLS_DIR}/mock-sync" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ "$1" = "-f" ] || exit 2
+printf '%s\n' "$2" >>"${MOCK_SYSTEMCTL_STATE:?}/sync.log"
+EOF
+chmod 0755 "${TOOLS_DIR}/mock-sync"
+
 cat >"${TOOLS_DIR}/mock-systemd-analyze" <<'EOF'
 #!/bin/sh
 set -eu
@@ -161,6 +235,15 @@ case "$_command" in
             exit 0
         fi
         case "${_unit}:${_property}" in
+            jammonitor-tailscale-watchdog.timer:UnitFileState)
+                if [ -f "${_state}/timer-unit-file-state" ]; then
+                    sed -n '1p' "${_state}/timer-unit-file-state"
+                elif [ "$(read_flag timer-enabled)" = "1" ]; then
+                    printf '%s\n' enabled
+                else
+                    printf '%s\n' disabled
+                fi
+                ;;
             jammonitor-tailscale-watchdog.timer:ActiveState)
                 if [ "$(read_flag timer-active)" = "1" ]; then
                     printf '%s\n' active
@@ -293,7 +376,7 @@ new_case() {
         "$CASE_ROOT/usr/share/doc" \
         "$CASE_STATE"
     copy_source "$CASE_SOURCE"
-    for _runtime_name in tailscale timeout jq logger flock systemctl; do
+    for _runtime_name in tailscale timeout jq logger flock mv dd systemctl; do
         cp "$RUNTIME_STUB" "$CASE_ROOT/usr/bin/$_runtime_name"
         chmod 0755 "$CASE_ROOT/usr/bin/$_runtime_name"
     done
@@ -303,9 +386,15 @@ new_case() {
     printf '%s\n' 0 >"${CASE_STATE}/service-main-pid"
     : >"${CASE_STATE}/actions.log"
     : >"${CASE_STATE}/analyze.log"
+    : >"${CASE_STATE}/timeouts.log"
+    : >"${CASE_STATE}/sync.log"
     BAD_STAT_BASENAME=""
+    FAIL_BACKUP_LABEL=""
     FAIL_RESTORE_LABEL=""
     FAIL_POST_VERIFY=""
+    FAIL_SYNC_LABEL=""
+    KILL_AT_LABEL=""
+    HOLD_AFTER_LOCK_FILE=""
 }
 
 run_case_install() {
@@ -316,10 +405,17 @@ run_case_install() {
         JM_VPS_INSTALLER_SYSTEMD_ANALYZE="${TOOLS_DIR}/mock-systemd-analyze" \
         JM_VPS_INSTALLER_STAT="${TOOLS_DIR}/mock-stat" \
         JM_VPS_INSTALLER_SLEEP="${TOOLS_DIR}/mock-sleep" \
+        JM_VPS_INSTALLER_TIMEOUT="${TOOLS_DIR}/mock-timeout" \
+        JM_VPS_INSTALLER_FLOCK="${TOOLS_DIR}/mock-flock" \
+        JM_VPS_INSTALLER_SYNC="${TOOLS_DIR}/mock-sync" \
         JM_VPS_INSTALLER_EXPECTED_UID="$TEST_UID" \
         JM_VPS_INSTALLER_EXPECTED_GID="$TEST_GID" \
+        JM_VPS_INSTALLER_FAIL_BACKUP_LABEL="$FAIL_BACKUP_LABEL" \
         JM_VPS_INSTALLER_FAIL_RESTORE_LABEL="$FAIL_RESTORE_LABEL" \
         JM_VPS_INSTALLER_FAIL_POST_VERIFY="$FAIL_POST_VERIFY" \
+        JM_VPS_INSTALLER_FAIL_SYNC_LABEL="$FAIL_SYNC_LABEL" \
+        JM_VPS_INSTALLER_KILL_AT_LABEL="$KILL_AT_LABEL" \
+        JM_VPS_INSTALLER_HOLD_AFTER_LOCK_FILE="$HOLD_AFTER_LOCK_FILE" \
         MOCK_SYSTEMCTL_STATE="$CASE_STATE" \
         MOCK_STAT_BAD_BASENAME="$BAD_STAT_BASENAME" \
         "$INSTALLER" \
@@ -461,6 +557,14 @@ assert_no_tailscaled_mutation() {
     fi
 }
 
+assert_no_watchdog_unit_mutation() {
+    if grep -E \
+        '^(start|stop|enable|disable) (jammonitor-tailscale-watchdog\.timer|jammonitor-tailscale-watchdog\.service)' \
+        "${CASE_STATE}/actions.log" >/dev/null 2>&1; then
+        fail "pre-mutation failure changed watchdog unit state"
+    fi
+}
+
 assert_targets_absent() {
     for _label in watchdog service timer readme; do
         [ ! -e "$(target_path "$_label")" ] ||
@@ -594,7 +698,7 @@ grep -Fq 'test overrides are refused outside test mode' \
     fail "production override refusal was not explicit"
 pass "absolute-path and fault overrides are refused outside explicit test mode"
 
-for _missing_runtime in tailscale timeout jq logger flock systemctl; do
+for _missing_runtime in tailscale timeout jq logger flock mv systemctl; do
     new_case "missing-runtime-${_missing_runtime}"
     rm -f "$CASE_ROOT/usr/bin/$_missing_runtime"
     if run_case_install; then
@@ -606,7 +710,7 @@ for _missing_runtime in tailscale timeout jq logger flock systemctl; do
     [ ! -e "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" ] ||
         fail "runtime preflight created recovery state"
 done
-pass "all six absolute watchdog runtime dependencies are executable preflight gates"
+pass "all eight absolute watchdog runtime dependencies are executable preflight gates"
 
 new_case tailscaled-missing
 printf '%s\n' not-found >"${CASE_STATE}/tailscaled-load-state"
@@ -619,18 +723,58 @@ assert_targets_absent
 assert_no_tailscaled_mutation
 pass "tailscaled.service presence is verified without mutating it"
 
-new_case live-lock
-mkdir -p \
-    "$CASE_ROOT/run/lock/jammonitor-tailscale-watchdog-install.lock"
-printf '%s\n' "$$" \
-    >"$CASE_ROOT/run/lock/jammonitor-tailscale-watchdog-install.lock/pid"
+new_case hung-show
+: >"${CASE_STATE}/hang-show-once"
 if run_case_install; then
-    fail "live installer lock was ignored"
+    fail "hung systemctl show was accepted"
 fi
-grep -Fq 'another VPS watchdog installation holds' "$CASE_ERROR" ||
-    fail "live lock refusal was not explicit"
+grep -Fq 'timeout show' "${CASE_STATE}/timeouts.log" ||
+    fail "systemctl show was not bounded by timeout"
+grep -Fq 'tailscaled.service is not present' "$CASE_ERROR" ||
+    fail "hung preflight show did not fail closed"
 assert_targets_absent
-pass "a live install lock serializes target mutations"
+assert_no_watchdog_unit_mutation
+pass "hung systemctl show is TERM/KILL bounded and fails before mutation"
+
+new_case live-lock
+HOLD_AFTER_LOCK_FILE="${CASE_STATE}/hold-first-installer"
+: >"$HOLD_AFTER_LOCK_FILE"
+CASE_OUTPUT="${CASE_STATE}/first.stdout"
+CASE_ERROR="${CASE_STATE}/first.stderr"
+run_case_install &
+FIRST_INSTALLER_PID=$!
+_lock_wait=0
+while [ ! -f "${HOLD_AFTER_LOCK_FILE}.ready" ] &&
+      [ "$_lock_wait" -lt 100 ]; do
+    /bin/sleep 0.01
+    _lock_wait=$((_lock_wait + 1))
+done
+[ -f "${HOLD_AFTER_LOCK_FILE}.ready" ] || {
+    rm -f "$HOLD_AFTER_LOCK_FILE"
+    wait "$FIRST_INSTALLER_PID" 2>/dev/null || true
+    fail "first simultaneous installer never acquired its lock"
+}
+HOLD_AFTER_LOCK_FILE=""
+CASE_OUTPUT="${CASE_STATE}/second.stdout"
+CASE_ERROR="${CASE_STATE}/second.stderr"
+if run_case_install; then
+    rm -f "${CASE_STATE}/hold-first-installer"
+    wait "$FIRST_INSTALLER_PID" 2>/dev/null || true
+    fail "simultaneous installer ignored the live kernel lock"
+fi
+grep -Fq 'another VPS watchdog installation holds' "$CASE_ERROR" || {
+    rm -f "${CASE_STATE}/hold-first-installer"
+    wait "$FIRST_INSTALLER_PID" 2>/dev/null || true
+    fail "simultaneous lock refusal was not explicit"
+}
+assert_targets_absent
+rm -f "${CASE_STATE}/hold-first-installer"
+wait "$FIRST_INSTALLER_PID" ||
+    fail "first simultaneous installer failed after lock release"
+assert_installed_exact
+[ -f "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog/install.lock" ] ||
+    fail "persistent lock inode was removed after installation"
+pass "persistent flock inode serializes simultaneous target mutations"
 
 new_case new-default
 run_case_install || {
@@ -671,6 +815,209 @@ assert_flag timer-active 1
 assert_no_tailscaled_mutation
 pass "upgrade resumes the exact prior enabled and active timer state"
 
+new_case upgrade-enabled-runtime
+seed_old_install 1 1
+printf '%s\n' enabled-runtime >"${CASE_STATE}/timer-unit-file-state"
+ENABLED_RUNTIME_SNAPSHOT="${TEST_ROOT}/enabled-runtime.snapshot"
+snapshot_targets "$ENABLED_RUNTIME_SNAPSHOT"
+if run_case_install; then
+    fail "enabled-runtime timer was silently converted to persistent enablement"
+fi
+grep -Fq 'unsupported watchdog timer unit-file state: enabled-runtime' \
+    "$CASE_ERROR" ||
+    fail "enabled-runtime rejection did not identify the exact state"
+assert_snapshot "$ENABLED_RUNTIME_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_watchdog_unit_mutation
+assert_no_recovery_transaction
+pass "upgrade rejects enabled-runtime instead of changing reboot semantics"
+
+new_case backup-meta-failure
+seed_old_install 1 1
+BACKUP_META_SNAPSHOT="${TEST_ROOT}/backup-meta.snapshot"
+snapshot_targets "$BACKUP_META_SNAPSHOT"
+FAIL_BACKUP_LABEL="service"
+if run_case_install; then
+    fail "pre-mutation backup metadata failure was ignored"
+fi
+grep -Fq 'injected backup failure for service' "$CASE_ERROR" ||
+    fail "backup metadata failure was not reported at its exact record"
+assert_snapshot "$BACKUP_META_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_watchdog_unit_mutation
+assert_no_recovery_transaction
+pass "backup or metadata failure never quiesces or disables a healthy old install"
+
+new_case backup-sync-failure
+seed_old_install 1 1
+BACKUP_SYNC_SNAPSHOT="${TEST_ROOT}/backup-sync.snapshot"
+snapshot_targets "$BACKUP_SYNC_SNAPSHOT"
+FAIL_SYNC_LABEL="backup-bundle"
+if run_case_install; then
+    fail "pre-mutation backup sync failure was ignored"
+fi
+grep -Fq 'durability sync failure at backup-bundle' "$CASE_ERROR" ||
+    fail "backup sync failure was not reported at its exact barrier"
+assert_snapshot "$BACKUP_SYNC_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_watchdog_unit_mutation
+assert_no_recovery_transaction
+pass "backup sync failure occurs before quiescence and leaves a healthy old install untouched"
+
+new_case backup-ready-sigkill
+seed_old_install 1 1
+BACKUP_KILL_SNAPSHOT="${TEST_ROOT}/backup-kill.snapshot"
+snapshot_targets "$BACKUP_KILL_SNAPSHOT"
+KILL_AT_LABEL="backup-ready-before-mutation"
+if run_case_install; then
+    fail "pre-mutation SIGKILL injection unexpectedly succeeded"
+fi
+assert_snapshot "$BACKUP_KILL_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_watchdog_unit_mutation
+_backup_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_backup_kill_bundle" ] &&
+    [ -f "$_backup_kill_bundle/BACKUP-READY" ] ||
+    fail "SIGKILL after backup durability did not preserve sealed evidence"
+pass "SIGKILL after durable backup but before mutation preserves evidence and live unit state"
+
+new_case pre-mutation-disable-sigkill
+seed_old_install 1 1
+PRE_MUTATION_SNAPSHOT="${TEST_ROOT}/pre-mutation-disable.snapshot"
+snapshot_targets "$PRE_MUTATION_SNAPSHOT"
+KILL_AT_LABEL="pre-mutation-timer-disabled-durable"
+if run_case_install; then
+    fail "SIGKILL after durable timer disable unexpectedly succeeded"
+fi
+assert_snapshot "$PRE_MUTATION_SNAPSHOT"
+assert_flag timer-enabled 0
+assert_flag timer-active 0
+_disable_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_disable_kill_bundle" ] &&
+    [ -f "$_disable_kill_bundle/BACKUP-READY" ] ||
+    fail "durable timer-disable crash lost sealed rollback evidence"
+pass "timer enablement is durably removed before the first target mutation"
+
+new_case mixed-payload-sigkill
+seed_old_install 1 1
+MIXED_PAYLOAD_SNAPSHOT="${TEST_ROOT}/mixed-payload.snapshot"
+snapshot_targets "$MIXED_PAYLOAD_SNAPSHOT"
+KILL_AT_LABEL="watchdog-installed-before-service"
+if run_case_install; then
+    fail "SIGKILL after first target replacement unexpectedly succeeded"
+fi
+[ "$(hash_file "$(target_path watchdog)")" = \
+    "$(hash_file "$(source_path watchdog)")" ] ||
+    fail "first target replacement fault did not reach the mixed-payload boundary"
+for _old_label in service timer readme; do
+    _expected_old="$(
+        awk -F'|' -v label="$_old_label" '$1 == label { print $3 }' \
+            "$MIXED_PAYLOAD_SNAPSHOT"
+    )"
+    [ "$(hash_file "$(target_path "$_old_label")")" = "$_expected_old" ] ||
+        fail "mixed-payload fault unexpectedly replaced ${_old_label}"
+done
+assert_flag timer-enabled 0
+assert_flag timer-active 0
+_mixed_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_mixed_kill_bundle" ] &&
+    [ -f "$_mixed_kill_bundle/BACKUP-READY" ] ||
+    fail "mixed-payload crash lost sealed rollback evidence"
+pass "a reboot cannot schedule the watchdog while installed targets are mixed"
+
+new_case payload-durable-before-enable-sigkill
+seed_old_install 1 1
+KILL_AT_LABEL="commit-complete-durable"
+if run_case_install; then
+    fail "SIGKILL after durable payload sync unexpectedly succeeded"
+fi
+assert_installed_exact
+assert_flag timer-enabled 0
+assert_flag timer-active 0
+_payload_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_payload_kill_bundle" ] &&
+    [ -f "$_payload_kill_bundle/BACKUP-READY" ] ||
+    fail "durable payload crash lost sealed rollback evidence"
+pass "all new payload bytes are durable before timer enablement is restored"
+
+new_case timer-state-durable-sigkill
+seed_old_install 1 1
+KILL_AT_LABEL="commit-timer-state-durable"
+if run_case_install; then
+    fail "SIGKILL after durable timer restoration unexpectedly succeeded"
+fi
+assert_installed_exact
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+_timer_state_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_timer_state_kill_bundle" ] &&
+    [ -f "$_timer_state_kill_bundle/BACKUP-READY" ] ||
+    fail "timer-state crash cleared rollback evidence before commit"
+pass "restored timer enablement is durable before rollback evidence is cleared"
+
+new_case commit-sync-failure
+seed_old_install 1 1
+COMMIT_SYNC_SNAPSHOT="${TEST_ROOT}/commit-sync.snapshot"
+snapshot_targets "$COMMIT_SYNC_SNAPSHOT"
+FAIL_SYNC_LABEL="commit-pre-clear"
+if run_case_install; then
+    fail "pre-clear sync failure was ignored"
+fi
+grep -Fq 'durability sync failure at commit-pre-clear' "$CASE_ERROR" ||
+    fail "pre-clear sync failure was not reported"
+assert_snapshot "$COMMIT_SYNC_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_recovery_transaction
+pass "pre-clear sync failure rolls back exactly before deleting recovery evidence"
+
+new_case commit-sigkill
+seed_old_install 1 1
+KILL_AT_LABEL="commit-pre-clear-durable"
+if run_case_install; then
+    fail "pre-clear SIGKILL injection unexpectedly succeeded"
+fi
+assert_installed_exact
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+_commit_kill_bundle="$(find \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog" \
+    -maxdepth 1 -type d -name 'transaction.*' -print | sed -n '1p')"
+[ -n "$_commit_kill_bundle" ] &&
+    [ -f "$_commit_kill_bundle/BACKUP-READY" ] ||
+    fail "SIGKILL after live-target sync deleted rollback evidence"
+pass "SIGKILL after committed-target sync but before clear leaves new files and sealed rollback evidence"
+
+new_case deletion-sync-failure
+seed_old_install 1 1
+FAIL_SYNC_LABEL="commit-evidence-deleted"
+if run_case_install; then
+    fail "recovery evidence deletion sync failure was ignored"
+fi
+assert_installed_exact
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+[ -f "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog/INSTALL-ROLLBACK-INCOMPLETE" ] ||
+    fail "post-delete sync failure did not leave a blocking evidence marker"
+grep -Fq 'recovery_bundle=unavailable' \
+    "$CASE_ROOT/var/lib/jammonitor-tailscale-watchdog/INSTALL-ROLLBACK-INCOMPLETE" ||
+    fail "post-delete sync failure falsely claimed that a bundle survived"
+pass "post-delete sync failure preserves verified committed state and writes an accurate blocker"
+
 new_case quiescence
 seed_old_install 1 1
 printf '%s\n' 1 >"${CASE_STATE}/service-active"
@@ -689,6 +1036,22 @@ assert_flag timer-active 1
 assert_no_recovery_transaction
 pass "installer proves timer and service quiescence before target mutation"
 
+new_case hung-stop
+seed_old_install 1 1
+HUNG_STOP_SNAPSHOT="${TEST_ROOT}/hung-stop.snapshot"
+snapshot_targets "$HUNG_STOP_SNAPSHOT"
+: >"${CASE_STATE}/hang-stop-once"
+if run_case_install; then
+    fail "hung systemctl stop was ignored"
+fi
+grep -Fq 'timeout stop' "${CASE_STATE}/timeouts.log" ||
+    fail "systemctl stop was not bounded by timeout"
+assert_snapshot "$HUNG_STOP_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_recovery_transaction
+pass "hung systemctl stop cannot cross the quiescence gate and rolls back prior state"
+
 new_case daemon-reload-failure
 DAEMON_SNAPSHOT="${TEST_ROOT}/daemon.snapshot"
 snapshot_targets "$DAEMON_SNAPSHOT"
@@ -701,6 +1064,22 @@ assert_flag timer-enabled 0
 assert_flag timer-active 0
 assert_no_recovery_transaction
 pass "daemon-reload failure rolls back every file and prior state"
+
+new_case daemon-reload-timeout
+seed_old_install 1 1
+DAEMON_TIMEOUT_SNAPSHOT="${TEST_ROOT}/daemon-timeout.snapshot"
+snapshot_targets "$DAEMON_TIMEOUT_SNAPSHOT"
+: >"${CASE_STATE}/hang-daemon-reload-once"
+if run_case_install; then
+    fail "hung daemon-reload was ignored"
+fi
+grep -Fq 'timeout daemon-reload' "${CASE_STATE}/timeouts.log" ||
+    fail "systemctl daemon-reload was not bounded by timeout"
+assert_snapshot "$DAEMON_TIMEOUT_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_recovery_transaction
+pass "hung daemon-reload is bounded and exact rollback reloads the old units"
 
 new_case enable-failure
 ENABLE_SNAPSHOT="${TEST_ROOT}/enable.snapshot"
@@ -715,6 +1094,21 @@ assert_flag timer-active 0
 assert_no_recovery_transaction
 pass "timer enable failure rolls back every file and prior state"
 
+new_case enable-timeout
+ENABLE_TIMEOUT_SNAPSHOT="${TEST_ROOT}/enable-timeout.snapshot"
+snapshot_targets "$ENABLE_TIMEOUT_SNAPSHOT"
+: >"${CASE_STATE}/hang-enable-once"
+if run_case_install; then
+    fail "hung timer enable was ignored"
+fi
+grep -Fq 'timeout enable' "${CASE_STATE}/timeouts.log" ||
+    fail "systemctl enable was not bounded by timeout"
+assert_snapshot "$ENABLE_TIMEOUT_SNAPSHOT"
+assert_flag timer-enabled 0
+assert_flag timer-active 0
+assert_no_recovery_transaction
+pass "hung timer enable is bounded and rolls back all files and unit state"
+
 new_case start-failure
 START_SNAPSHOT="${TEST_ROOT}/start.snapshot"
 snapshot_targets "$START_SNAPSHOT"
@@ -727,6 +1121,21 @@ assert_flag timer-enabled 0
 assert_flag timer-active 0
 assert_no_recovery_transaction
 pass "timer start failure rolls back every file and prior state"
+
+new_case start-timeout
+START_TIMEOUT_SNAPSHOT="${TEST_ROOT}/start-timeout.snapshot"
+snapshot_targets "$START_TIMEOUT_SNAPSHOT"
+: >"${CASE_STATE}/hang-start-once"
+if run_case_install --start; then
+    fail "hung timer start was ignored"
+fi
+grep -Fq 'timeout start' "${CASE_STATE}/timeouts.log" ||
+    fail "systemctl start was not bounded by timeout"
+assert_snapshot "$START_TIMEOUT_SNAPSHOT"
+assert_flag timer-enabled 0
+assert_flag timer-active 0
+assert_no_recovery_transaction
+pass "hung timer start is bounded and rolls back all files and unit state"
 
 new_case post-verification-failure
 seed_old_install 1 1
@@ -741,6 +1150,22 @@ assert_flag timer-enabled 1
 assert_flag timer-active 1
 assert_no_recovery_transaction
 pass "post-install verification failure restores exact old metadata and state"
+
+new_case systemd-analyze-timeout
+seed_old_install 1 1
+SYSTEMD_ANALYZE_TIMEOUT_SNAPSHOT="${TEST_ROOT}/systemd-analyze-timeout.snapshot"
+snapshot_targets "$SYSTEMD_ANALYZE_TIMEOUT_SNAPSHOT"
+: >"${CASE_STATE}/hang-systemd-analyze-verify-once"
+if run_case_install; then
+    fail "hung systemd-analyze verify was ignored"
+fi
+grep -Fq 'timeout systemd-analyze-verify' "${CASE_STATE}/timeouts.log" ||
+    fail "systemd-analyze verify was not bounded by timeout"
+assert_snapshot "$SYSTEMD_ANALYZE_TIMEOUT_SNAPSHOT"
+assert_flag timer-enabled 1
+assert_flag timer-active 1
+assert_no_recovery_transaction
+pass "hung systemd unit verification is bounded and rolls back exact prior state"
 
 for _failed_restore in watchdog service; do
     new_case "restore-failure-${_failed_restore}"

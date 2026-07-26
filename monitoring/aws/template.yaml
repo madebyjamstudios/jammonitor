@@ -70,6 +70,7 @@ Resources:
   AlertTopic:
     Type: AWS::SNS::Topic
     Properties:
+      TopicName: !Sub '${AWS::StackName}-alerts'
       KmsMasterKeyId: !GetAtt AlertTopicKey.Arn
 
   AlertTopicKey:
@@ -102,6 +103,21 @@ Resources:
               ArnLike:
                 aws:SourceArn: !Sub >-
                   arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*
+          - Sid: AllowSnsTopicEncryption
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub >-
+                  arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-alerts
+              StringEquals:
+                kms:EncryptionContext:aws:sns:topicArn: !Sub >-
+                  arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-alerts
 
   AlertTopicPolicy:
     Type: AWS::SNS::TopicPolicy

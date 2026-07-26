@@ -3,9 +3,10 @@
 # JamMonitor Tailscale semantic watchdog
 #
 # procd owns process crash recovery. This watchdog observes delivered local
-# Tailscale state and gets one supervisor restart per proven local failure
-# episode. Authentication, approval, control-plane, health-warning, and peer
-# failures remain visible operator conditions and never cause restart loops.
+# Tailscale state and permits at most three cooldown-separated supervisor
+# restart attempts per proven local failure episode. Authentication, approval,
+# control-plane, health-warning, and peer failures remain visible operator
+# conditions and never cause restart loops.
 #
 # Only a small fixed-schema snapshot crosses into JamMonitor. Raw status JSON,
 # AuthURL, users, keys, endpoints, peer targets, Health text, and CLI errors are
@@ -19,11 +20,18 @@ TAILSCALE_SOCKET="${TAILSCALE_SOCKET:-/var/run/tailscale/tailscaled.sock}"
 STATE_DIR="${WATCHDOG_STATE_DIR:-/var/run/jammonitor}"
 STATUS_FILE="${WATCHDOG_STATUS_FILE:-${STATE_DIR}/tailscale-watchdog.json}"
 MEMORY_FILE="${WATCHDOG_MEMORY_FILE:-${STATE_DIR}/tailscale-watchdog.memory}"
+CONTINUITY_BREAK_FILE="${WATCHDOG_CONTINUITY_BREAK_FILE:-${STATE_DIR}/tailscale-watchdog.continuity-broken}"
 MAINTENANCE_FILE="${WATCHDOG_MAINTENANCE_FILE:-${STATE_DIR}/tailscale-maintenance}"
 CRITICAL_PEER_FILE="${WATCHDOG_CRITICAL_PEER_FILE:-/etc/jammonitor/tailscale-critical-peer}"
 LOCK_FILE="${WATCHDOG_LOCK_FILE:-${STATE_DIR}/tailscale-watchdog.lock}"
 PROC_ROOT="${WATCHDOG_PROC_ROOT:-/proc}"
+UPTIME_FILE="${WATCHDOG_UPTIME_FILE:-/proc/uptime}"
 PROCESS_NAME="${WATCHDOG_PROCESS_NAME:-tailscaled}"
+PROCESS_BINARY="${WATCHDOG_PROCESS_BINARY:-/usr/sbin/tailscaled}"
+ROUTER_MANIFEST="${WATCHDOG_ROUTER_MANIFEST:-/usr/share/jammonitor/router-files.sha256}"
+ROUTER_MANIFEST_DIGEST="${WATCHDOG_ROUTER_MANIFEST_DIGEST:-/usr/share/jammonitor/router-files.sha256.sha256}"
+EXPECTED_ROOT_UID="${WATCHDOG_EXPECTED_ROOT_UID:-0}"
+EXPECTED_ROOT_GID="${WATCHDOG_EXPECTED_ROOT_GID:-0}"
 
 CHECK_INTERVAL="${WATCHDOG_INTERVAL:-15}"
 STATUS_TIMEOUT="${WATCHDOG_STATUS_TIMEOUT:-5}"
@@ -32,14 +40,24 @@ FAILURE_THRESHOLD="${WATCHDOG_FAILURE_THRESHOLD:-3}"
 VALID_STREAK_REQUIRED="${WATCHDOG_VALID_STREAK_REQUIRED:-5}"
 BOOT_GRACE="${WATCHDOG_BOOT_GRACE:-120}"
 RESTART_TIMEOUT="${WATCHDOG_RESTART_TIMEOUT:-30}"
+# Recovery authority is a fixed safety contract, not a tunable threshold.
+RECOVERY_MAX_ATTEMPTS=3
+RECOVERY_RETRY_SHORT=60
+RECOVERY_RETRY_LONG=300
 MAINTENANCE_MAX_FUTURE="${WATCHDOG_MAINTENANCE_MAX_FUTURE:-3600}"
 CLOCK_TICKS="${WATCHDOG_CLOCK_TICKS:-100}"
+CONTINUITY_MAX_GAP="${WATCHDOG_CONTINUITY_MAX_GAP:-30}"
+# POSIX ulimit -f uses 512-byte blocks. Keep raw LocalAPI output at 64 KiB.
+STATUS_FILE_BLOCKS=128
 
 TIMEOUT_CMD="${WATCHDOG_TIMEOUT_CMD:-timeout}"
 LOGGER_CMD="${WATCHDOG_LOGGER_CMD:-logger}"
 SLEEP_CMD="${WATCHDOG_SLEEP_CMD:-sleep}"
 JSONFILTER_CMD="${WATCHDOG_JSONFILTER_CMD:-jsonfilter}"
 FLOCK_CMD="${WATCHDOG_FLOCK_CMD:-flock}"
+READLINK_CMD="${WATCHDOG_READLINK_CMD:-readlink}"
+STAT_CMD="${WATCHDOG_STAT_CMD:-stat}"
+SHA256_CMD="${WATCHDOG_SHA256_CMD:-sha256sum}"
 
 RUN_ONCE=0
 if [ "${1:-}" = "--once" ]; then
@@ -51,32 +69,102 @@ fi
 
 is_uint() {
     case "${1:-}" in
-        ""|*[!0-9]*) return 1 ;;
-        *) return 0 ;;
+        0|[1-9]|[1-9][0-9]*)
+            [ "${#1}" -le 18 ]
+            ;;
+        *)
+            return 1
+            ;;
     esac
+}
+
+is_safe_token() {
+    _safe_token="${1:-}"
+    [ -n "$_safe_token" ] &&
+        [ "${#_safe_token}" -le 128 ] || return 1
+    case "$_safe_token" in
+        *[!A-Za-z0-9_.:-]*) return 1 ;;
+    esac
+}
+
+is_sha256() {
+    _sha256="${1:-}"
+    [ "${#_sha256}" -eq 64 ] || return 1
+    case "$_sha256" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+}
+
+is_ipv4_octet() {
+    _ip_octet="${1:-}"
+    case "$_ip_octet" in
+        0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    [ "$_ip_octet" -le 255 ]
+}
+
+ipv6_part_group_count() {
+    _ipv6_part="${1:-}"
+    IPV6_GROUP_COUNT=0
+    [ -n "$_ipv6_part" ] || return 0
+    case "$_ipv6_part" in
+        :*|*:|*::*|*[!0-9a-f:]*) return 1 ;;
+    esac
+
+    _ipv6_old_ifs="$IFS"
+    IFS=:
+    set -- $_ipv6_part
+    IFS="$_ipv6_old_ifs"
+    for _ipv6_group in "$@"; do
+        [ -n "$_ipv6_group" ] &&
+            [ "${#_ipv6_group}" -le 4 ] || return 1
+    done
+    IPV6_GROUP_COUNT="$#"
 }
 
 is_tailscale_ip() {
     _candidate="${1:-}"
+    [ -n "$_candidate" ] && [ "${#_candidate}" -le 39 ] || return 1
     case "$_candidate" in
         *:*)
+            case "$_candidate" in *[!0-9A-Fa-f:]*) return 1 ;; esac
             _candidate="$(printf '%s' "$_candidate" | tr 'A-F' 'a-f')"
             case "$_candidate" in
-                fd7a:115c:a1e0:*) return 0 ;;
+                fd7a:115c:a1e0:*) ;;
                 *) return 1 ;;
+            esac
+
+            case "$_candidate" in
+                *::*)
+                    _ipv6_left="${_candidate%%::*}"
+                    _ipv6_right="${_candidate#*::}"
+                    case "$_ipv6_right" in *::*) return 1 ;; esac
+                    ipv6_part_group_count "$_ipv6_left" || return 1
+                    _ipv6_left_count="$IPV6_GROUP_COUNT"
+                    ipv6_part_group_count "$_ipv6_right" || return 1
+                    _ipv6_right_count="$IPV6_GROUP_COUNT"
+                    [ $((_ipv6_left_count + _ipv6_right_count)) -lt 8 ]
+                    ;;
+                *)
+                    ipv6_part_group_count "$_candidate" &&
+                        [ "$IPV6_GROUP_COUNT" -eq 8 ]
+                    ;;
             esac
             ;;
         *.*)
-            _old_ifs="$IFS"
+            case "$_candidate" in
+                .*|*.|*..*|*[!0-9.]*) return 1 ;;
+            esac
+            _ip_old_ifs="$IFS"
             IFS=.
             set -- $_candidate
-            IFS="$_old_ifs"
+            IFS="$_ip_old_ifs"
             [ "$#" -eq 4 ] || return 1
             for _octet in "$@"; do
-                is_uint "$_octet" || return 1
-                [ "$_octet" -le 255 ] || return 1
+                is_ipv4_octet "$_octet" || return 1
             done
-            [ "$1" -eq 100 ] &&
+            [ "$1" = "100" ] &&
                 [ "$2" -ge 64 ] &&
                 [ "$2" -le 127 ]
             ;;
@@ -84,6 +172,62 @@ is_tailscale_ip() {
             return 1
             ;;
     esac
+}
+
+append_normalized_ipv6_part() {
+    _ipv6_append_part="${1:-}"
+    [ -n "$_ipv6_append_part" ] || return
+    _ipv6_append_old_ifs="$IFS"
+    IFS=:
+    set -- $_ipv6_append_part
+    IFS="$_ipv6_append_old_ifs"
+    for _ipv6_append_group in "$@"; do
+        case "${#_ipv6_append_group}" in
+            1) _ipv6_padded="000${_ipv6_append_group}" ;;
+            2) _ipv6_padded="00${_ipv6_append_group}" ;;
+            3) _ipv6_padded="0${_ipv6_append_group}" ;;
+            4) _ipv6_padded="$_ipv6_append_group" ;;
+            *) return 1 ;;
+        esac
+        _ipv6_normalized="${_ipv6_normalized}${_ipv6_padded}:"
+    done
+}
+
+tailscale_ip_key() {
+    _ip_key_candidate="${1:-}"
+    is_tailscale_ip "$_ip_key_candidate" || return 1
+    case "$_ip_key_candidate" in
+        *.*)
+            printf '%s' "$_ip_key_candidate"
+            return
+            ;;
+    esac
+
+    _ip_key_candidate="$(
+        printf '%s' "$_ip_key_candidate" | tr 'A-F' 'a-f'
+    )"
+    _ipv6_normalized=""
+    case "$_ip_key_candidate" in
+        *::*)
+            _ipv6_key_left="${_ip_key_candidate%%::*}"
+            _ipv6_key_right="${_ip_key_candidate#*::}"
+            ipv6_part_group_count "$_ipv6_key_left" || return 1
+            _ipv6_key_left_count="$IPV6_GROUP_COUNT"
+            ipv6_part_group_count "$_ipv6_key_right" || return 1
+            _ipv6_key_right_count="$IPV6_GROUP_COUNT"
+            _ipv6_missing=$((8 - _ipv6_key_left_count - _ipv6_key_right_count))
+            append_normalized_ipv6_part "$_ipv6_key_left" || return 1
+            while [ "$_ipv6_missing" -gt 0 ]; do
+                _ipv6_normalized="${_ipv6_normalized}0000:"
+                _ipv6_missing=$((_ipv6_missing - 1))
+            done
+            append_normalized_ipv6_part "$_ipv6_key_right" || return 1
+            ;;
+        *)
+            append_normalized_ipv6_part "$_ip_key_candidate" || return 1
+            ;;
+    esac
+    printf '%s' "${_ipv6_normalized%:}"
 }
 
 is_process_generation() {
@@ -138,6 +282,7 @@ BOOT_GRACE="$(nonnegative_or "$BOOT_GRACE" 120)"
 RESTART_TIMEOUT="$(positive_or "$RESTART_TIMEOUT" 30)"
 MAINTENANCE_MAX_FUTURE="$(positive_or "$MAINTENANCE_MAX_FUTURE" 3600)"
 CLOCK_TICKS="$(positive_or "$CLOCK_TICKS" 100)"
+CONTINUITY_MAX_GAP="$(positive_or "$CONTINUITY_MAX_GAP" 30)"
 
 umask 077
 mkdir -p "$STATE_DIR" || exit 1
@@ -232,8 +377,104 @@ LAST_CONNECTED_AT="$(load_uint last_connected_at)"
 PEER_LAST_SUCCESS_AT="$(load_uint peer_last_success_at)"
 PREVIOUS_STATUS="$(sanitize_token "$(read_memory last_status)")"
 PREVIOUS_PROCESS_GENERATION="$(sanitize_token "$(read_memory process_generation)")"
+PREVIOUS_OBSERVED_MONO="$(load_uint last_observed_monotonic)"
+PREVIOUS_PEER_CONTRACT_KEY="$(
+    sanitize_token "$(read_memory peer_contract_key)"
+)"
+if [ -e "$CONTINUITY_BREAK_FILE" ] ||
+   [ -L "$CONTINUITY_BREAK_FILE" ]; then
+    CONTINUITY_BROKEN=1
+else
+    CONTINUITY_BROKEN=0
+fi
 
-[ "$RECOVERY_ATTEMPTED" -eq 1 ] || RECOVERY_ATTEMPTED=0
+memory_key_count() {
+    _memory_count="$(
+        grep -c "^${1}=" "$MEMORY_FILE" 2>/dev/null
+    )"
+    is_uint "$_memory_count" || _memory_count=0
+    printf '%s\n' "$_memory_count"
+}
+
+load_recovery_retry_state() {
+    RECOVERY_ATTEMPT_COUNT=0
+    RECOVERY_NEXT_RETRY_MONO=0
+    RECOVERY_RETRY_STATE_INVALID=0
+
+    if [ ! -e "$MEMORY_FILE" ] && [ ! -L "$MEMORY_FILE" ]; then
+        RECOVERY_ATTEMPTED=0
+        return
+    fi
+    if [ -L "$MEMORY_FILE" ] || [ ! -f "$MEMORY_FILE" ]; then
+        RECOVERY_RETRY_STATE_INVALID=1
+    else
+        _retry_latch_count="$(memory_key_count recovery_attempted)"
+        _retry_count_count="$(memory_key_count recovery_attempt_count)"
+        _retry_deadline_count="$(memory_key_count recovery_next_retry_monotonic)"
+        _retry_latch="$(read_memory recovery_attempted)"
+        case "$_retry_latch_count:$_retry_latch" in
+            1:0|1:1) ;;
+            *) RECOVERY_RETRY_STATE_INVALID=1 ;;
+        esac
+
+        if [ "$RECOVERY_RETRY_STATE_INVALID" -eq 0 ] &&
+           [ "$_retry_count_count" -eq 0 ] &&
+           [ "$_retry_deadline_count" -eq 0 ]; then
+            # Safe migration from the old one-shot state. A spent legacy latch
+            # has unknown retry history, so it becomes operator-only.
+            RECOVERY_ATTEMPTED="$_retry_latch"
+            if [ "$RECOVERY_ATTEMPTED" -eq 1 ]; then
+                RECOVERY_ATTEMPT_COUNT="$RECOVERY_MAX_ATTEMPTS"
+            fi
+        elif [ "$RECOVERY_RETRY_STATE_INVALID" -eq 0 ] &&
+             [ "$_retry_count_count" -eq 1 ] &&
+             [ "$_retry_deadline_count" -eq 1 ]; then
+            _retry_count="$(read_memory recovery_attempt_count)"
+            _retry_deadline="$(read_memory recovery_next_retry_monotonic)"
+            if ! is_uint "$_retry_count" ||
+               ! is_uint "$_retry_deadline"; then
+                RECOVERY_RETRY_STATE_INVALID=1
+            else
+                RECOVERY_ATTEMPTED="$_retry_latch"
+                RECOVERY_ATTEMPT_COUNT="$_retry_count"
+                RECOVERY_NEXT_RETRY_MONO="$_retry_deadline"
+                case "$RECOVERY_ATTEMPTED:$RECOVERY_ATTEMPT_COUNT:$RECOVERY_NEXT_RETRY_MONO" in
+                    0:0:0) ;;
+                    1:*:*)
+                        if [ "$RECOVERY_ATTEMPT_COUNT" -lt 1 ] ||
+                           [ "$RECOVERY_ATTEMPT_COUNT" -gt \
+                               "$RECOVERY_MAX_ATTEMPTS" ] ||
+                           { [ "$RECOVERY_ATTEMPT_COUNT" -lt \
+                                   "$RECOVERY_MAX_ATTEMPTS" ] &&
+                             [ "$RECOVERY_NEXT_RETRY_MONO" -eq 0 ]; } ||
+                           { [ "$RECOVERY_ATTEMPT_COUNT" -eq \
+                                   "$RECOVERY_MAX_ATTEMPTS" ] &&
+                             [ "$RECOVERY_NEXT_RETRY_MONO" -ne 0 ]; }; then
+                            RECOVERY_RETRY_STATE_INVALID=1
+                        fi
+                        ;;
+                    *) RECOVERY_RETRY_STATE_INVALID=1 ;;
+                esac
+            fi
+        elif [ "$RECOVERY_RETRY_STATE_INVALID" -eq 0 ]; then
+            RECOVERY_RETRY_STATE_INVALID=1
+        fi
+    fi
+
+    if [ "$RECOVERY_RETRY_STATE_INVALID" -eq 1 ]; then
+        # Unknown bytes might represent already-spent restart authority.
+        RECOVERY_ATTEMPTED=1
+        RECOVERY_ATTEMPT_COUNT="$RECOVERY_MAX_ATTEMPTS"
+        RECOVERY_NEXT_RETRY_MONO=0
+        CONSECUTIVE_FAILURES=0
+        VALID_STREAK=0
+        CONNECTED_SINCE_AT=0
+        CONNECTED_SINCE_MONO=0
+        CONTINUITY_BROKEN=1
+    fi
+}
+
+load_recovery_retry_state
 
 now_epoch() {
     if is_uint "${WATCHDOG_NOW_EPOCH:-}"; then
@@ -262,9 +503,20 @@ log_event() {
 
 save_memory() {
     _tmp="${MEMORY_FILE}.tmp.$$"
-    {
+    rm -f "$_tmp" 2>/dev/null || return 1
+
+    # Never let mv reinterpret a non-regular destination as a directory, and
+    # never replace or follow a link at this private state boundary.
+    if [ -e "$MEMORY_FILE" ] || [ -L "$MEMORY_FILE" ]; then
+        [ -f "$MEMORY_FILE" ] && [ ! -L "$MEMORY_FILE" ] || return 1
+    fi
+
+    if ! {
         printf 'consecutive_failures=%s\n' "$CONSECUTIVE_FAILURES"
         printf 'recovery_attempted=%s\n' "$RECOVERY_ATTEMPTED"
+        printf 'recovery_attempt_count=%s\n' "$RECOVERY_ATTEMPT_COUNT"
+        printf 'recovery_next_retry_monotonic=%s\n' \
+            "$RECOVERY_NEXT_RETRY_MONO"
         printf 'recovery_count=%s\n' "$RECOVERY_COUNT"
         printf 'valid_streak=%s\n' "$VALID_STREAK"
         printf 'condition_since_at=%s\n' "$CONDITION_SINCE_AT"
@@ -274,11 +526,61 @@ save_memory() {
         printf 'last_connected_at=%s\n' "$LAST_CONNECTED_AT"
         printf 'peer_last_success_at=%s\n' "$PEER_LAST_SUCCESS_AT"
         printf 'process_generation=%s\n' "$PROCESS_GENERATION"
+        printf 'last_observed_monotonic=%s\n' "$NOW_MONO"
+        printf 'peer_contract_key=%s\n' "$PEER_CONTRACT_KEY"
         printf 'last_status=%s\n' "$STATUS"
-    } > "$_tmp" && mv "$_tmp" "$MEMORY_FILE"
+    } > "$_tmp"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    if ! chmod 0600 "$_tmp" 2>/dev/null ||
+       ! mv -f "$_tmp" "$MEMORY_FILE"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+mark_continuity_broken() {
+    CONTINUITY_BROKEN=1
+    if [ ! -e "$CONTINUITY_BREAK_FILE" ] &&
+       [ ! -L "$CONTINUITY_BREAK_FILE" ]; then
+        (
+            set -C
+            umask 077
+            : > "$CONTINUITY_BREAK_FILE"
+        ) 2>/dev/null || true
+    fi
+}
+
+clear_continuity_break() {
+    if [ ! -e "$CONTINUITY_BREAK_FILE" ] &&
+       [ ! -L "$CONTINUITY_BREAK_FILE" ]; then
+        CONTINUITY_BROKEN=0
+        return 0
+    fi
+    [ -f "$CONTINUITY_BREAK_FILE" ] &&
+        [ ! -L "$CONTINUITY_BREAK_FILE" ] || return 1
+    rm -f "$CONTINUITY_BREAK_FILE" || return 1
+    CONTINUITY_BROKEN=0
+}
+
+persist_memory() {
+    if save_memory && clear_continuity_break; then
+        return 0
+    fi
+    mark_continuity_broken
+    return 1
 }
 
 update_time_state() {
+    if [ "$PEER_CONTRACT_KEY" != "$PREVIOUS_PEER_CONTRACT_KEY" ]; then
+        # Last-delivery evidence belongs to the exact configured peer contract
+        # and must never be inherited by another peer.
+        LAST_CONNECTED_AT=0
+        PEER_LAST_SUCCESS_AT=0
+    fi
+
     if [ "$STATUS" != "$PREVIOUS_STATUS" ] ||
        [ "$CONDITION_SINCE_MONO" -eq 0 ] ||
        [ "$NOW_MONO" -lt "$CONDITION_SINCE_MONO" ]; then
@@ -287,7 +589,13 @@ update_time_state() {
     fi
 
     if [ "$CONNECTED" = "true" ]; then
-        if [ "$CONNECTED_SINCE_MONO" -eq 0 ] ||
+        if [ "$CONTINUITY_BROKEN" -eq 1 ] ||
+           [ "$PREVIOUS_OBSERVED_MONO" -eq 0 ] ||
+           [ "$NOW_MONO" -lt "$PREVIOUS_OBSERVED_MONO" ] ||
+           [ $((NOW_MONO - PREVIOUS_OBSERVED_MONO)) -ge \
+               "$CONTINUITY_MAX_GAP" ] ||
+           [ "$PEER_CONTRACT_KEY" != "$PREVIOUS_PEER_CONTRACT_KEY" ] ||
+           [ "$CONNECTED_SINCE_MONO" -eq 0 ] ||
            [ "$NOW_MONO" -lt "$CONNECTED_SINCE_MONO" ]; then
             CONNECTED_SINCE_AT="$NOW_EPOCH"
             CONNECTED_SINCE_MONO="$NOW_MONO"
@@ -321,6 +629,12 @@ publish_status() {
     PEER_STATE="$(sanitize_token "$PEER_STATE")"
     PROCESS_GENERATION="$(sanitize_token "$PROCESS_GENERATION")"
     PROCESS_GENERATION_JSON=null
+    if [ "$PEER_STATE" = "invalid_configuration" ]; then
+        # This invariant applies even when an earlier dependency or LocalAPI
+        # branch determined the primary status.
+        CONNECTED=false
+        HEALTHY=false
+    fi
     if is_uint "$PROCESS_UPTIME_SECONDS" &&
        is_process_generation "$PROCESS_GENERATION"; then
         PROCESS_GENERATION_JSON="\"$PROCESS_GENERATION\""
@@ -330,11 +644,38 @@ publish_status() {
         PROCESS_UPTIME_SECONDS=null
     fi
     update_time_state
+    _memory_persisted=0
+    if persist_memory; then
+        _memory_persisted=1
+    else
+        # A point-in-time observation cannot authorize uptime or recovery when
+        # the episode/continuity memory did not cross its atomic boundary.
+        STATUS="watchdog_error"
+        REASON="state_persistence_failed"
+        HEALTHY=false
+        CONNECTED=false
+        DEGRADED=true
+        RECOVERABLE=false
+        CONSECUTIVE_FAILURES=0
+        VALID_STREAK=0
+        CONNECTED_SINCE_AT=0
+        CONNECTED_SINCE_MONO=0
+        CONNECTIVITY_UPTIME=null
+        CONDITION_SINCE_AT="$NOW_EPOCH"
+        CONDITION_SINCE_MONO="$NOW_MONO"
+        CONDITION_UPTIME=0
+    fi
 
     _tmp="${STATUS_FILE}.tmp.$$"
-    {
+    if [ -e "$STATUS_FILE" ] || [ -L "$STATUS_FILE" ]; then
+        [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ] || {
+            rm -f "$_tmp" 2>/dev/null || true
+            return 1
+        }
+    fi
+    if ! {
         printf '{'
-        printf '"schema":2,'
+        printf '"schema":3,'
         printf '"observed_at":%s,' "$NOW_EPOCH"
         printf '"monotonic_seconds":%s,' "$NOW_MONO"
         printf '"status":"%s",' "$STATUS"
@@ -351,7 +692,6 @@ publish_status() {
         printf '"key_expiry":"%s",' "$KEY_EXPIRY"
         printf '"control_online":%s,' "$CONTROL_ONLINE"
         printf '"tun_available":%s,' "$TUN_AVAILABLE"
-        printf '"in_engine":%s,' "$IN_ENGINE"
         printf '"health_warnings":%s,' "$HEALTH_WARNINGS"
         printf '"condition_since_at":%s,' "$CONDITION_SINCE_AT"
         printf '"condition_uptime_seconds":%s,' "$CONDITION_UPTIME"
@@ -373,35 +713,97 @@ publish_status() {
         printf '"maintenance_state":"%s",' "$MAINTENANCE_STATE"
         printf '"maintenance_expires_at":%s' "$MAINTENANCE_EXPIRES_AT"
         printf '}\n'
-    } > "$_tmp" && mv "$_tmp" "$STATUS_FILE"
+    } > "$_tmp"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    if ! chmod 0600 "$_tmp" 2>/dev/null ||
+       ! mv -f "$_tmp" "$STATUS_FILE"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ] || return 1
 
     if [ "$STATUS" != "$PREVIOUS_STATUS" ]; then
         log_event "state ${PREVIOUS_STATUS:-unknown} -> ${STATUS} (${REASON})"
     fi
-    save_memory
-    PREVIOUS_STATUS="$STATUS"
-    PREVIOUS_PROCESS_GENERATION="$PROCESS_GENERATION"
+    if [ "$_memory_persisted" -eq 1 ]; then
+        PREVIOUS_OBSERVED_MONO="$NOW_MONO"
+        PREVIOUS_PEER_CONTRACT_KEY="$PEER_CONTRACT_KEY"
+        PREVIOUS_STATUS="$STATUS"
+        PREVIOUS_PROCESS_GENERATION="$PROCESS_GENERATION"
+    fi
+    [ "$_memory_persisted" -eq 1 ]
 }
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-service_is_enabled() {
-    [ -x "$TAILSCALE_INIT" ] || return 1
-    "$TAILSCALE_INIT" enabled >/dev/null 2>&1
-}
+query_init_state() {
+    _init_action="$1"
+    INIT_QUERY_STATE="unknown"
+    [ -x "$TAILSCALE_INIT" ] || return
 
-service_is_running() {
-    [ -x "$TAILSCALE_INIT" ] || return 1
-    "$TAILSCALE_INIT" running >/dev/null 2>&1
+    "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
+        "$TAILSCALE_INIT" "$_init_action" \
+        9>&- >/dev/null 2>&1 &
+    ACTIVE_CHILD=$!
+    wait "$ACTIVE_CHILD"
+    _init_rc=$?
+    ACTIVE_CHILD=""
+
+    case "$_init_rc" in
+        0) INIT_QUERY_STATE="true" ;;
+        1) INIT_QUERY_STATE="false" ;;
+    esac
 }
 
 json_value() {
     "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -e "$1" 2>/dev/null | head -n 1
 }
 
+json_type() {
+    "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -t "$1" 2>/dev/null | head -n 1
+}
+
+json_string() {
+    [ "$(json_type "$1")" = "string" ] || return 0
+    json_value "$1"
+}
+
+json_string_exact() {
+    JSON_STRING_VALUE=""
+    [ "$(json_type "$1")" = "string" ] || return 1
+    _json_exact_capture="$(
+        "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -e "$1" 2>/dev/null
+        _json_exact_rc=$?
+        # A non-newline sentinel prevents command substitution from erasing
+        # trailing newlines that are part of the decoded JSON string.
+        printf .
+        exit "$_json_exact_rc"
+    )" || return 1
+    _json_exact_with_delimiter="${_json_exact_capture%?}"
+    case "$_json_exact_with_delimiter" in
+        *'
+')
+            # jsonfilter contributes exactly one record delimiter. Remove only
+            # that byte, leaving any newline inside the JSON value visible to
+            # the exact token/IP validators.
+            JSON_STRING_VALUE="${_json_exact_with_delimiter%
+}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 json_boolean() {
+    [ "$(json_type "$1")" = "boolean" ] || {
+        printf 'null'
+        return
+    }
     _boolean="$(json_value "$1")"
     case "$_boolean" in
         true|false) printf '%s' "$_boolean" ;;
@@ -409,44 +811,250 @@ json_boolean() {
     esac
 }
 
-count_health_warnings() {
-    _count="$("$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -e '@.Health[*]' 2>/dev/null |
-        wc -l | tr -d ' ')"
-    is_uint "$_count" && printf '%s' "$_count" || printf '0'
+inspect_health_warnings() {
+    HEALTH_SCHEMA_VALID=false
+    HEALTH_WARNINGS=0
+    [ "$(json_type '@.Health')" = "array" ] || return
+    _health_types="$(
+        "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" -t '@.Health[*]' 2>/dev/null
+    )"
+    _count=0
+    while [ -n "$_health_types" ]; do
+        case "$_health_types" in
+            string)
+                _count=$((_count + 1))
+                _health_types=""
+                ;;
+            string\\\ *)
+                _count=$((_count + 1))
+                _health_types="${_health_types#string\\ }"
+                ;;
+            *)
+                return
+                ;;
+        esac
+        [ "$_count" -le 100 ] || return
+    done
+    if ! "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" \
+        -e '@.Health[*]' 2>/dev/null |
+        awk -v expected="$_count" '
+            length($0) > 512 { invalid = 1 }
+            { count += 1 }
+            END {
+                if (invalid || count != expected) exit 1
+            }
+        '
+    then
+        return
+    fi
+    HEALTH_WARNINGS="$_count"
+    HEALTH_SCHEMA_VALID=true
+}
+
+command_monotonic() {
+    _command_uptime=""
+    IFS=' ' read -r _command_uptime _command_ignored \
+        <"$UPTIME_FILE" 2>/dev/null || {
+        printf '0'
+        return
+    }
+
+    case "$_command_uptime" in
+        *.*)
+            _command_seconds="${_command_uptime%%.*}"
+            _command_fraction="${_command_uptime#*.}"
+            case "$_command_fraction" in
+                ""|*[!0-9]*|*.*)
+                    printf '0'
+                    return
+                    ;;
+            esac
+            ;;
+        *)
+            _command_seconds="$_command_uptime"
+            _command_fraction="0"
+            ;;
+    esac
+    if ! is_uint "$_command_seconds" ||
+       [ "${#_command_seconds}" -gt 15 ]; then
+        printf '0'
+        return
+    fi
+    _command_hundredths="$(
+        printf '%s00' "$_command_fraction" | cut -c1-2
+    )"
+    case "$_command_hundredths" in
+        [0-9][0-9]) ;;
+        *)
+            printf '0'
+            return
+            ;;
+    esac
+    _command_tens="${_command_hundredths%?}"
+    _command_ones="${_command_hundredths#?}"
+    # /proc/uptime is converted without floating-point arithmetic. Keeping
+    # hundredths prevents a short rc137/143 on a whole-second boundary from
+    # being mistaken for a timeout-owned signal exit.
+    printf '%s' "$((_command_seconds * 100 +
+        _command_tens * 10 + _command_ones))"
 }
 
 run_status_query() {
     : > "$STATUS_OUTPUT"
     : > "$STATUS_ERROR"
-    "$TIMEOUT_CMD" "$STATUS_TIMEOUT" "$TAILSCALE_CLI" \
+    STATUS_STARTED_CENTISECONDS="$(command_monotonic)"
+    "$TIMEOUT_CMD" -s TERM -k 2 "$STATUS_TIMEOUT" \
+        /bin/sh -c \
+        'ulimit -f "$1" || exit 125; shift; exec "$@"' \
+        jammonitor-status-limit "$STATUS_FILE_BLOCKS" "$TAILSCALE_CLI" \
         --socket="$TAILSCALE_SOCKET" status --json --peers=false \
         9>&- >"$STATUS_OUTPUT" 2>"$STATUS_ERROR" &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD"
     STATUS_RC=$?
     ACTIVE_CHILD=""
+    STATUS_FINISHED_CENTISECONDS="$(command_monotonic)"
+    STATUS_DEADLINE_REACHED=false
+    if is_uint "$STATUS_STARTED_CENTISECONDS" &&
+       is_uint "$STATUS_FINISHED_CENTISECONDS" &&
+       [ "$STATUS_STARTED_CENTISECONDS" -gt 0 ] &&
+       [ "$STATUS_FINISHED_CENTISECONDS" -ge \
+           "$STATUS_STARTED_CENTISECONDS" ] &&
+       [ $((STATUS_FINISHED_CENTISECONDS -
+               STATUS_STARTED_CENTISECONDS)) -ge \
+           $((STATUS_TIMEOUT * 100)) ]; then
+        STATUS_DEADLINE_REACHED=true
+    fi
 }
 
-critical_peer() {
-    [ -r "$CRITICAL_PEER_FILE" ] || return 1
-    _peer="$(head -n 1 "$CRITICAL_PEER_FILE" 2>/dev/null | tr -d '\r\n')"
-    [ -n "$_peer" ] || return 1
-    [ "${#_peer}" -le 253 ] || return 1
-    case "$_peer" in
-        -*|*[!A-Za-z0-9:._-]*) return 1 ;;
-    esac
-    printf '%s' "$_peer"
+inspect_critical_peer_config() {
+    CRITICAL_PEER=""
+    PEER_CONTRACT_ID="invalid"
+
+    if ! read_critical_peer_contract; then
+        PEER_CONFIGURED="$CURRENT_PEER_PRESENT"
+        if [ "$PEER_CONFIGURED" = "true" ]; then
+            PEER_STATE="invalid_configuration"
+            PEER_REACHABLE=false
+            PEER_CONTRACT_KEY="invalid"
+        fi
+        return
+    fi
+    if [ "$CURRENT_PEER_PRESENT" != "true" ]; then
+        PEER_CONTRACT_ID="absent"
+        return
+    fi
+
+    PEER_CONFIGURED=true
+    CRITICAL_PEER="$CURRENT_PEER_VALUE"
+    PEER_CONTRACT_KEY="$CURRENT_PEER_KEY"
+    PEER_CONTRACT_ID="$CURRENT_PEER_CONTRACT_ID"
+    PEER_STATE="unknown"
+    PEER_REACHABLE=null
 }
 
-observe_process_generation() {
-    PROCESS_GENERATION=""
-    PROCESS_GENERATION_STATE="unknown"
-    PROCESS_UPTIME_SECONDS=null
+read_critical_peer_contract() {
+    CURRENT_PEER_PRESENT=false
+    CURRENT_PEER_VALUE=""
+    CURRENT_PEER_KEY=""
+    CURRENT_PEER_CONTRACT_ID="absent"
 
+    # Only a genuinely absent path makes peer proof optional. Any other
+    # filesystem object is an operator contract and therefore fails closed.
+    if [ ! -e "$CRITICAL_PEER_FILE" ] &&
+       [ ! -L "$CRITICAL_PEER_FILE" ]; then
+        return 0
+    fi
+    CURRENT_PEER_PRESENT=true
+    CURRENT_PEER_CONTRACT_ID="invalid_object"
+
+    [ ! -L "$CRITICAL_PEER_FILE" ] &&
+        [ -f "$CRITICAL_PEER_FILE" ] &&
+        [ -r "$CRITICAL_PEER_FILE" ] || return 1
+
+    _critical_peer_before="$(
+        "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$CRITICAL_PEER_FILE" 2>/dev/null
+    )" || return 1
+    _critical_peer_old_ifs="$IFS"
+    IFS=:
+    set -- $_critical_peer_before
+    IFS="$_critical_peer_old_ifs"
+    [ "$#" -eq 7 ] &&
+        [ "$1" = "$EXPECTED_ROOT_UID" ] &&
+        [ "$2" = "$EXPECTED_ROOT_GID" ] &&
+        [ "$3" = "600" ] &&
+        [ "$4" = "1" ] &&
+        is_uint "$5" &&
+        is_uint "$6" &&
+        is_uint "$7" || return 1
+    _critical_peer_size="$7"
+    [ "$_critical_peer_size" -gt 0 ] &&
+        [ "$_critical_peer_size" -le 254 ] || return 1
+
+    _invalid_peer_bytes="$(
+        LC_ALL=C tr -d '0123456789abcdefABCDEF:.\n' \
+            <"$CRITICAL_PEER_FILE" 2>/dev/null |
+            wc -c | tr -d ' \r\n'
+    )"
+    [ "$_invalid_peer_bytes" = "0" ] || return 1
+    _critical_peer="$(head -n 1 "$CRITICAL_PEER_FILE" 2>/dev/null)" ||
+        return 1
+    [ -n "$_critical_peer" ] &&
+        [ "${#_critical_peer}" -le 253 ] || return 1
+
+    # Accept exactly TARGET or TARGET plus one LF. Metadata, including inode
+    # and link count, must be identical across the bounded content read.
+    if [ "$_critical_peer_size" -ne "${#_critical_peer}" ] &&
+       [ "$_critical_peer_size" -ne $((${#_critical_peer} + 1)) ]; then
+        return 1
+    fi
+    _critical_peer_key="$(tailscale_ip_key "$_critical_peer")" || return 1
+    _critical_peer_after="$(
+        "$STAT_CMD" -c '%u:%g:%a:%h:%d:%i:%s' \
+            "$CRITICAL_PEER_FILE" 2>/dev/null
+    )" || return 1
+    [ "$_critical_peer_after" = "$_critical_peer_before" ] || return 1
+
+    CURRENT_PEER_VALUE="$_critical_peer"
+    CURRENT_PEER_KEY="$_critical_peer_key"
+    CURRENT_PEER_CONTRACT_ID="${_critical_peer_before}:${_critical_peer}"
+    return 0
+}
+
+critical_peer_contract_is_current() {
+    _expected_peer_contract_id="$PEER_CONTRACT_ID"
+    _expected_peer_value="$CRITICAL_PEER"
+    _expected_peer_key="$PEER_CONTRACT_KEY"
+    read_critical_peer_contract || return 1
+    [ "$CURRENT_PEER_PRESENT" = "true" ] &&
+        [ "$CURRENT_PEER_CONTRACT_ID" = "$_expected_peer_contract_id" ] &&
+        [ "$CURRENT_PEER_VALUE" = "$_expected_peer_value" ] &&
+        [ "$CURRENT_PEER_KEY" = "$_expected_peer_key" ]
+}
+
+mark_critical_peer_contract_changed() {
+    CRITICAL_PEER=""
+    PEER_CONTRACT_KEY="invalid"
+    PEER_CONTRACT_ID="invalid"
+    PEER_STATE="invalid_configuration"
+    PEER_REACHABLE=false
+    PEER_LAST_SUCCESS_AT="$PEER_LAST_SUCCESS_BEFORE_OBSERVATION"
+}
+
+capture_process_generation() {
+    CAPTURED_PROCESS_GENERATION=""
+    CAPTURED_PROCESS_UPTIME_SECONDS=null
     case "$PROCESS_NAME" in
         ""|*[!A-Za-z0-9_.-]*) return 1 ;;
     esac
     [ "${#PROCESS_NAME}" -le 15 ] || return 1
+    case "$PROCESS_BINARY" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ -x "$PROCESS_BINARY" ] || return 1
+    command_exists "$READLINK_CMD" || return 1
 
     _matches=0
     for _stat_path in "$PROC_ROOT"/[0-9]*/stat; do
@@ -463,35 +1071,64 @@ observe_process_generation() {
             *) continue ;;
         esac
 
-        _matches=$((_matches + 1))
-        [ "$_matches" -eq 1 ] || {
-            PROCESS_GENERATION=""
-            return 1
-        }
-
         _stat_tail="${_stat_line#*) }"
         set -- $_stat_tail
         [ "$#" -ge 20 ] || {
-            PROCESS_GENERATION=""
-            return 1
+            continue
         }
+        _process_state="$1"
+        case "$_process_state" in
+            R|S|D|T|t|K|W|P|I) ;;
+            *) continue ;;
+        esac
         shift 19
         _start_ticks="$1"
         is_uint "$_start_ticks" &&
             [ "${#_start_ticks}" -le 18 ] &&
             [ "$_start_ticks" -gt 0 ] || {
-            PROCESS_GENERATION=""
+            continue
+        }
+
+        _exe_path="$("$READLINK_CMD" "$PROC_ROOT/$_pid/exe" 2>/dev/null)" ||
+            continue
+        [ "$_exe_path" = "$PROCESS_BINARY" ] || continue
+
+        # Bind the executable and start ticks to one stable /proc sample.
+        # Re-reading both sides closes the ordinary PID-reuse race between
+        # stat and exe.
+        _stat_line_after=""
+        IFS= read -r _stat_line_after < "$_stat_path" || continue
+        [ "$_stat_line_after" = "$_stat_line" ] || continue
+        _exe_path_after="$(
+            "$READLINK_CMD" "$PROC_ROOT/$_pid/exe" 2>/dev/null
+        )" || continue
+        [ "$_exe_path_after" = "$PROCESS_BINARY" ] || continue
+
+        _matches=$((_matches + 1))
+        [ "$_matches" -eq 1 ] || {
+            CAPTURED_PROCESS_GENERATION=""
+            CAPTURED_PROCESS_UPTIME_SECONDS=null
             return 1
         }
-        PROCESS_GENERATION="${_pid}:${_start_ticks}"
+        CAPTURED_PROCESS_GENERATION="${_pid}:${_start_ticks}"
     done
 
-    [ "$_matches" -eq 1 ] && [ -n "$PROCESS_GENERATION" ] || return 1
-    _start_ticks="${PROCESS_GENERATION#*:}"
+    [ "$_matches" -eq 1 ] &&
+        [ -n "$CAPTURED_PROCESS_GENERATION" ] || return 1
+    _start_ticks="${CAPTURED_PROCESS_GENERATION#*:}"
     _started_mono=$((_start_ticks / CLOCK_TICKS))
-    if [ "$NOW_MONO" -ge "$_started_mono" ]; then
-        PROCESS_UPTIME_SECONDS=$((NOW_MONO - _started_mono))
+    if [ "$NOW_MONO" -lt "$_started_mono" ]; then
+        CAPTURED_PROCESS_GENERATION=""
+        CAPTURED_PROCESS_UPTIME_SECONDS=null
+        return 1
     fi
+    CAPTURED_PROCESS_UPTIME_SECONDS=$((NOW_MONO - _started_mono))
+    return 0
+}
+
+apply_captured_process_generation() {
+    PROCESS_GENERATION="$CAPTURED_PROCESS_GENERATION"
+    PROCESS_UPTIME_SECONDS="$CAPTURED_PROCESS_UPTIME_SECONDS"
 
     if [ -z "$PREVIOUS_PROCESS_GENERATION" ]; then
         PROCESS_GENERATION_STATE="initialized"
@@ -505,24 +1142,141 @@ observe_process_generation() {
         CONNECTED_SINCE_AT=0
         CONNECTED_SINCE_MONO=0
     fi
-    return 0
+}
+
+observe_process_generation() {
+    PROCESS_GENERATION=""
+    PROCESS_GENERATION_STATE="unknown"
+    PROCESS_UPTIME_SECONDS=null
+    capture_process_generation || return 1
+    apply_captured_process_generation
+}
+
+verify_process_generation_join() {
+    _expected_generation="${1:-}"
+    PROCESS_JOIN_STATE="unknown"
+
+    if ! capture_process_generation; then
+        PROCESS_GENERATION=""
+        PROCESS_GENERATION_STATE="unknown"
+        PROCESS_UPTIME_SECONDS=null
+        CONNECTED_SINCE_AT=0
+        CONNECTED_SINCE_MONO=0
+        return 1
+    fi
+
+    if [ -n "$_expected_generation" ] &&
+       [ "$CAPTURED_PROCESS_GENERATION" = "$_expected_generation" ]; then
+        PROCESS_GENERATION="$CAPTURED_PROCESS_GENERATION"
+        PROCESS_UPTIME_SECONDS="$CAPTURED_PROCESS_UPTIME_SECONDS"
+        PROCESS_JOIN_STATE="stable"
+        return 0
+    fi
+
+    apply_captured_process_generation
+    CONNECTED_SINCE_AT=0
+    CONNECTED_SINCE_MONO=0
+    if [ -n "$_expected_generation" ]; then
+        PROCESS_JOIN_STATE="changed"
+    fi
+    return 1
+}
+
+set_process_join_failure() {
+    STATUS="running_degraded"
+    if [ "$PROCESS_JOIN_STATE" = "changed" ]; then
+        REASON="process_restarted"
+    else
+        REASON="process_generation_unknown"
+    fi
+    HEALTHY=false
+    CONNECTED=null
+    DEGRADED=true
+    LOCAL_API_RESPONSIVE=null
+    BACKEND_STATE=""
+    TAILSCALE_IP=""
+    KEY_EXPIRY=""
+    CONTROL_ONLINE=null
+    TUN_AVAILABLE=null
+    HEALTH_WARNINGS=0
+    HEALTH_SCHEMA_VALID=false
+    if [ "$PEER_CONFIGURED" = "true" ] &&
+       [ "$PEER_STATE" != "invalid_configuration" ]; then
+        PEER_STATE="unknown"
+        PEER_REACHABLE=null
+        PEER_LAST_SUCCESS_AT="$PEER_LAST_SUCCESS_BEFORE_OBSERVATION"
+    fi
+    RECOVERABLE=false
+    CONSECUTIVE_FAILURES=0
+    record_invalid_response
+}
+
+publish_process_join_failure() {
+    set_process_join_failure
+    publish_status
 }
 
 inspect_maintenance_marker() {
     MAINTENANCE_STATE="none"
     MAINTENANCE_EXPIRES_AT=0
-    [ -e "$MAINTENANCE_FILE" ] || return
-
-    if [ ! -f "$MAINTENANCE_FILE" ] || [ ! -r "$MAINTENANCE_FILE" ]; then
-        MAINTENANCE_STATE="malformed"
+    MAINTENANCE_LEASE_ID="absent"
+    if [ ! -e "$MAINTENANCE_FILE" ] &&
+       [ ! -L "$MAINTENANCE_FILE" ]; then
         return
     fi
 
-    _expiry="$(head -n 1 "$MAINTENANCE_FILE" 2>/dev/null | tr -d '\r\n')"
-    _marker_size="$(wc -c < "$MAINTENANCE_FILE" 2>/dev/null | tr -d ' ')"
+    if [ -L "$MAINTENANCE_FILE" ] ||
+       [ ! -f "$MAINTENANCE_FILE" ] ||
+       [ ! -r "$MAINTENANCE_FILE" ]; then
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="invalid_object"
+        return
+    fi
+
+    _marker_before="$(
+        "$STAT_CMD" -c '%u:%g:%a:%d:%i:%s' \
+            "$MAINTENANCE_FILE" 2>/dev/null
+    )" || {
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="metadata_unknown"
+        return
+    }
+    _old_ifs="$IFS"
+    IFS=:
+    set -- $_marker_before
+    IFS="$_old_ifs"
+    if [ "$#" -ne 6 ] ||
+       [ "$1" != "$EXPECTED_ROOT_UID" ] ||
+       [ "$2" != "$EXPECTED_ROOT_GID" ] ||
+       [ "$3" != "600" ] ||
+       ! is_uint "$4" || ! is_uint "$5" || ! is_uint "$6"; then
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="metadata_invalid"
+        return
+    fi
+    _marker_size="$6"
+    _expiry=""
+    IFS= read -r _expiry < "$MAINTENANCE_FILE" || {
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="content_unreadable"
+        return
+    }
+    _marker_after="$(
+        "$STAT_CMD" -c '%u:%g:%a:%d:%i:%s' \
+            "$MAINTENANCE_FILE" 2>/dev/null
+    )" || {
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="metadata_changed"
+        return
+    }
+    if [ "$_marker_after" != "$_marker_before" ]; then
+        MAINTENANCE_STATE="malformed"
+        MAINTENANCE_LEASE_ID="metadata_changed"
+        return
+    fi
+    MAINTENANCE_LEASE_ID="${_marker_before}:${_expiry}"
     if ! is_uint "$_expiry" ||
        [ "${#_expiry}" -gt 12 ] ||
-       ! is_uint "$_marker_size" ||
        [ "$_marker_size" -ne $((${#_expiry} + 1)) ]; then
         MAINTENANCE_STATE="malformed"
         return
@@ -539,20 +1293,26 @@ inspect_maintenance_marker() {
 }
 
 observe_peer() {
-    _peer="$(critical_peer)" || return
-    PEER_CONFIGURED=true
-    PEER_STATE="unknown"
+    [ "$PEER_CONFIGURED" = "true" ] &&
+        [ "$PEER_STATE" = "unknown" ] &&
+        [ -n "$CRITICAL_PEER" ] || return
+    if ! critical_peer_contract_is_current; then
+        mark_critical_peer_contract_changed
+        return
+    fi
 
-    "$TIMEOUT_CMD" "$PEER_TIMEOUT" "$TAILSCALE_CLI" \
+    "$TIMEOUT_CMD" -s TERM -k 2 "$PEER_TIMEOUT" "$TAILSCALE_CLI" \
         --socket="$TAILSCALE_SOCKET" ping \
-        --c=1 --timeout=3s --until-direct=false -- "$_peer" \
+        --tsmp --c=1 --timeout=3s --until-direct=false -- "$CRITICAL_PEER" \
         9>&- >/dev/null 2>&1 &
     ACTIVE_CHILD=$!
     wait "$ACTIVE_CHILD"
     _peer_rc=$?
     ACTIVE_CHILD=""
 
-    if [ "$_peer_rc" -eq 0 ]; then
+    if ! critical_peer_contract_is_current; then
+        mark_critical_peer_contract_changed
+    elif [ "$_peer_rc" -eq 0 ]; then
         PEER_STATE="reachable"
         PEER_REACHABLE=true
         PEER_LAST_SUCCESS_AT="$NOW_EPOCH"
@@ -562,12 +1322,31 @@ observe_peer() {
     fi
 }
 
+critical_peer_is_self() {
+    [ "$PEER_CONFIGURED" = "true" ] &&
+        [ "$PEER_STATE" = "unknown" ] &&
+        [ -n "$CRITICAL_PEER" ] || return 1
+    _critical_peer_key="$(tailscale_ip_key "$CRITICAL_PEER")" || return 1
+
+    "$JSONFILTER_CMD" -i "$STATUS_OUTPUT" \
+        -e '@.Self.TailscaleIPs[*]' 2>/dev/null |
+        (
+            while IFS= read -r _self_ip; do
+                _self_ip_key="$(tailscale_ip_key "$_self_ip")" || continue
+                [ "$_critical_peer_key" = "$_self_ip_key" ] && exit 0
+            done
+            exit 1
+        )
+}
+
 record_valid_response() {
     CONSECUTIVE_FAILURES=0
     VALID_STREAK=$((VALID_STREAK + 1))
     if [ "$RECOVERY_ATTEMPTED" -eq 1 ] &&
        [ "$VALID_STREAK" -ge "$VALID_STREAK_REQUIRED" ]; then
         RECOVERY_ATTEMPTED=0
+        RECOVERY_ATTEMPT_COUNT=0
+        RECOVERY_NEXT_RETRY_MONO=0
         RECOVERY_STATE="rearmed"
         log_event "recovery circuit rearmed after ${VALID_STREAK} valid LocalAPI responses"
     fi
@@ -577,8 +1356,199 @@ record_invalid_response() {
     VALID_STREAK=0
 }
 
+file_metadata_matches() {
+    _metadata_path="$1"
+    _metadata_mode="$2"
+    [ -f "$_metadata_path" ] &&
+        [ ! -L "$_metadata_path" ] || return 1
+    _metadata="$(
+        "$STAT_CMD" -c '%u:%g:%a' "$_metadata_path" 2>/dev/null
+    )" || return 1
+    [ "$_metadata" = \
+        "${EXPECTED_ROOT_UID}:${EXPECTED_ROOT_GID}:${_metadata_mode}" ]
+}
+
+hash_regular_file() {
+    _hash_path="$1"
+    HASHED_FILE_SHA256=""
+    [ -f "$_hash_path" ] &&
+        [ ! -L "$_hash_path" ] || return 1
+    _hash_output="$("$SHA256_CMD" "$_hash_path" 2>/dev/null)" ||
+        return 1
+    set -- $_hash_output
+    [ "$#" -ge 1 ] && is_sha256 "$1" || return 1
+    HASHED_FILE_SHA256="$1"
+}
+
+verify_init_integrity() {
+    is_uint "$EXPECTED_ROOT_UID" &&
+        is_uint "$EXPECTED_ROOT_GID" || return 1
+    command_exists "$STAT_CMD" &&
+        command_exists "$SHA256_CMD" || return 1
+    file_metadata_matches "$ROUTER_MANIFEST" 644 || return 1
+    file_metadata_matches "$ROUTER_MANIFEST_DIGEST" 644 || return 1
+    file_metadata_matches "$TAILSCALE_INIT" 755 || return 1
+
+    _manifest_size="$(
+        wc -c < "$ROUTER_MANIFEST" 2>/dev/null | tr -d ' \r\n'
+    )"
+    is_uint "$_manifest_size" &&
+        [ "$_manifest_size" -gt 0 ] &&
+        [ "$_manifest_size" -le 65536 ] || return 1
+    _digest_size="$(
+        wc -c < "$ROUTER_MANIFEST_DIGEST" 2>/dev/null |
+            tr -d ' \r\n'
+    )"
+    [ "$_digest_size" = "65" ] || return 1
+    IFS= read -r _saved_manifest_sha < "$ROUTER_MANIFEST_DIGEST" ||
+        return 1
+    is_sha256 "$_saved_manifest_sha" || return 1
+
+    hash_regular_file "$ROUTER_MANIFEST" || return 1
+    [ "$HASHED_FILE_SHA256" = "$_saved_manifest_sha" ] || return 1
+
+    _init_manifest_matches=0
+    _expected_init_sha=""
+    while IFS=' ' read -r _manifest_sha _manifest_source _manifest_extra
+    do
+        [ "$_manifest_source" = "router/tailscale.init" ] || continue
+        [ -z "$_manifest_extra" ] &&
+            is_sha256 "$_manifest_sha" || return 1
+        _init_manifest_matches=$((_init_manifest_matches + 1))
+        [ "$_init_manifest_matches" -eq 1 ] || return 1
+        _expected_init_sha="$_manifest_sha"
+    done < "$ROUTER_MANIFEST"
+    [ "$_init_manifest_matches" -eq 1 ] &&
+        [ -n "$_expected_init_sha" ] || return 1
+
+    # Recheck metadata after reading the trust files so a replacement cannot
+    # be accepted across the validation window.
+    file_metadata_matches "$ROUTER_MANIFEST" 644 || return 1
+    file_metadata_matches "$ROUTER_MANIFEST_DIGEST" 644 || return 1
+    file_metadata_matches "$TAILSCALE_INIT" 755 || return 1
+    hash_regular_file "$ROUTER_MANIFEST" || return 1
+    [ "$HASHED_FILE_SHA256" = "$_saved_manifest_sha" ] || return 1
+    hash_regular_file "$TAILSCALE_INIT" || return 1
+    [ "$HASHED_FILE_SHA256" = "$_expected_init_sha" ]
+}
+
+prove_process_generation_absent() {
+    case "$PROCESS_NAME" in
+        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    [ "${#PROCESS_NAME}" -le 15 ] || return 1
+    for _absent_stat_path in "$PROC_ROOT"/[0-9]*/stat; do
+        [ -r "$_absent_stat_path" ] || continue
+        _absent_pid="${_absent_stat_path%/stat}"
+        _absent_pid="${_absent_pid##*/}"
+        is_uint "$_absent_pid" && [ "$_absent_pid" -gt 1 ] || return 1
+        _absent_stat_line=""
+        IFS= read -r _absent_stat_line < "$_absent_stat_path" || return 1
+        case "$_absent_stat_line" in
+            "$_absent_pid ($PROCESS_NAME) "*) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+rollback_unspent_restart_latch() {
+    _rollback_state="$1"
+    _rollback_message="$2"
+    RECOVERY_ATTEMPTED="$_previous_recovery_attempted"
+    RECOVERY_ATTEMPT_COUNT="$_previous_recovery_attempt_count"
+    RECOVERY_NEXT_RETRY_MONO="$_previous_recovery_next_retry"
+    RECOVERY_COUNT="$_previous_recovery_count"
+    RECOVERY_STATE="$_rollback_state"
+    RECOVERABLE=false
+    CONSECUTIVE_FAILURES=0
+    VALID_STREAK=0
+    CONNECTED=false
+    CONNECTED_SINCE_AT=0
+    CONNECTED_SINCE_MONO=0
+    CONNECTIVITY_UPTIME=null
+    update_time_state
+    if ! persist_memory; then
+        # The durable provisional latch is safer than accidentally rearming
+        # after a failed rollback write.
+        # The provisional attempt was already durable. Keep its exact
+        # count/deadline rather than accidentally granting fresh authority.
+        RECOVERY_ATTEMPTED=1
+        RECOVERY_STATE="latch_rollback_failed"
+    fi
+    log_event "recovery suppressed: $_rollback_message"
+    return 1
+}
+
+final_restart_authority_is_valid() {
+    FINAL_RESTART_SUPPRESSION=""
+
+    if ! verify_init_integrity; then
+        FINAL_RESTART_SUPPRESSION="init_integrity_unknown"
+        return 1
+    fi
+
+    query_init_state running
+    case "$_restart_expected_running:$INIT_QUERY_STATE" in
+        true:true)
+            if ! verify_process_generation_join \
+                "$_restart_expected_generation"; then
+                FINAL_RESTART_SUPPRESSION="process_generation_changed"
+                set_process_join_failure
+                return 1
+            fi
+            ;;
+        false:false)
+            if ! prove_process_generation_absent; then
+                FINAL_RESTART_SUPPRESSION="process_presence_unknown"
+                return 1
+            fi
+            ;;
+        true:false|false:true)
+            FINAL_RESTART_SUPPRESSION="supervisor_state_changed"
+            return 1
+            ;;
+        *)
+            FINAL_RESTART_SUPPRESSION="supervisor_state_unknown"
+            return 1
+            ;;
+    esac
+
+    # The query above executes the init. Authenticate the exact installed
+    # bytes again after it returns, then make the maintenance lease the last
+    # external proof before the bounded restart process is spawned.
+    if ! verify_init_integrity; then
+        FINAL_RESTART_SUPPRESSION="init_integrity_unknown"
+        return 1
+    fi
+    inspect_maintenance_marker
+    if [ "$MAINTENANCE_LEASE_ID" != "$STATUS_MAINTENANCE_LEASE_ID" ] ||
+       [ "$MAINTENANCE_STATE" = "active" ]; then
+        FINAL_RESTART_SUPPRESSION="maintenance_changed"
+        if [ "$MAINTENANCE_STATE" = "active" ]; then
+            STATUS="maintenance"
+            REASON="operator_suppressed"
+        fi
+        return 1
+    fi
+    return 0
+}
+
 restart_supervised_service_once() {
+    _previous_recovery_count="$RECOVERY_COUNT"
+    _previous_recovery_attempted="$RECOVERY_ATTEMPTED"
+    _previous_recovery_attempt_count="$RECOVERY_ATTEMPT_COUNT"
+    _previous_recovery_next_retry="$RECOVERY_NEXT_RETRY_MONO"
+    _restart_expected_running="$SERVICE_RUNNING"
+    _restart_expected_generation="$STATUS_PROCESS_GENERATION"
     RECOVERY_ATTEMPTED=1
+    RECOVERY_ATTEMPT_COUNT=$((RECOVERY_ATTEMPT_COUNT + 1))
+    if [ "$RECOVERY_ATTEMPT_COUNT" -eq 1 ]; then
+        RECOVERY_NEXT_RETRY_MONO=$((NOW_MONO + RECOVERY_RETRY_SHORT))
+    elif [ "$RECOVERY_ATTEMPT_COUNT" -lt "$RECOVERY_MAX_ATTEMPTS" ]; then
+        RECOVERY_NEXT_RETRY_MONO=$((NOW_MONO + RECOVERY_RETRY_LONG))
+    else
+        RECOVERY_NEXT_RETRY_MONO=0
+    fi
     RECOVERY_COUNT=$((RECOVERY_COUNT + 1))
     RECOVERY_STATE="restart_requested"
     CONSECUTIVE_FAILURES=0
@@ -589,12 +1559,63 @@ restart_supervised_service_once() {
     CONNECTED=false
     CONNECTED_SINCE_AT=0
     CONNECTED_SINCE_MONO=0
-    publish_status
 
-    log_event "recovery: requesting one supervisor restart for this failure episode"
-    "$TIMEOUT_CMD" "$RESTART_TIMEOUT" "$TAILSCALE_INIT" restart \
+    # The episode latch is the authority that prevents restart loops. Commit
+    # it atomically before the service action so a crash at any later
+    # instruction leaves a successor safely latched.
+    update_time_state
+    if ! persist_memory; then
+        RECOVERY_ATTEMPTED="$_previous_recovery_attempted"
+        RECOVERY_ATTEMPT_COUNT="$_previous_recovery_attempt_count"
+        RECOVERY_NEXT_RETRY_MONO="$_previous_recovery_next_retry"
+        RECOVERY_COUNT="$_previous_recovery_count"
+        RECOVERY_STATE="latch_persist_failed"
+        RECOVERABLE=false
+        CONSECUTIVE_FAILURES=0
+        log_event "recovery suppressed: restart latch could not be persisted"
+        publish_status
+        return 1
+    fi
+
+    if ! final_restart_authority_is_valid; then
+        case "$FINAL_RESTART_SUPPRESSION" in
+            process_generation_changed)
+                rollback_unspent_restart_latch \
+                    "restart_generation_changed" \
+                    "observed process generation changed"
+                ;;
+            supervisor_state_changed|process_presence_unknown)
+                rollback_unspent_restart_latch \
+                    "restart_state_changed" \
+                    "supervisor or process state changed"
+                ;;
+            maintenance_changed)
+                rollback_unspent_restart_latch \
+                    "maintenance_started" \
+                    "maintenance lease appeared or changed"
+                ;;
+            init_integrity_unknown)
+                rollback_unspent_restart_latch \
+                    "init_integrity_unknown" \
+                    "installed init integrity is unproven"
+                ;;
+            *)
+                rollback_unspent_restart_latch \
+                    "restart_authority_unknown" \
+                    "final restart authority is unknown"
+                ;;
+        esac
+        return 1
+    fi
+
+    # The maintenance lease is the last external proof above. Do not execute
+    # any command between its successful reinspection and this spawn.
+    "$TIMEOUT_CMD" -s TERM -k 2 "$RESTART_TIMEOUT" \
+        "$TAILSCALE_INIT" restart \
         9>&- >/dev/null 2>&1 &
     ACTIVE_CHILD=$!
+    publish_status
+    log_event "recovery: requesting bounded supervisor restart attempt"
     wait "$ACTIVE_CHILD"
     _restart_rc=$?
     ACTIVE_CHILD=""
@@ -618,15 +1639,21 @@ handle_eligible_failure() {
         RECOVERY_STATE="boot_grace"
         return
     fi
-    if [ "$RECOVERY_ATTEMPTED" -eq 1 ]; then
-        RECOVERY_STATE="episode_latched"
-        return
-    fi
     if [ "$CONSECUTIVE_FAILURES" -lt "$FAILURE_THRESHOLD" ]; then
         RECOVERY_STATE="observing"
         return
     fi
-
+    if [ "$RECOVERY_ATTEMPTED" -eq 1 ]; then
+        if [ "$RECOVERY_ATTEMPT_COUNT" -ge \
+             "$RECOVERY_MAX_ATTEMPTS" ]; then
+            RECOVERY_STATE="recovery_exhausted"
+            RECOVERABLE=false
+            return
+        elif [ "$NOW_MONO" -lt "$RECOVERY_NEXT_RETRY_MONO" ]; then
+            RECOVERY_STATE="recovery_cooldown"
+            return
+        fi
+    fi
     restart_supervised_service_once
 }
 
@@ -645,15 +1672,19 @@ reset_observation() {
     KEY_EXPIRY=""
     CONTROL_ONLINE=null
     TUN_AVAILABLE=null
-    IN_ENGINE=null
     HEALTH_WARNINGS=0
+    HEALTH_SCHEMA_VALID=false
     RECOVERABLE=false
     RECOVERY_STATE="none"
     PEER_CONFIGURED=false
     PEER_STATE="not_configured"
     PEER_REACHABLE=null
+    CRITICAL_PEER=""
+    PEER_CONTRACT_KEY="none"
+    PEER_CONTRACT_ID="absent"
     MAINTENANCE_STATE="none"
     MAINTENANCE_EXPIRES_AT=0
+    MAINTENANCE_LEASE_ID="absent"
     PROCESS_GENERATION=""
     PROCESS_GENERATION_STATE="unknown"
     PROCESS_UPTIME_SECONDS=null
@@ -664,10 +1695,9 @@ observe_once() {
     NOW_MONO="$(now_monotonic)"
     reset_observation
     inspect_maintenance_marker
-    if critical_peer >/dev/null 2>&1; then
-        PEER_CONFIGURED=true
-        PEER_STATE="unknown"
-    fi
+    STATUS_MAINTENANCE_LEASE_ID="$MAINTENANCE_LEASE_ID"
+    inspect_critical_peer_config
+    PEER_LAST_SUCCESS_BEFORE_OBSERVATION="$PEER_LAST_SUCCESS_AT"
 
     if [ ! -x "$TAILSCALE_CLI" ]; then
         STATUS="not_installed"
@@ -690,16 +1720,41 @@ observe_once() {
         publish_status
         return
     fi
-
-    if ! service_is_enabled; then
-        STATUS="disabled"
-        REASON="service_disabled"
-        CONNECTED=false
+    # The OpenWrt init is executable code, including for `enabled` and
+    # `running`. Never invoke a drifted script even for a nominally read-only
+    # query.
+    if ! verify_init_integrity; then
+        STATUS="watchdog_error"
+        REASON="init_integrity_unknown"
+        RECOVERY_STATE="init_integrity_unknown"
         record_invalid_response
         CONSECUTIVE_FAILURES=0
         publish_status
         return
     fi
+
+    query_init_state enabled
+    case "$INIT_QUERY_STATE" in
+        false)
+            STATUS="disabled"
+            REASON="service_disabled"
+            CONNECTED=false
+            record_invalid_response
+            CONSECUTIVE_FAILURES=0
+            publish_status
+            return
+            ;;
+        true)
+            ;;
+        *)
+            STATUS="watchdog_error"
+            REASON="service_enabled_query_failed"
+            record_invalid_response
+            CONSECUTIVE_FAILURES=0
+            publish_status
+            return
+            ;;
+    esac
     SERVICE_ENABLED=true
 
     if [ "$MAINTENANCE_STATE" = "active" ]; then
@@ -711,14 +1766,27 @@ observe_once() {
         return
     fi
 
-    if ! service_is_running; then
-        STATUS="daemon_missing"
-        REASON="supervisor_inactive"
-        CONNECTED=false
-        handle_eligible_failure
-        publish_status
-        return
-    fi
+    query_init_state running
+    case "$INIT_QUERY_STATE" in
+        false)
+            STATUS="daemon_missing"
+            REASON="supervisor_inactive"
+            CONNECTED=false
+            handle_eligible_failure
+            publish_status
+            return
+            ;;
+        true)
+            ;;
+        *)
+            STATUS="watchdog_error"
+            REASON="service_running_query_failed"
+            record_invalid_response
+            CONSECUTIVE_FAILURES=0
+            publish_status
+            return
+            ;;
+    esac
     SERVICE_RUNNING=true
     PROCESS_PROVEN=0
     if ! observe_process_generation; then
@@ -729,12 +1797,17 @@ observe_once() {
     else
         PROCESS_PROVEN=1
     fi
+    STATUS_PROCESS_GENERATION="$PROCESS_GENERATION"
 
     # A supervisor-owned daemon with a proven live PID but no Unix LocalAPI
     # socket is a narrow, local daemon failure. Unlike arbitrary CLI errors,
     # this observation is strong enough to use the bounded episode recovery
     # circuit.
     if [ "$PROCESS_PROVEN" -eq 1 ] && [ ! -S "$TAILSCALE_SOCKET" ]; then
+        if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
+            publish_process_join_failure
+            return
+        fi
         STATUS="socket_missing"
         REASON="localapi_socket_missing"
         LOCAL_API_RESPONSIVE=false
@@ -745,7 +1818,18 @@ observe_once() {
 
     run_status_query
 
-    if [ "$STATUS_RC" -eq 124 ] || [ "$STATUS_RC" -eq 137 ] || [ "$STATUS_RC" -eq 143 ]; then
+    # Status is evidence about one exact tailscaled generation. A successful
+    # payload or timeout exit cannot be joined to a daemon that appeared,
+    # disappeared, or changed PID:start_ticks while the LocalAPI command ran.
+    if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
+        publish_process_join_failure
+        return
+    fi
+
+    if { [ "$STATUS_RC" -eq 124 ] ||
+         [ "$STATUS_RC" -eq 137 ] ||
+         [ "$STATUS_RC" -eq 143 ]; } &&
+       [ "$STATUS_DEADLINE_REACHED" = "true" ]; then
         STATUS="daemon_unresponsive"
         REASON="localapi_timeout"
         LOCAL_API_RESPONSIVE=false
@@ -764,8 +1848,12 @@ observe_once() {
         return
     fi
 
-    BACKEND_STATE="$(sanitize_token "$(json_value '@.BackendState')")"
-    if [ -z "$BACKEND_STATE" ]; then
+    if ! json_string_exact '@.BackendState'; then
+        _raw_backend_state=""
+    else
+        _raw_backend_state="$JSON_STRING_VALUE"
+    fi
+    if ! is_safe_token "$_raw_backend_state"; then
         STATUS="watchdog_error"
         REASON="invalid_status_json"
         LOCAL_API_RESPONSIVE=null
@@ -774,25 +1862,45 @@ observe_once() {
         publish_status
         return
     fi
+    BACKEND_STATE="$_raw_backend_state"
 
     LOCAL_API_RESPONSIVE=true
-    TAILSCALE_IP="$(sanitize_token "$(json_value '@.Self.TailscaleIPs[0]')")"
-    if ! is_tailscale_ip "$TAILSCALE_IP"; then
-        TAILSCALE_IP=""
+    TAILSCALE_IP=""
+    if [ "$(json_type '@.Self.TailscaleIPs')" = "array" ] &&
+       [ "$(json_type '@.Self.TailscaleIPs[0]')" = "string" ]; then
+        if json_string_exact '@.Self.TailscaleIPs[0]' &&
+           is_tailscale_ip "$JSON_STRING_VALUE"; then
+            _raw_tailscale_ip="$JSON_STRING_VALUE"
+            TAILSCALE_IP="$_raw_tailscale_ip"
+        fi
     fi
-    KEY_EXPIRY="$(sanitize_token "$(json_value '@.Self.KeyExpiry')")"
+    if [ "$PEER_CONFIGURED" = "true" ] &&
+       [ "$PEER_STATE" = "unknown" ] &&
+       ! critical_peer_contract_is_current; then
+        mark_critical_peer_contract_changed
+    fi
+    if critical_peer_is_self; then
+        CRITICAL_PEER=""
+        PEER_CONTRACT_ID="invalid"
+        PEER_STATE="invalid_configuration"
+        PEER_REACHABLE=false
+    fi
+    KEY_EXPIRY="$(sanitize_token "$(json_string '@.Self.KeyExpiry')")"
     CONTROL_ONLINE="$(json_boolean '@.Self.Online')"
     TUN_AVAILABLE="$(json_boolean '@.TUN')"
-    IN_ENGINE="$(json_boolean '@.Self.InEngine')"
-    HEALTH_WARNINGS="$(count_health_warnings)"
-    record_valid_response
+    inspect_health_warnings
 
     case "$BACKEND_STATE" in
         Running)
             STATUS="running"
             REASON="ok"
             CONNECTED=null
-            if [ -z "$TAILSCALE_IP" ]; then
+            if [ "$PEER_STATE" = "invalid_configuration" ]; then
+                STATUS="running_degraded"
+                REASON="critical_peer_invalid"
+                DEGRADED=true
+                CONNECTED=false
+            elif [ -z "$TAILSCALE_IP" ]; then
                 STATUS="running_degraded"
                 REASON="tailnet_ip_missing"
                 DEGRADED=true
@@ -806,15 +1914,6 @@ observe_once() {
                 STATUS="running_degraded"
                 REASON="tun_state_unknown"
                 DEGRADED=true
-            elif [ "$IN_ENGINE" = "false" ]; then
-                STATUS="running_degraded"
-                REASON="engine_inactive"
-                DEGRADED=true
-                CONNECTED=false
-            elif [ "$IN_ENGINE" != "true" ]; then
-                STATUS="running_degraded"
-                REASON="engine_state_unknown"
-                DEGRADED=true
             else
                 CONNECTED=true
                 HEALTHY=true
@@ -823,6 +1922,13 @@ observe_once() {
             if [ "$CONNECTED" = "true" ] && [ "$HEALTH_WARNINGS" -gt 0 ]; then
                 STATUS="running_degraded"
                 REASON="health_warning"
+                DEGRADED=true
+                HEALTHY=false
+            fi
+            if [ "$CONNECTED" = "true" ] &&
+               [ "$HEALTH_SCHEMA_VALID" != "true" ]; then
+                STATUS="running_degraded"
+                REASON="health_state_unknown"
                 DEGRADED=true
                 HEALTHY=false
             fi
@@ -858,7 +1964,11 @@ observe_once() {
                 if [ "$PEER_CONFIGURED" = "true" ] &&
                    [ "$PEER_REACHABLE" = "false" ]; then
                     STATUS="running_degraded"
-                    REASON="critical_peer_unreachable"
+                    if [ "$PEER_STATE" = "invalid_configuration" ]; then
+                        REASON="critical_peer_invalid"
+                    else
+                        REASON="critical_peer_unreachable"
+                    fi
                     DEGRADED=true
                     HEALTHY=false
                     CONNECTED=false
@@ -891,6 +2001,25 @@ observe_once() {
             CONNECTED=false
             ;;
     esac
+
+    # Peer observation is another bounded command against the LocalAPI. Join
+    # the finished projection to the original generation one final time
+    # before any healthy or delivered-connectivity claim is published.
+    if ! verify_process_generation_join "$STATUS_PROCESS_GENERATION"; then
+        publish_process_join_failure
+        return
+    fi
+    if [ "$PEER_CONFIGURED" = "true" ] &&
+       [ "$PEER_CONTRACT_ID" != "invalid" ] &&
+       ! critical_peer_contract_is_current; then
+        mark_critical_peer_contract_changed
+        STATUS="running_degraded"
+        REASON="critical_peer_invalid"
+        DEGRADED=true
+        HEALTHY=false
+        CONNECTED=false
+    fi
+    record_valid_response
 
     if [ "$MAINTENANCE_STATE" != "none" ] &&
        [ "$MAINTENANCE_STATE" != "active" ] &&

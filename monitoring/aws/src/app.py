@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -70,8 +71,15 @@ def _safe_log(level: int, event: str, **fields: Any) -> None:
 
 
 def _read_json_response(request: urllib.request.Request) -> Any:
-    with HTTP_OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-        body = response.read(MAX_RESPONSE_BYTES + 1)
+    try:
+        with HTTP_OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        # urllib raises HTTPError before entering the response context manager.
+        # Close its response body here so every caller, including OAuth token
+        # failures that are not retried, has a bounded descriptor lifetime.
+        error.close()
+        raise
     if len(body) > MAX_RESPONSE_BYTES:
         raise ValueError("Tailscale API response exceeded the size limit")
     return json.loads(body.decode("utf-8"))
@@ -129,7 +137,11 @@ def _oauth_access_token(secret_arn: str, now_monotonic: float) -> str:
     expires_in = response.get("expires_in") if isinstance(response, dict) else None
     if not isinstance(token, str) or not token:
         raise ValueError("OAuth response did not contain an access token")
-    if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+    if (
+        isinstance(expires_in, bool)
+        or not isinstance(expires_in, (int, float))
+        or expires_in <= 0
+    ):
         raise ValueError("OAuth response did not contain a valid expiry")
 
     # Never cache a token beyond its advertised lifetime. If Tailscale returns
@@ -142,7 +154,7 @@ def _oauth_access_token(secret_arn: str, now_monotonic: float) -> str:
 
 def _fetch_devices(access_token: str) -> list[dict[str, Any]]:
     request = urllib.request.Request(
-        "https://api.tailscale.com/api/v2/tailnet/-/devices",
+        "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all",
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
@@ -153,7 +165,51 @@ def _fetch_devices(access_token: str) -> list[dict[str, Any]]:
     devices = response.get("devices") if isinstance(response, dict) else None
     if not isinstance(devices, list):
         raise ValueError("Devices response did not contain a device list")
-    return [device for device in devices if isinstance(device, dict)]
+    if any(not isinstance(device, dict) for device in devices):
+        raise ValueError("Devices response contained a malformed entry")
+    return devices
+
+
+def _invalidate_oauth_caches() -> None:
+    global _secret_cache, _token_cache
+    _secret_cache = None
+    _token_cache = None
+
+
+def _fetch_devices_with_one_auth_refresh(
+    secret_arn: str, now_monotonic: float
+) -> list[dict[str, Any]]:
+    """Retry one rejected OAuth credential with a fresh secret and token."""
+
+    for attempt in range(2):
+        try:
+            token = _oauth_access_token(secret_arn, now_monotonic)
+        except urllib.error.HTTPError as error:
+            error.close()
+            # OAuth token endpoints may report a rotated/revoked client as
+            # either `invalid_client` (400) or an authentication challenge
+            # (401), depending on the credential transport. Retry no other
+            # token-endpoint failure.
+            if error.code not in (400, 401) or attempt != 0:
+                raise
+            _invalidate_oauth_caches()
+            continue
+
+        try:
+            return _fetch_devices(token)
+        except urllib.error.HTTPError as error:
+            # `_read_json_response` already closes real responses. Keep this
+            # idempotent close at the orchestration boundary as well so a
+            # replacement transport cannot leak an authentication response.
+            error.close()
+            if error.code != 401 or attempt != 0:
+                raise
+            # Revoking or rotating a Tailscale trust credential revokes active
+            # access tokens too. A warm Lambda must not retain either its token
+            # or the old Secrets Manager value after the devices boundary says
+            # that credential is no longer authoritative.
+            _invalidate_oauth_caches()
+    raise RuntimeError("unreachable OAuth refresh state")
 
 
 def _parse_rfc3339(value: Any) -> datetime | None:
@@ -230,6 +286,17 @@ def evaluate_device(
         }
 
     approved = _approval_state(device)
+    # A shared-in or ephemeral node is not the durable infrastructure member
+    # identified by this monitor. `multipleConnections` is omitted when false,
+    # but true means more than one machine is concurrently using the node key,
+    # usually because its state was copied. Such an identity could otherwise
+    # keep the control-plane heartbeat green while the intended host is down.
+    tailnet_member = device.get("isExternal") is False
+    durable_identity = device.get("isEphemeral") is False
+    multiple_connections = device.get("multipleConnections")
+    identity_unique = (
+        "multipleConnections" not in device or multiple_connections is False
+    )
     expiry_disabled = device.get("keyExpiryDisabled") is True
     expiry = _parse_rfc3339(device.get("expires"))
     explicitly_expired = device.get("expired") is True
@@ -269,8 +336,18 @@ def evaluate_device(
 
     return {
         "found": True,
-        "healthy": approved and key_valid and recently_seen,
+        "healthy": (
+            approved
+            and tailnet_member
+            and durable_identity
+            and identity_unique
+            and key_valid
+            and recently_seen
+        ),
         "approved": approved,
+        "tailnet_member": tailnet_member,
+        "durable_identity": durable_identity,
+        "identity_unique": identity_unique,
         "key_valid": key_valid,
         "key_expiring": key_expiring,
         "connected_to_control": connected_to_control,
@@ -358,8 +435,9 @@ def lambda_handler(event: Any, context: Any) -> dict[str, Any]:
             raise ValueError("KEY_WARNING_DAYS is outside the safe range")
 
         now_monotonic = time.monotonic()
-        token = _oauth_access_token(secret_arn, now_monotonic)
-        devices = _fetch_devices(token)
+        devices = _fetch_devices_with_one_auth_refresh(
+            secret_arn, now_monotonic
+        )
         router_device = _find_device(devices, router_id)
         vps_device = _find_device(devices, vps_id)
         if (

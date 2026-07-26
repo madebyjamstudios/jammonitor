@@ -24,11 +24,19 @@ printf '%s\n' "$*" >>"${MOCK_ARGS_FILE}"
 [ "${1:-}" = "--socket=${MOCK_EXPECTED_SOCKET}" ] || exit 91
 
 if [ "${2:-}" = "ping" ]; then
-    [ "${3:-}" = "--c=1" ] || exit 92
-    [ "${4:-}" = "--timeout=3s" ] || exit 93
-    [ "${5:-}" = "--until-direct=false" ] || exit 94
-    [ "${6:-}" = "--" ] || exit 95
-    [ -n "${7:-}" ] && [ "$#" -eq 7 ] || exit 96
+    [ "${3:-}" = "--tsmp" ] || exit 92
+    [ "${4:-}" = "--c=1" ] || exit 93
+    [ "${5:-}" = "--timeout=3s" ] || exit 94
+    [ "${6:-}" = "--until-direct=false" ] || exit 95
+    [ "${7:-}" = "--" ] || exit 96
+    [ -n "${8:-}" ] && [ "$#" -eq 8 ] || exit 97
+    if [ "${MOCK_REPLACE_PEER_DURING_PING:-0}" = "1" ]; then
+        replacement="${MOCK_CRITICAL_PEER_FILE}.replacement.$$"
+        printf '%s\n' "${MOCK_PEER_REPLACEMENT_VALUE:-100.104.78.43}" \
+            >"$replacement" || exit 98
+        chmod 0644 "$replacement" || exit 98
+        /bin/mv -f "$replacement" "$MOCK_CRITICAL_PEER_FILE" || exit 98
+    fi
     [ "${MOCK_PEER_MODE:-reachable}" = "reachable" ]
     exit
 fi
@@ -40,28 +48,70 @@ fi
 
 case "${MOCK_TAILSCALE_MODE:-running}" in
     running)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":true,"TailscaleIPs":["100.70.186.127"]},"Health":[],"AuthURL":"sentinel-auth-url"}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.70.186.127"]},"Health":[],"AuthURL":"sentinel-auth-url"}'
         ;;
     running_warning)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":true,"TailscaleIPs":["100.70.186.127"]},"Health":["sentinel-health-secret"],"AuthURL":"sentinel-auth-url"}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.70.186.127"]},"Health":["sentinel-health-secret"],"AuthURL":"sentinel-auth-url"}'
         ;;
     control_offline)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":false,"InEngine":true,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":false,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
         ;;
     tun_off)
-        printf '%s\n' '{"BackendState":"Running","TUN":false,"Self":{"Online":true,"InEngine":true,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
+        printf '%s\n' '{"BackendState":"Running","TUN":false,"Self":{"Online":true,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
         ;;
-    engine_off)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":false,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
+    live_1_98_9)
+        printf '%s\n' '{"Version":"1.98.9","BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":false,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
+        ;;
+    multiple_addresses)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.70.186.127","fd7a:115c:a1e0::2"]},"Health":[]}'
         ;;
     no_address)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":true,"TailscaleIPs":[]},"Health":[]}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":[]},"Health":[]}'
         ;;
     invalid_address)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"InEngine":true,"TailscaleIPs":["100.64.not-an-ip"]},"Health":[]}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.64.not-an-ip"]},"Health":[]}'
+        ;;
+    ipv4_lower_bound)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.64.0.0"]},"Health":[]}'
+        ;;
+    ipv4_upper_bound)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.127.255.255"]},"Health":[]}'
+        ;;
+    ipv4_below_range)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.63.255.255"]},"Health":[]}'
+        ;;
+    ipv4_above_range)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.128.0.0"]},"Health":[]}'
+        ;;
+    ipv4_noncanonical)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.064.0.1"]},"Health":[]}'
+        ;;
+    ipv4_trailing_newline)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["100.70.186.127\n"]},"Health":[]}'
+        ;;
+    ipv6_full)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e0:0000:0000:0000:0000:0001"]},"Health":[]}'
+        ;;
+    ipv6_compressed)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["FD7A:115C:A1E0::1"]},"Health":[]}'
+        ;;
+    ipv6_too_few)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e0:1"]},"Health":[]}'
+        ;;
+    ipv6_hextet_too_long)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e0:00000::1"]},"Health":[]}'
+        ;;
+    ipv6_double_compression)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e0::1::2"]},"Health":[]}'
+        ;;
+    ipv6_too_many)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e0:0:0:0:0:0:1"]},"Health":[]}'
+        ;;
+    ipv6_wrong_prefix)
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"Online":true,"TailscaleIPs":["fd7a:115c:a1e1::1"]},"Health":[]}'
         ;;
     running_bad_schema)
-        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"InEngine":true,"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
+        printf '%s\n' '{"BackendState":"Running","TUN":true,"Self":{"TailscaleIPs":["100.70.186.127"]},"Health":[]}'
         ;;
     needs_login)
         printf '%s\n' '{"BackendState":"NeedsLogin","Health":[],"AuthURL":"sentinel-auth-url"}'
@@ -81,9 +131,28 @@ case "${MOCK_TAILSCALE_MODE:-running}" in
     health_bad_schema)
         printf '%s\n' '{"BackendState":"Running","Health":"sentinel-health-secret"}'
         ;;
+    health_missing)
+        printf '%s\n' '{"BackendState":"Running"}'
+        ;;
+    health_null)
+        printf '%s\n' '{"BackendState":"Running","Health":null}'
+        ;;
+    health_nonstring)
+        printf '%s\n' '{"BackendState":"Running","Health":[7]}'
+        ;;
+    health_oversized_string)
+        printf '%s\n' '{"BackendState":"Running","Health":["sentinel-oversized"]}'
+        ;;
+    health_too_many)
+        printf '%s\n' '{"BackendState":"Running","Health":["sentinel-too-many"]}'
+        ;;
     command_error)
         printf '%s\n' 'sentinel-command-error sentinel-auth-url' >&2
         exit 1
+        ;;
+    oversized_output)
+        dd if=/dev/zero bs=1024 count=256 2>/dev/null |
+            tr '\000' x
         ;;
     timeout)
         exit 88
@@ -118,14 +187,18 @@ raw="$(cat "$file")"
 case "$query" in
     *'.BackendState | type == "string"'*)
         case "$raw" in
-            not-json*|*'"Health":"'* ) exit 1 ;;
-            *'"BackendState":"'* ) exit 0 ;;
+            not-json*|*'"Health":"'*|*'"Health":null'*|\
+            *'"Health":[7]'*|*'"Health":["sentinel-oversized"]'*|\
+            *'"Health":["sentinel-too-many"]'*)
+                exit 1
+                ;;
+            *'"BackendState":"'*'"Health":['*) exit 0 ;;
             *) exit 1 ;;
         esac
         ;;
     *'.TUN | type == "boolean"'*)
         case "$raw" in
-            *'"BackendState":"Running"'*'"Online":'*'"InEngine":'*'"TailscaleIPs":['*) exit 0 ;;
+            *'"BackendState":"Running"'*'"Online":'*'"TailscaleIPs":['*) exit 0 ;;
             *) exit 1 ;;
         esac
         ;;
@@ -142,10 +215,21 @@ case "$query" in
     '.Self.Online')
         case "$raw" in *'"Online":true'*) printf 'true\n' ;; *) printf 'false\n' ;; esac
         ;;
-    '.Self.InEngine')
-        case "$raw" in *'"InEngine":true'*) printf 'true\n' ;; *) printf 'false\n' ;; esac
+    *'.Self.TailscaleIPs[]'*'select(test('*)
+        case "$raw" in
+            *'"TailscaleIPs":[]'*|*'not-an-ip'*) exit 0 ;;
+            *'"TailscaleIPs":["100.70.186.127","fd7a:115c:a1e0::2"]'*)
+                printf '%s\n' \
+                    '100.70.186.127' \
+                    'fd7a:115c:a1e0::2'
+                exit 0
+                ;;
+        esac
+        value="${raw#*\"TailscaleIPs\":[\"}"
+        [ "$value" != "$raw" ] || exit 1
+        printf '%s\n' "${value%%\"*}"
         ;;
-    '(.Health // []) | length')
+    '.Health | length')
         case "$raw" in
             *'"Health":[]'*) printf '0\n' ;;
             *'"Health":['*) printf '1\n' ;;
@@ -194,16 +278,67 @@ case "${1:-}" in
         [ "${4:-}" = "--property=NRestarts" ] || exit 98
         [ "${5:-}" = "--property=ExecMainStartTimestampMonotonic" ] || exit 98
         [ "${6:-}" = "tailscaled.service" ] || exit 99
-        [ "${MOCK_SERVICE_STATE:-active}" != "query_error" ] || exit 4
-        printf 'ActiveState=%s\n' "${MOCK_SERVICE_STATE:-active}"
-        printf 'UnitFileState=%s\n' "${MOCK_UNIT_FILE_STATE:-enabled}"
-        printf 'NRestarts=%s\n' "${MOCK_NRESTARTS:-0}"
+        show_count_file="${MOCK_SHOW_COUNT_FILE:-${MOCK_CASE_DIR}/show-count}"
+        show_count=0
+        if [ -f "$show_count_file" ]; then
+            show_count="$(cat "$show_count_file" 2>/dev/null)"
+            case "$show_count" in
+                0|[1-9]|[1-9][0-9]*) ;;
+                *) exit 97 ;;
+            esac
+        fi
+        show_count=$((show_count + 1))
+        printf '%s\n' "$show_count" >"$show_count_file"
+        if [ "$show_count" -ge 3 ] &&
+           [ "${MOCK_SHOW_PUBLISH_MAINTENANCE:-0}" = "1" ] &&
+           [ ! -e "${MOCK_MAINTENANCE_FILE:?}" ]; then
+            printf '%s %s\n' \
+                "${MOCK_MAINTENANCE_CREATED:?}" \
+                "${MOCK_MAINTENANCE_EXPIRY:?}" \
+                >"${MOCK_MAINTENANCE_FILE:?}" || exit 1
+            chmod 0600 "${MOCK_MAINTENANCE_FILE:?}" || exit 1
+        fi
+
+        service_state="${MOCK_SERVICE_STATE:-active}"
+        unit_file_state="${MOCK_UNIT_FILE_STATE:-enabled}"
+        nrestarts="${MOCK_NRESTARTS:-0}"
+        process_start_usec="${MOCK_PROCESS_START_USEC:-100000000}"
+        if [ "$show_count" -eq 2 ]; then
+            service_state="${MOCK_JOIN_SERVICE_STATE:-$service_state}"
+            unit_file_state="${MOCK_JOIN_UNIT_FILE_STATE:-$unit_file_state}"
+            nrestarts="${MOCK_JOIN_NRESTARTS:-$nrestarts}"
+            process_start_usec="${MOCK_JOIN_PROCESS_START_USEC:-$process_start_usec}"
+        elif [ "$show_count" -ge 3 ]; then
+            if [ -n "${MOCK_GENERATION_CHANGE_FILE:-}" ] &&
+               [ -f "$MOCK_GENERATION_CHANGE_FILE" ]; then
+                service_state="${MOCK_AFTER_MEMORY_SERVICE_STATE:-${MOCK_JOIN_SERVICE_STATE:-$service_state}}"
+                unit_file_state="${MOCK_AFTER_MEMORY_UNIT_FILE_STATE:-${MOCK_JOIN_UNIT_FILE_STATE:-$unit_file_state}}"
+                nrestarts="${MOCK_AFTER_MEMORY_NRESTARTS:-${MOCK_JOIN_NRESTARTS:-$nrestarts}}"
+                process_start_usec="${MOCK_AFTER_MEMORY_PROCESS_START_USEC:-${MOCK_JOIN_PROCESS_START_USEC:-$process_start_usec}}"
+            else
+                service_state="${MOCK_PRE_RESTART_SERVICE_STATE:-${MOCK_JOIN_SERVICE_STATE:-$service_state}}"
+                unit_file_state="${MOCK_PRE_RESTART_UNIT_FILE_STATE:-${MOCK_JOIN_UNIT_FILE_STATE:-$unit_file_state}}"
+                nrestarts="${MOCK_PRE_RESTART_NRESTARTS:-${MOCK_JOIN_NRESTARTS:-$nrestarts}}"
+                process_start_usec="${MOCK_PRE_RESTART_PROCESS_START_USEC:-${MOCK_JOIN_PROCESS_START_USEC:-$process_start_usec}}"
+            fi
+        fi
+
+        [ "$service_state" != "query_error" ] || exit 4
+        printf 'ActiveState=%s\n' "$service_state"
+        printf 'UnitFileState=%s\n' "$unit_file_state"
+        printf 'NRestarts=%s\n' "$nrestarts"
         printf 'ExecMainStartTimestampMonotonic=%s\n' \
-            "${MOCK_PROCESS_START_USEC:-100000000}"
+            "$process_start_usec"
         ;;
     restart)
         [ "${2:-}" = "tailscaled.service" ] || exit 99
         printf '%s\n' restart >>"${MOCK_ACTIONS_FILE}"
+        if [ "${MOCK_RESTART_BLOCK:-0}" = "1" ]; then
+            fifo="${MOCK_CASE_DIR}/restart-fifo"
+            [ -p "$fifo" ] || mkfifo "$fifo"
+            printf '%s\n' "$$" >"${MOCK_CASE_DIR}/restart-child-pid"
+            read -r ignored <"$fifo"
+        fi
         exit "${MOCK_RESTART_RC:-0}"
         ;;
     *)
@@ -215,6 +350,37 @@ EOF
 cat >"${MOCK_BIN}/logger" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${MOCK_LOG_FILE}"
+EOF
+
+cat >"${MOCK_BIN}/mv" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = "-T" ] || exit 2
+[ "${2:-}" = "-f" ] || exit 2
+[ "$#" -eq 4 ] || exit 2
+source="$3"
+target="$4"
+if [ "${MOCK_MV_FAIL_MEMORY:-0}" = "1" ] &&
+   [ "${target##*/}" = "memory" ]; then
+    exit 1
+fi
+[ ! -d "$target" ] && [ ! -L "$target" ] || exit 1
+/bin/mv -f "$source" "$target" || exit 1
+if [ "${MOCK_MV_GENERATION_CHANGE:-0}" = "1" ] &&
+   [ "${target##*/}" = "memory" ] &&
+   [ -n "${MOCK_GENERATION_CHANGE_FILE:-}" ]; then
+    : >"$MOCK_GENERATION_CHANGE_FILE"
+fi
+if [ "${MOCK_REPLACE_PEER_AFTER_MEMORY:-0}" = "1" ] &&
+   [ "${target##*/}" = "memory" ] &&
+   [ ! -e "${MOCK_CASE_DIR}/peer-replaced-after-memory" ]; then
+    replacement="${MOCK_CRITICAL_PEER_FILE}.replacement.$$"
+    printf '%s\n' "${MOCK_PEER_REPLACEMENT_VALUE:-100.104.78.43}" \
+        >"$replacement" || exit 1
+    chmod 0644 "$replacement" || exit 1
+    /bin/mv -f "$replacement" "$MOCK_CRITICAL_PEER_FILE" || exit 1
+    : >"${MOCK_CASE_DIR}/peer-replaced-after-memory" || exit 1
+fi
+exit 0
 EOF
 
 cat >"${MOCK_BIN}/flock" <<'EOF'
@@ -230,11 +396,31 @@ except BlockingIOError:
     raise SystemExit(1)
 EOF
 
+cat >"${MOCK_BIN}/stat" <<'EOF'
+#!/usr/bin/env python3
+import os
+import stat
+import sys
+
+if len(sys.argv) != 4 or sys.argv[1] != "-c":
+    raise SystemExit(2)
+if sys.argv[2] != "%u:%g:%a:%h:%d:%i:%s":
+    raise SystemExit(2)
+value = os.lstat(sys.argv[3])
+mode = format(stat.S_IMODE(value.st_mode), "o")
+print(
+    f"{value.st_uid}:{value.st_gid}:{mode}:{value.st_nlink}:"
+    f"{value.st_dev}:{value.st_ino}:{value.st_size}"
+)
+EOF
+
 chmod 0755 "${MOCK_BIN}/tailscale" "${MOCK_BIN}/jq" \
     "${MOCK_BIN}/timeout" "${MOCK_BIN}/systemctl" "${MOCK_BIN}/logger" \
-    "${MOCK_BIN}/flock"
+    "${MOCK_BIN}/mv" "${MOCK_BIN}/flock" "${MOCK_BIN}/stat"
 
 PASS_COUNT=0
+EXPECTED_TEST_UID="$(id -u)"
+EXPECTED_TEST_GID="$(id -g)"
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -290,15 +476,58 @@ run_once() {
         5) _service_state="activating" ;;
         *) _service_state="query_error" ;;
     esac
+    _unit_file_state="${UNIT_FILE_STATE_VALUE:-enabled}"
+    _nrestarts="${NRESTARTS_VALUE:-0}"
+    _process_start_usec="${PROCESS_START_USEC_VALUE:-100000000}"
+    _join_service_state="${JOIN_SERVICE_STATE_VALUE:-$_service_state}"
+    _join_unit_file_state="${JOIN_UNIT_FILE_STATE_VALUE:-$_unit_file_state}"
+    _join_nrestarts="${JOIN_NRESTARTS_VALUE:-$_nrestarts}"
+    _join_process_start_usec="${JOIN_PROCESS_START_USEC_VALUE:-$_process_start_usec}"
+    _pre_restart_service_state="${PRE_RESTART_SERVICE_STATE_VALUE:-$_join_service_state}"
+    _pre_restart_unit_file_state="${PRE_RESTART_UNIT_FILE_STATE_VALUE:-$_join_unit_file_state}"
+    _pre_restart_nrestarts="${PRE_RESTART_NRESTARTS_VALUE:-$_join_nrestarts}"
+    _pre_restart_process_start_usec="${PRE_RESTART_PROCESS_START_USEC_VALUE:-$_join_process_start_usec}"
+    _after_memory_service_state="${AFTER_MEMORY_SERVICE_STATE_VALUE:-$_pre_restart_service_state}"
+    _after_memory_unit_file_state="${AFTER_MEMORY_UNIT_FILE_STATE_VALUE:-$_pre_restart_unit_file_state}"
+    _after_memory_nrestarts="${AFTER_MEMORY_NRESTARTS_VALUE:-$_pre_restart_nrestarts}"
+    _after_memory_process_start_usec="${AFTER_MEMORY_PROCESS_START_USEC_VALUE:-$_pre_restart_process_start_usec}"
+    _show_count_file="${CASE_DIR}/show-count.${_mono}.${_epoch}"
+    _generation_change_file="${_show_count_file}.memory-committed"
+    rm -f "$_show_count_file"
+    rm -f "$_generation_change_file"
     env \
         MOCK_TAILSCALE_MODE="$_mode" \
         MOCK_PEER_MODE="${PEER_MODE_VALUE:-reachable}" \
         MOCK_EXPECTED_SOCKET="$SOCKET_PATH" \
         MOCK_SERVICE_STATE="$_service_state" \
-        MOCK_UNIT_FILE_STATE="${UNIT_FILE_STATE_VALUE:-enabled}" \
-        MOCK_NRESTARTS="${NRESTARTS_VALUE:-0}" \
-        MOCK_PROCESS_START_USEC="${PROCESS_START_USEC_VALUE:-100000000}" \
+        MOCK_UNIT_FILE_STATE="$_unit_file_state" \
+        MOCK_NRESTARTS="$_nrestarts" \
+        MOCK_PROCESS_START_USEC="$_process_start_usec" \
+        MOCK_JOIN_SERVICE_STATE="$_join_service_state" \
+        MOCK_JOIN_UNIT_FILE_STATE="$_join_unit_file_state" \
+        MOCK_JOIN_NRESTARTS="$_join_nrestarts" \
+        MOCK_JOIN_PROCESS_START_USEC="$_join_process_start_usec" \
+        MOCK_PRE_RESTART_SERVICE_STATE="$_pre_restart_service_state" \
+        MOCK_PRE_RESTART_UNIT_FILE_STATE="$_pre_restart_unit_file_state" \
+        MOCK_PRE_RESTART_NRESTARTS="$_pre_restart_nrestarts" \
+        MOCK_PRE_RESTART_PROCESS_START_USEC="$_pre_restart_process_start_usec" \
+        MOCK_AFTER_MEMORY_SERVICE_STATE="$_after_memory_service_state" \
+        MOCK_AFTER_MEMORY_UNIT_FILE_STATE="$_after_memory_unit_file_state" \
+        MOCK_AFTER_MEMORY_NRESTARTS="$_after_memory_nrestarts" \
+        MOCK_AFTER_MEMORY_PROCESS_START_USEC="$_after_memory_process_start_usec" \
+        MOCK_SHOW_COUNT_FILE="$_show_count_file" \
+        MOCK_GENERATION_CHANGE_FILE="$_generation_change_file" \
+        MOCK_MV_GENERATION_CHANGE="${MV_GENERATION_CHANGE_VALUE:-0}" \
+        MOCK_REPLACE_PEER_DURING_PING="${REPLACE_PEER_DURING_PING_VALUE:-0}" \
+        MOCK_REPLACE_PEER_AFTER_MEMORY="${REPLACE_PEER_AFTER_MEMORY_VALUE:-0}" \
+        MOCK_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
+        MOCK_PEER_REPLACEMENT_VALUE="${PEER_REPLACEMENT_VALUE:-100.104.78.43}" \
+        MOCK_SHOW_PUBLISH_MAINTENANCE="${SHOW_PUBLISH_MAINTENANCE_VALUE:-0}" \
+        MOCK_MAINTENANCE_FILE="${STATE_DIR}/maintenance-until" \
+        MOCK_MAINTENANCE_CREATED="$_epoch" \
+        MOCK_MAINTENANCE_EXPIRY="$((_epoch + 600))" \
         MOCK_RESTART_RC="${RESTART_RC_VALUE:-0}" \
+        MOCK_RESTART_BLOCK="${RESTART_BLOCK_VALUE:-0}" \
         MOCK_ACTIONS_FILE="$ACTIONS_FILE" \
         MOCK_LOG_FILE="$LOG_FILE" \
         MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
@@ -312,7 +541,15 @@ run_once() {
         WATCHDOG_JQ_CMD="${MOCK_BIN}/jq" \
         WATCHDOG_LOGGER_CMD="${MOCK_BIN}/logger" \
         WATCHDOG_FLOCK_CMD="${MOCK_BIN}/flock" \
+        WATCHDOG_MV_CMD="${MOCK_BIN}/mv" \
+        WATCHDOG_DD_CMD="/bin/dd" \
+        WATCHDOG_STAT_CMD="${MOCK_BIN}/stat" \
+        WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
+        WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
+        WATCHDOG_CONTINUITY_MAX_GAP=30 \
+        MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
         WATCHDOG_STATUS_TIMEOUT=1 \
         WATCHDOG_PEER_TIMEOUT=1 \
         WATCHDOG_RESTART_TIMEOUT=1 \
@@ -325,16 +562,23 @@ run_once() {
         /bin/dash "$WATCHDOG" --once
 }
 
-start_blocking_watchdog() {
+start_restart_blocking_watchdog() {
+    _restart_show_count_file="${CASE_DIR}/restart-show-count"
+    rm -f "$_restart_show_count_file"
     env \
-        MOCK_TAILSCALE_MODE=block \
+        MOCK_TAILSCALE_MODE=timeout \
         MOCK_PEER_MODE=reachable \
         MOCK_EXPECTED_SOCKET="$SOCKET_PATH" \
         MOCK_SERVICE_STATE=active \
         MOCK_UNIT_FILE_STATE=enabled \
         MOCK_NRESTARTS=0 \
         MOCK_PROCESS_START_USEC=100000000 \
+        MOCK_SHOW_COUNT_FILE="$_restart_show_count_file" \
         MOCK_RESTART_RC=0 \
+        MOCK_RESTART_BLOCK=1 \
+        MOCK_REPLACE_PEER_DURING_PING=0 \
+        MOCK_REPLACE_PEER_AFTER_MEMORY=0 \
+        MOCK_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
         MOCK_ACTIONS_FILE="$ACTIONS_FILE" \
         MOCK_LOG_FILE="$LOG_FILE" \
         MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
@@ -348,7 +592,66 @@ start_blocking_watchdog() {
         WATCHDOG_JQ_CMD="${MOCK_BIN}/jq" \
         WATCHDOG_LOGGER_CMD="${MOCK_BIN}/logger" \
         WATCHDOG_FLOCK_CMD="${MOCK_BIN}/flock" \
+        WATCHDOG_MV_CMD="${MOCK_BIN}/mv" \
+        WATCHDOG_DD_CMD="/bin/dd" \
+        WATCHDOG_STAT_CMD="${MOCK_BIN}/stat" \
+        WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
+        WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
         WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
+        WATCHDOG_CONTINUITY_MAX_GAP=30 \
+        MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
+        WATCHDOG_STATUS_TIMEOUT=1 \
+        WATCHDOG_PEER_TIMEOUT=1 \
+        WATCHDOG_RESTART_TIMEOUT=30 \
+        WATCHDOG_FAILURE_THRESHOLD=3 \
+        WATCHDOG_VALID_STREAK_REQUIRED=5 \
+        WATCHDOG_BOOT_GRACE=0 \
+        WATCHDOG_MAINTENANCE_MAX_FUTURE=3600 \
+        WATCHDOG_NOW_MONO=1603 \
+        WATCHDOG_NOW_EPOCH=2403 \
+        /bin/dash "$WATCHDOG" --once &
+    RESTART_WATCHDOG_PID=$!
+}
+
+start_blocking_watchdog() {
+    _blocking_show_count_file="${CASE_DIR}/blocking-show-count"
+    rm -f "$_blocking_show_count_file"
+    env \
+        MOCK_TAILSCALE_MODE=block \
+        MOCK_PEER_MODE=reachable \
+        MOCK_EXPECTED_SOCKET="$SOCKET_PATH" \
+        MOCK_SERVICE_STATE=active \
+        MOCK_UNIT_FILE_STATE=enabled \
+        MOCK_NRESTARTS=0 \
+        MOCK_PROCESS_START_USEC=100000000 \
+        MOCK_SHOW_COUNT_FILE="$_blocking_show_count_file" \
+        MOCK_RESTART_RC=0 \
+        MOCK_REPLACE_PEER_DURING_PING=0 \
+        MOCK_REPLACE_PEER_AFTER_MEMORY=0 \
+        MOCK_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
+        MOCK_ACTIONS_FILE="$ACTIONS_FILE" \
+        MOCK_LOG_FILE="$LOG_FILE" \
+        MOCK_ARGS_FILE="$CLI_ARGS_FILE" \
+        MOCK_SYSTEMCTL_ARGS_FILE="$SYSTEMCTL_ARGS_FILE" \
+        MOCK_CASE_DIR="$CASE_DIR" \
+        TAILSCALE_CLI="${MOCK_BIN}/tailscale" \
+        TAILSCALE_SOCKET="$SOCKET_PATH" \
+        WATCHDOG_CRITICAL_PEER_FILE="$CRITICAL_PEER_PATH" \
+        WATCHDOG_SYSTEMCTL_CMD="${MOCK_BIN}/systemctl" \
+        WATCHDOG_TIMEOUT_CMD="${MOCK_BIN}/timeout" \
+        WATCHDOG_JQ_CMD="${MOCK_BIN}/jq" \
+        WATCHDOG_LOGGER_CMD="${MOCK_BIN}/logger" \
+        WATCHDOG_FLOCK_CMD="${MOCK_BIN}/flock" \
+        WATCHDOG_MV_CMD="${MOCK_BIN}/mv" \
+        WATCHDOG_DD_CMD="/bin/dd" \
+        WATCHDOG_STAT_CMD="${MOCK_BIN}/stat" \
+        WATCHDOG_EXPECTED_ROOT_UID="$EXPECTED_TEST_UID" \
+        WATCHDOG_EXPECTED_ROOT_GID="$EXPECTED_TEST_GID" \
+        WATCHDOG_STATE_DIR="$STATE_DIR" \
+        WATCHDOG_MEMORY_FILE="${MEMORY_FILE_VALUE:-${STATE_DIR}/memory}" \
+        WATCHDOG_CONTINUITY_MAX_GAP=30 \
+        MOCK_MV_FAIL_MEMORY="${MV_FAIL_MEMORY_VALUE:-0}" \
         WATCHDOG_STATUS_TIMEOUT=30 \
         WATCHDOG_PEER_TIMEOUT=1 \
         WATCHDOG_RESTART_TIMEOUT=1 \
@@ -399,9 +702,15 @@ sh -n "$WATCHDOG"
 dash -n "$WATCHDOG"
 sh -n "${REPO_DIR}/vps/install-tailscale-watchdog.sh"
 dash -n "${REPO_DIR}/vps/install-tailscale-watchdog.sh"
+grep -qx 'RECOVERY_MAX_ATTEMPTS=3' "$WATCHDOG" &&
+    grep -qx 'RECOVERY_RETRY_SHORT=60' "$WATCHDOG" &&
+    grep -qx 'RECOVERY_RETRY_LONG=300' "$WATCHDOG" ||
+    fail "bounded recovery authority is not the fixed 3/60/300 contract"
+pass "bounded recovery authority is fixed at three attempts with 60s and 300s cooldowns"
 
 new_case running
 run_once running 0 200 1000
+assert_json '"schema":3'
 assert_json '"status":"running"'
 assert_json '"localapi_valid":true'
 assert_json '"healthy":true'
@@ -409,7 +718,6 @@ assert_json '"connected":true'
 assert_json '"degraded":false'
 assert_json '"control_online":true'
 assert_json '"tun_available":true'
-assert_json '"in_engine":true'
 assert_json '"tailnet_ip_present":true'
 assert_json '"health_warning":false'
 assert_json '"connectivity_uptime_seconds":0'
@@ -439,6 +747,160 @@ assert_json '"connectivity_uptime_seconds":0'
 assert_json '"recovery_count":0'
 assert_no_action
 pass "process generation exposes crashes and resets connected uptime"
+
+new_case process_generation_evidence_gap
+run_once running 0 200 1000
+PROCESS_START_USEC_VALUE=0
+run_once running 0 215 1015
+assert_json '"process_started_monotonic_usec":null'
+assert_json '"status":"running_degraded"'
+assert_json '"reason":"process_generation_unknown"'
+assert_json '"healthy":false'
+assert_json '"connected":true'
+assert_json '"connectivity_uptime_seconds":0'
+PROCESS_START_USEC_VALUE=100000000
+run_once running 0 230 1030
+unset PROCESS_START_USEC_VALUE
+assert_json '"process_started_monotonic_usec":100000000'
+assert_json '"connectivity_uptime_seconds":0'
+assert_no_action
+pass "known generation cannot bridge an intervening generation-evidence gap"
+
+new_case future_process_generation
+PROCESS_START_USEC_VALUE=300000000
+run_once running 0 200 1000
+unset PROCESS_START_USEC_VALUE
+assert_json '"process_started_monotonic_usec":null'
+assert_json '"process_uptime_seconds":null'
+assert_json '"status":"running_degraded"'
+assert_json '"reason":"process_generation_unknown"'
+assert_json '"healthy":false'
+assert_json '"connected":true'
+assert_no_action
+pass "future systemd process timestamps cannot become healthy evidence"
+
+new_case generation-replaced-during-semantic-probe
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+JOIN_PROCESS_START_USEC_VALUE=200000000
+run_once running 0 210 1010
+unset JOIN_PROCESS_START_USEC_VALUE
+assert_json '"status":"supervisor_generation_changed"'
+assert_json '"reason":"supervisor_generation_changed"'
+assert_json '"service_active":false'
+assert_json '"localapi_valid":false'
+assert_json '"connected":false'
+assert_json '"healthy":false'
+assert_json '"degraded":true'
+assert_json '"process_started_monotonic_usec":null'
+assert_json '"connectivity_uptime_seconds":null'
+assert_json '"consecutive_eligible_failures":0'
+assert_json '"action":"suppressed_generation_change"'
+[ "$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')" -eq 2 ] ||
+    fail "generation race did not occur after LocalAPI and peer probes"
+[ "$(grep -c '^show ' "$SYSTEMCTL_ARGS_FILE")" -eq 2 ] ||
+    fail "healthy semantic observation was not joined to a second systemd read"
+assert_no_action
+pass "a generation replacement after LocalAPI and peer probes fails closed"
+
+new_case generation-replaced-before-threshold-restart
+run_once timeout 0 220 1020
+run_once timeout 0 221 1021
+MV_GENERATION_CHANGE_VALUE=1
+AFTER_MEMORY_PROCESS_START_USEC_VALUE=200000000
+run_once timeout 0 222 1022
+unset MV_GENERATION_CHANGE_VALUE AFTER_MEMORY_PROCESS_START_USEC_VALUE
+assert_json '"status":"supervisor_generation_changed"'
+assert_json '"reason":"supervisor_generation_changed"'
+assert_json '"eligible_failure":false'
+assert_json '"consecutive_eligible_failures":0'
+assert_json '"recovery_latched":false'
+assert_json '"recovery_count":0'
+assert_json '"action":"suppressed_generation_change"'
+grep -Fqx 'consecutive_failures=0' "${STATE_DIR}/memory" ||
+    fail "pre-restart generation race left a durable failure streak"
+grep -Fqx 'recovery_latched=0' "${STATE_DIR}/memory" ||
+    fail "pre-restart generation race left a false durable latch"
+[ "$(grep -c '^show ' "$SYSTEMCTL_ARGS_FILE")" -eq 7 ] ||
+    fail "threshold recovery lacked the immediate third systemd identity read"
+assert_no_action
+pass "a replacement after latch persistence and before restart is suppressed"
+
+new_case maintenance-published-before-threshold-restart
+run_once timeout 0 220 1020
+run_once timeout 0 221 1021
+SHOW_PUBLISH_MAINTENANCE_VALUE=1
+run_once timeout 0 222 1022
+unset SHOW_PUBLISH_MAINTENANCE_VALUE
+assert_json '"maintenance_active":true'
+assert_json '"maintenance_state":"active"'
+assert_json '"eligible_failure":false'
+assert_json '"consecutive_eligible_failures":0'
+assert_json '"recovery_latched":false'
+assert_json '"recovery_count":0'
+assert_json '"action":"suppressed_maintenance"'
+grep -Fqx 'consecutive_failures=0' "${STATE_DIR}/memory" ||
+    fail "late maintenance race left a durable failure streak"
+grep -Fqx 'recovery_latched=0' "${STATE_DIR}/memory" ||
+    fail "late maintenance race left a false durable latch"
+assert_no_action
+pass "maintenance published during the final supervisor join suppresses restart durably"
+
+new_case inactive-becomes-live-before-recovery
+THRESHOLD_VALUE=1
+PRE_RESTART_SERVICE_STATE_VALUE=active
+PRE_RESTART_PROCESS_START_USEC_VALUE=200000000
+run_once running 3 230 1030
+unset THRESHOLD_VALUE PRE_RESTART_SERVICE_STATE_VALUE \
+    PRE_RESTART_PROCESS_START_USEC_VALUE
+assert_json '"status":"supervisor_generation_changed"'
+assert_json '"service_active":false'
+assert_json '"localapi_valid":false'
+assert_json '"connected":false'
+assert_json '"eligible_failure":false'
+assert_json '"consecutive_eligible_failures":0'
+assert_json '"recovery_latched":false'
+assert_json '"recovery_count":0'
+assert_json '"action":"suppressed_generation_change"'
+[ "$(grep -c '^show ' "$SYSTEMCTL_ARGS_FILE")" -eq 3 ] ||
+    fail "inactive recovery lacked both generation joins"
+assert_no_action
+pass "an inactive enabled unit that becomes live is never restarted as stale"
+
+new_case persistence_observation_gap
+run_once running 0 200 1000
+MV_FAIL_MEMORY_VALUE=1
+if run_once running 0 205 1005 2>/dev/null; then
+    fail "forced memory persistence failure unexpectedly succeeded"
+fi
+unset MV_FAIL_MEMORY_VALUE
+assert_json '"status":"watchdog_error"'
+assert_json '"reason":"state_persistence_failed"'
+[ -f "${STATE_DIR}/continuity-broken" ] ||
+    fail "persistence failure did not leave a continuity-break sentinel"
+run_once running 0 215 1015
+assert_json '"status":"running"'
+assert_json '"connectivity_uptime_seconds":0'
+[ ! -e "${STATE_DIR}/continuity-broken" ] ||
+    fail "successful reset did not clear the continuity-break sentinel"
+assert_no_action
+pass "uptime cannot bridge a known unpersisted observation"
+
+new_case critical_peer_contract_change
+run_once running 0 200 1000
+run_once running 0 215 1015
+assert_json '"connectivity_uptime_seconds":15'
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+run_once running 0 230 1030
+assert_json '"peer_reachable":true'
+assert_json '"connectivity_uptime_seconds":0'
+run_once running 0 245 1045
+assert_json '"connectivity_uptime_seconds":15'
+printf '%s\n' '100.104.78.43' >"$CRITICAL_PEER_PATH"
+run_once running 0 260 1060
+assert_json '"peer_reachable":true'
+assert_json '"connectivity_uptime_seconds":0'
+assert_no_action
+pass "adding or changing critical-peer proof starts a new uptime contract"
 
 new_case needs_login
 _i=1
@@ -498,7 +960,7 @@ assert_json '"connectivity_uptime_seconds":4'
 assert_no_action
 pass "control-plane loss degrades health without erasing connected uptime"
 
-for _delivery_mode in no_address invalid_address tun_off engine_off; do
+for _delivery_mode in no_address invalid_address tun_off; do
     new_case "delivery-${_delivery_mode}"
     run_once "$_delivery_mode" 0 550 1350
     assert_json '"status":"running_degraded"'
@@ -508,7 +970,72 @@ for _delivery_mode in no_address invalid_address tun_off engine_off; do
     assert_json '"connectivity_uptime_seconds":null'
     assert_no_action
 done
-pass "connected requires Running, tailnet address, TUN, and InEngine"
+pass "connected requires Running, a tailnet address, and the expected TUN"
+
+for _valid_ipv4_mode in ipv4_lower_bound ipv4_upper_bound; do
+    new_case "$_valid_ipv4_mode"
+    run_once "$_valid_ipv4_mode" 0 551 1351
+    assert_json '"status":"running"'
+    assert_json '"tailnet_ip_present":true'
+    assert_json '"connected":true'
+    assert_no_action
+done
+for _invalid_ipv4_mode in \
+    ipv4_below_range ipv4_above_range ipv4_noncanonical ipv4_trailing_newline
+do
+    new_case "$_invalid_ipv4_mode"
+    run_once "$_invalid_ipv4_mode" 0 551 1351
+    assert_json '"status":"running_degraded"'
+    assert_json '"reason":"address_missing"'
+    assert_json '"tailnet_ip_present":false'
+    assert_json '"connected":false'
+    assert_no_action
+done
+pass "IPv4 delivery remains bounded to canonical 100.64.0.0/10 literals"
+
+for _valid_ipv6_mode in ipv6_full ipv6_compressed; do
+    new_case "$_valid_ipv6_mode"
+    run_once "$_valid_ipv6_mode" 0 552 1352
+    assert_json '"schema":3'
+    assert_json '"status":"running"'
+    assert_json '"tailnet_ip_present":true'
+    assert_json '"connected":true'
+    assert_no_action
+done
+pass "full and compressed Tailscale ULA addresses satisfy strict IPv6 parsing"
+
+for _invalid_ipv6_mode in \
+    ipv6_too_few \
+    ipv6_hextet_too_long \
+    ipv6_double_compression \
+    ipv6_too_many \
+    ipv6_wrong_prefix
+do
+    new_case "$_invalid_ipv6_mode"
+    run_once "$_invalid_ipv6_mode" 0 553 1353
+    assert_json '"schema":3'
+    assert_json '"status":"running_degraded"'
+    assert_json '"reason":"address_missing"'
+    assert_json '"tailnet_ip_present":false'
+    assert_json '"connected":false'
+    assert_no_action
+done
+pass "malformed or out-of-prefix IPv6 strings cannot claim tailnet delivery"
+
+new_case live-1.98.9-self-in-engine-false
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+run_once live_1_98_9 0 555 1355
+assert_json '"status":"running"'
+assert_json '"healthy":true'
+assert_json '"connected":true'
+assert_json '"degraded":false'
+assert_json '"peer_state":"reachable"'
+assert_json '"peer_reachable":true'
+if grep -Fq '"in_engine":' "${STATE_DIR}/status.json"; then
+    fail "live-1.98.9-self-in-engine-false: peer-only field was republished"
+fi
+assert_no_action
+pass "Tailscale 1.98.9 Self.InEngine=false is healthy when delivery succeeds"
 
 new_case critical-peer
 printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
@@ -531,10 +1058,104 @@ assert_json '"connected":false'
 assert_json '"degraded":true'
 assert_json '"peer_reachable":false'
 assert_no_action
-pass "configured critical-peer reachability is required for connected"
+pass "a WireGuard TSMP response from the critical peer is required for connected"
+
+new_case critical-peer-replaced-during-ping
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+REPLACE_PEER_DURING_PING_VALUE=1
+run_once running 0 562 1362
+unset REPLACE_PEER_DURING_PING_VALUE
+assert_json '"status":"running_degraded"'
+assert_json '"reason":"critical_peer_invalid"'
+assert_json '"peer_state":"invalid_configuration"'
+assert_json '"peer_reachable":false'
+assert_json '"connected":false'
+[ "$(cat "$CRITICAL_PEER_PATH")" = "100.104.78.43" ] ||
+    fail "during-ping peer replacement fixture did not run"
+assert_no_action
+pass "an atomic peer replacement during TSMP invalidates the in-flight delivery proof"
+
+new_case critical-peer-replaced-before-publish
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+REPLACE_PEER_AFTER_MEMORY_VALUE=1
+run_once running 0 563 1363
+unset REPLACE_PEER_AFTER_MEMORY_VALUE
+assert_json '"status":"running_degraded"'
+assert_json '"reason":"critical_peer_invalid"'
+assert_json '"peer_state":"invalid_configuration"'
+assert_json '"peer_reachable":false'
+assert_json '"connected":false'
+[ -f "${STATE_DIR}/continuity-broken" ] ||
+    fail "prepublication peer replacement did not break continuity durably"
+assert_no_action
+pass "the final prepublication peer join rejects an atomic replacement"
+
+assert_invalid_vps_peer_config() {
+    _peer_cli_before="$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')"
+    run_once running 0 564 1364
+    assert_json '"status":"running_degraded"'
+    assert_json '"reason":"critical_peer_invalid"'
+    assert_json '"peer_state":"invalid_configuration"'
+    assert_json '"peer_reachable":false'
+    assert_json '"connected":false'
+    _peer_cli_after="$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')"
+    [ "$_peer_cli_after" -eq $((_peer_cli_before + 1)) ] ||
+        fail "invalid critical-peer configuration invoked a peer ping"
+    assert_no_action
+}
+
+new_case critical-peer-invalid-config
+: >"$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+printf '%s\n' router-magicdns-name >"$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+printf '%s\n\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+printf '100.104.78.42\r\n' >"$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+printf '%s\n' '100.104.78.42' >"$CRITICAL_PEER_PATH"
+chmod 0600 "$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+chmod 0644 "$CRITICAL_PEER_PATH"
+ln "$CRITICAL_PEER_PATH" "${CASE_DIR}/peer-hardlink"
+assert_invalid_vps_peer_config
+rm -f "${CASE_DIR}/peer-hardlink"
+python3 - "$CRITICAL_PEER_PATH" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(b"100.104.78.42\x00")
+PY
+assert_invalid_vps_peer_config
+rm -f "$CRITICAL_PEER_PATH"
+mkdir "$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+rmdir "$CRITICAL_PEER_PATH"
+printf '%s\n' '100.104.78.42' >"${CASE_DIR}/peer-real"
+ln -s "${CASE_DIR}/peer-real" "$CRITICAL_PEER_PATH"
+assert_invalid_vps_peer_config
+pass "only one exact Tailscale IP line can configure the critical peer"
+
+new_case critical-peer-self-target
+printf '%s\n' 'FD7A:115C:A1E0:0000:0000:0000:0000:0002' \
+    >"$CRITICAL_PEER_PATH"
+run_once multiple_addresses 0 565 1365
+assert_json '"schema":3'
+assert_json '"status":"running_degraded"'
+assert_json '"reason":"critical_peer_invalid"'
+assert_json '"peer_state":"invalid_configuration"'
+assert_json '"peer_reachable":false'
+assert_json '"connected":false'
+[ "$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')" -eq 1 ] ||
+    fail "self-targeted critical peer invoked a Tailscale ping"
+assert_no_action
+pass "equivalent IPv6 spelling cannot target a local Self.TailscaleIPs address"
 
 new_case schema_errors
-for _mode in malformed running_bad_schema health_bad_schema unknown; do
+for _mode in \
+    malformed running_bad_schema health_bad_schema health_missing health_null \
+    health_nonstring health_oversized_string health_too_many unknown
+do
     _i=1
     while [ "$_i" -le 4 ]; do
         run_once "$_mode" 0 "$((600 + _i))" "$((1400 + _i))"
@@ -548,6 +1169,29 @@ assert_no_action
 ! grep -R -q 'sentinel-' "$STATE_DIR" "$LOG_FILE" ||
     fail "schema error leaked raw status"
 pass "malformed and future schemas fail closed without restart"
+
+for _health_schema_mode in \
+    health_bad_schema health_missing health_null health_nonstring \
+    health_oversized_string health_too_many
+do
+    new_case "$_health_schema_mode"
+    run_once "$_health_schema_mode" 0 650 1450
+    assert_json '"status":"schema_error"'
+    assert_json '"reason":"status_schema_invalid"'
+    assert_json '"localapi_valid":false'
+    assert_json '"healthy":false'
+    assert_json '"connected":false'
+    assert_no_action
+done
+pass "Health must be a bounded array of strings and can never default healthy"
+
+new_case raw_status_cap
+run_once oversized_output 0 660 1460
+assert_json '"status":"command_error"'
+assert_json '"reason":"localapi_command_failed"'
+assert_json '"eligible_failure":false'
+assert_no_action
+pass "raw VPS LocalAPI output is constrained by a 64 KiB file limit"
 
 new_case command_error
 _i=1
@@ -619,6 +1263,21 @@ assert_json '"eligible_failure":false'
 assert_no_action
 pass "active but disabled unit remains operator-authoritative on socket loss"
 
+for _nonpersistent_state in disabled masked static enabled-runtime; do
+    new_case "active-nonpersistent-${_nonpersistent_state}"
+    UNIT_FILE_STATE_VALUE="$_nonpersistent_state"
+    run_once running 0 790 1599
+    assert_json '"status":"running_degraded"'
+    assert_json '"reason":"service_not_persistently_enabled"'
+    assert_json '"connected":true'
+    assert_json '"healthy":false'
+    assert_json '"degraded":true'
+    assert_json '"eligible_failure":false'
+    assert_no_action
+    unset UNIT_FILE_STATE_VALUE
+done
+pass "active runtime-only or disabled services cannot claim reboot durability"
+
 new_case supervisor_inactive
 _i=1
 while [ "$_i" -le 6 ]; do
@@ -629,9 +1288,9 @@ done
 assert_json '"status":"supervisor_inactive"'
 assert_json '"recovery_latched":true'
 assert_json '"recovery_count":1'
-assert_json '"action":"latched"'
+assert_json '"action":"recovery_cooldown"'
 assert_json '"process_uptime_seconds":null'
-pass "persistent supervisor inactivity receives exactly one restart"
+pass "persistent supervisor inactivity receives one restart then cooldown"
 
 new_case timeout
 _i=1
@@ -645,19 +1304,19 @@ assert_json '"eligible_failure":true'
 assert_json '"recovery_count":1'
 pass "proven LocalAPI timeout receives exactly one restart"
 
-for _timeout_mode in timeout_137 timeout_143; do
-    new_case "$_timeout_mode"
+for _interrupted_mode in timeout_137 timeout_143; do
+    new_case "$_interrupted_mode"
     _i=1
     while [ "$_i" -le 4 ]; do
-        run_once "$_timeout_mode" 0 "$((950 + _i))" "$((1750 + _i))"
+        run_once "$_interrupted_mode" 0 "$((950 + _i))" "$((1750 + _i))"
         _i=$((_i + 1))
     done
-    [ "$(action_count)" -eq 1 ] ||
-        fail "${_timeout_mode}: timeout-compatible exit did not latch one restart"
-    assert_json '"status":"localapi_timeout"'
-    assert_json '"eligible_failure":true'
+    assert_json '"status":"command_error"'
+    assert_json '"reason":"localapi_command_failed"'
+    assert_json '"eligible_failure":false'
+    assert_no_action
 done
-pass "timeout exits 137 and 143 receive the same bounded recovery semantics"
+pass "ambiguous signal-derived GNU timeout exits cannot authorize restart"
 
 new_case rearm
 _i=1
@@ -741,6 +1400,55 @@ assert_json '"maintenance_state":"malformed"'
     fail "malformed maintenance content leaked"
 pass "malformed maintenance marker is retained, surfaced, and redacted"
 
+new_case multiline_maintenance
+printf '%s\n%s\n' '1000 2600' 'unexpected-second-line' \
+    >"${STATE_DIR}/maintenance-until"
+run_once timeout 0 1361 2000
+run_once timeout 0 1362 2001
+run_once timeout 0 1363 2002
+assert_json '"maintenance_active":false'
+assert_json '"maintenance_state":"malformed"'
+[ "$(action_count)" -eq 1 ] ||
+    fail "extra maintenance-marker content suppressed recovery"
+pass "maintenance suppression requires exactly one validated line"
+
+new_case byte_exact_maintenance
+for _marker in '08 09' '9999999999999999999 9999999999999999999'; do
+    printf '%s\n' "$_marker" >"${STATE_DIR}/maintenance-until"
+    run_once timeout 0 1371 2000
+    assert_json '"maintenance_active":false'
+    assert_json '"maintenance_state":"malformed"'
+done
+python3 - "${STATE_DIR}/maintenance-until" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(b"1000 2600\x00")
+PY
+run_once timeout 0 1372 2000
+assert_json '"maintenance_active":false'
+assert_json '"maintenance_state":"malformed"'
+run_once timeout 0 1373 2001
+[ "$(action_count)" -eq 1 ] ||
+    fail "byte-invalid maintenance marker suppressed recovery"
+pass "maintenance epochs are canonical bounded decimals with exact bytes"
+
+new_case oversized_maintenance
+python3 - "${STATE_DIR}/maintenance-until" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(b"1" * (1024 * 1024))
+PY
+run_once timeout 0 1381 2000
+run_once timeout 0 1382 2001
+run_once timeout 0 1383 2002
+assert_json '"maintenance_active":false'
+assert_json '"maintenance_state":"malformed"'
+[ "$(action_count)" -eq 1 ] ||
+    fail "oversized maintenance marker suppressed bounded recovery"
+pass "oversized maintenance input is rejected before content scanning"
+
 new_case boot_grace
 BOOT_GRACE_VALUE=120
 run_once timeout 0 10 2100
@@ -764,7 +1472,177 @@ unset RESTART_RC_VALUE
 [ "$(action_count)" -eq 1 ] || fail "failed restart was retried in same episode"
 assert_json '"recovery_latched":true'
 assert_json '"recovery_count":1'
-pass "failed restart remains latched against a restart storm"
+assert_json '"action":"recovery_cooldown"'
+pass "failed restart retains a durable cooldown against a restart storm"
+
+new_case bounded-recovery-retries
+THRESHOLD_VALUE=1
+RESTART_RC_VALUE=1
+run_once timeout 0 2000 3000
+[ "$(action_count)" -eq 1 ] ||
+    fail "bounded retries did not request the first attempt"
+grep -Fqx 'recovery_attempt_count=1' "${STATE_DIR}/memory" ||
+    fail "first recovery attempt count was not durable"
+grep -Fqx 'recovery_next_retry_monotonic=2060' "${STATE_DIR}/memory" ||
+    fail "short recovery deadline was not durable"
+run_once timeout 0 2059 3059
+[ "$(action_count)" -eq 1 ] ||
+    fail "second recovery attempt preceded its 60-second cooldown"
+assert_json '"action":"recovery_cooldown"'
+run_once timeout 0 2060 3060
+[ "$(action_count)" -eq 2 ] ||
+    fail "bounded retries did not request the second attempt"
+grep -Fqx 'recovery_attempt_count=2' "${STATE_DIR}/memory" ||
+    fail "second recovery attempt count was not durable"
+grep -Fqx 'recovery_next_retry_monotonic=2360' "${STATE_DIR}/memory" ||
+    fail "long recovery deadline was not durable"
+run_once timeout 0 2359 3359
+[ "$(action_count)" -eq 2 ] ||
+    fail "third recovery attempt preceded its 300-second cooldown"
+run_once timeout 0 2360 3360
+[ "$(action_count)" -eq 3 ] ||
+    fail "bounded retries did not request the third attempt"
+grep -Fqx 'recovery_attempt_count=3' "${STATE_DIR}/memory" ||
+    fail "exhausted recovery attempt count was not durable"
+grep -Fqx 'recovery_next_retry_monotonic=0' "${STATE_DIR}/memory" ||
+    fail "exhausted recovery deadline was not cleared"
+run_once timeout 0 3000 4000
+[ "$(action_count)" -eq 3 ] ||
+    fail "exhausted recovery episode requested a fourth restart"
+assert_json '"action":"recovery_exhausted"'
+RESTART_RC_VALUE=0
+unset RESTART_RC_VALUE THRESHOLD_VALUE
+pass "three durable attempts use 60s and 300s cooldowns then exhaust"
+
+new_case recovery-latch-sigkill
+run_once timeout 0 1601 2401
+run_once timeout 0 1602 2402
+start_restart_blocking_watchdog
+wait_for_file "${CASE_DIR}/restart-child-pid"
+grep -Fqx 'recovery_latched=1' "${STATE_DIR}/memory" ||
+    fail "recovery latch was not durable before systemctl restart"
+grep -Fqx 'recovery_count=1' "${STATE_DIR}/memory" ||
+    fail "recovery count was not durable before systemctl restart"
+[ "$(action_count)" -eq 1 ] ||
+    fail "blocking recovery did not invoke exactly one restart"
+kill -KILL "$RESTART_WATCHDOG_PID"
+_wait_rc=0
+wait "$RESTART_WATCHDOG_PID" 2>/dev/null || _wait_rc=$?
+[ "$_wait_rc" -gt 128 ] ||
+    fail "SIGKILL did not terminate the watchdog during restart"
+printf '%s\n' continue >"${CASE_DIR}/restart-fifo"
+run_once timeout 0 1604 2404
+[ "$(action_count)" -eq 1 ] ||
+    fail "successor retried recovery after watchdog SIGKILL"
+assert_json '"recovery_latched":true'
+assert_json '"recovery_count":1'
+assert_json '"action":"recovery_cooldown"'
+pass "durable pre-restart state enforces cooldown after watchdog SIGKILL"
+
+new_case recovery-state-write-failure
+MEMORY_FILE_VALUE="${CASE_DIR}/memory-store/memory"
+mkdir -p "${CASE_DIR}/memory-store"
+chmod 0700 "${CASE_DIR}/memory-store"
+run_once timeout 0 1651 2451
+run_once timeout 0 1652 2452
+cp "$MEMORY_FILE_VALUE" "${CASE_DIR}/memory-before-failure"
+chmod 0500 "${CASE_DIR}/memory-store"
+if run_once timeout 0 1653 2453 2>/dev/null; then
+    fail "watchdog succeeded after recovery-state persistence failed"
+fi
+assert_json '"status":"watchdog_error"'
+assert_json '"reason":"state_persistence_failed"'
+assert_json '"action":"restart_suppressed_state_persistence_failed"'
+assert_json '"eligible_failure":false'
+assert_json '"recovery_latched":false'
+assert_json '"recovery_count":0'
+assert_no_action
+cmp -s "$MEMORY_FILE_VALUE" "${CASE_DIR}/memory-before-failure" ||
+    fail "failed atomic state write changed the durable memory file"
+grep -Fq 'state_persistence_failed' "$LOG_FILE" ||
+    fail "persistence failure did not emit its fixed diagnostic enum"
+! grep -Fq "$MEMORY_FILE_VALUE" "$LOG_FILE" "${STATE_DIR}/status.json" ||
+    fail "persistence failure leaked a state path"
+chmod 0700 "${CASE_DIR}/memory-store"
+run_once timeout 0 1654 2454
+[ "$(action_count)" -eq 1 ] ||
+    fail "restored persistence did not permit the first recovery"
+unset MEMORY_FILE_VALUE
+pass "state-write failure is atomic, observable, and suppresses restart"
+
+new_case recovery-state-rename-failure
+MEMORY_FILE_VALUE="${CASE_DIR}/rename-target"
+THRESHOLD_VALUE=1
+mkdir -p "$MEMORY_FILE_VALUE"
+chmod 0700 "$MEMORY_FILE_VALUE"
+if run_once timeout 0 1661 2461 2>/dev/null; then
+    fail "watchdog accepted a directory as its durable memory file"
+fi
+assert_json '"status":"watchdog_error"'
+assert_json '"reason":"state_persistence_failed"'
+assert_json '"action":"restart_suppressed_state_persistence_failed"'
+assert_json '"eligible_failure":false'
+assert_json '"recovery_latched":true'
+assert_json '"recovery_count":0'
+assert_no_action
+if find "$MEMORY_FILE_VALUE" -mindepth 1 -print | grep -q .; then
+    fail "directory memory target received a false durable latch"
+fi
+
+rmdir "$MEMORY_FILE_VALUE"
+mkdir "${CASE_DIR}/rename-real-directory"
+ln -s "${CASE_DIR}/rename-real-directory" "$MEMORY_FILE_VALUE"
+if run_once timeout 0 1662 2462 2>/dev/null; then
+    fail "watchdog accepted a symlink-to-directory durable memory target"
+fi
+assert_json '"status":"watchdog_error"'
+assert_json '"reason":"state_persistence_failed"'
+assert_json '"action":"restart_suppressed_state_persistence_failed"'
+assert_no_action
+if find "${CASE_DIR}/rename-real-directory" -mindepth 1 -print | grep -q .; then
+    fail "symlinked memory target received a false durable latch"
+fi
+rm -f "$MEMORY_FILE_VALUE"
+unset MEMORY_FILE_VALUE THRESHOLD_VALUE
+pass "directory and symlink memory targets fail closed before restart"
+
+new_case oversized-memory
+python3 - "${STATE_DIR}/memory" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(
+    b"recovery_latched=0\nconsecutive_failures=999\n" +
+    b"x" * (1024 * 1024)
+)
+PY
+THRESHOLD_VALUE=1
+run_once timeout 0 1671 2471
+assert_json '"recovery_latched":true'
+assert_json '"recovery_count":0'
+assert_json '"action":"recovery_exhausted"'
+assert_no_action
+[ "$(wc -c <"${STATE_DIR}/memory")" -le 4096 ] ||
+    fail "oversized memory was not replaced with bounded durable state"
+unset THRESHOLD_VALUE
+pass "oversized prior memory cannot erase an unknown durable restart latch"
+
+new_case invalid-retry-memory
+{
+    printf 'recovery_latched=1\n'
+    printf 'recovery_attempt_count=1\n'
+    printf 'recovery_next_retry_monotonic=0\n'
+} >"${STATE_DIR}/memory"
+chmod 0600 "${STATE_DIR}/memory"
+THRESHOLD_VALUE=1
+run_once timeout 0 1681 2481
+assert_no_action
+assert_json '"recovery_latched":true'
+assert_json '"action":"recovery_exhausted"'
+grep -Fqx 'recovery_attempt_count=3' "${STATE_DIR}/memory" ||
+    fail "invalid retry memory was not rewritten as exhausted"
+unset THRESHOLD_VALUE
+pass "inconsistent retry memory cannot mint fresh restart authority"
 
 new_case supervisor_query_error
 _i=1
@@ -806,6 +1684,20 @@ for _disabled_state in disabled masked; do
 done
 pass "disabled and masked tailscaled units remain operator-authoritative"
 
+new_case supervisor_runtime_only_inactive
+UNIT_FILE_STATE_VALUE=enabled-runtime
+_i=1
+while [ "$_i" -le 5 ]; do
+    run_once running 3 "$((1580 + _i))" "$((2380 + _i))"
+    _i=$((_i + 1))
+done
+unset UNIT_FILE_STATE_VALUE
+assert_json '"status":"supervisor_unmanaged"'
+assert_json '"reason":"unit_not_persistently_enabled"'
+assert_json '"eligible_failure":false'
+assert_no_action
+pass "runtime-only enablement cannot authorize inactive-service recovery"
+
 new_case stale-lock-evidence
 printf 'pid=%s\n' "$$" >"${STATE_DIR}/watchdog.lock"
 chmod 0600 "${STATE_DIR}/watchdog.lock"
@@ -844,7 +1736,7 @@ pass "direct concurrent starts serialize on one held file-description lock"
 kill -KILL "$BLOCKING_WATCHDOG_PID"
 _wait_rc=0
 wait "$BLOCKING_WATCHDOG_PID" 2>/dev/null || _wait_rc=$?
-[ "$_wait_rc" -eq 137 ] ||
+[ "$_wait_rc" -gt 128 ] ||
     fail "SIGKILL test did not terminate the lock owner"
 run_once running 0 1610 2410
 _successor_calls="$(wc -l <"$CLI_ARGS_FILE" | tr -d ' ')"
@@ -862,7 +1754,7 @@ _blocked_child_pid="$(cat "${CASE_DIR}/blocked-child-pid")"
 kill -TERM "$BLOCKING_WATCHDOG_PID"
 _wait_rc=0
 wait "$BLOCKING_WATCHDOG_PID" || _wait_rc=$?
-[ "$_wait_rc" -eq 143 ] ||
+[ "$_wait_rc" -gt 128 ] ||
     fail "signal handler did not exit with a termination status"
 if kill -0 "$_blocked_child_pid" 2>/dev/null; then
     fail "signal handler left the bounded LocalAPI child alive"
@@ -877,6 +1769,63 @@ grep -Fq 'RuntimeDirectoryMode=0700' "$SERVICE_UNIT" ||
     fail "service lacks private RuntimeDirectory mode"
 grep -Fq 'RuntimeDirectoryPreserve=yes' "$SERVICE_UNIT" ||
     fail "oneshot state would disappear between timer invocations"
+service_limit_core_contract() {
+    [ "$(
+        awk '
+            /^\[/ {
+                in_service = ($0 == "[Service]")
+                next
+            }
+            in_service &&
+              /^[[:space:]]*LimitCORE[[:space:]]*=/ {
+                directive_count++
+                if ($0 == "LimitCORE=0") {
+                    exact_count++
+                }
+            }
+            END {
+                printf "%d:%d\n", directive_count + 0, exact_count + 0
+            }
+        ' "$1"
+    )" = "1:1" ]
+}
+service_limit_core_contract "$SERVICE_UNIT" ||
+    fail "service does not have one exact active LimitCORE=0 directive"
+_commented_core_unit="${TEST_ROOT}/commented-core.service"
+sed 's/^LimitCORE=0$/# LimitCORE=0/' \
+    "$SERVICE_UNIT" >"$_commented_core_unit"
+if service_limit_core_contract "$_commented_core_unit"; then
+    fail "commented LimitCORE text satisfied the active directive contract"
+fi
+_misplaced_core_unit="${TEST_ROOT}/misplaced-core.service"
+awk '
+    $0 == "[Unit]" {
+        print
+        print "LimitCORE=0"
+        next
+    }
+    $0 == "LimitCORE=0" {
+        next
+    }
+    {
+        print
+    }
+' "$SERVICE_UNIT" >"$_misplaced_core_unit"
+if service_limit_core_contract "$_misplaced_core_unit"; then
+    fail "LimitCORE outside [Service] satisfied the unit contract"
+fi
+_conflicting_core_unit="${TEST_ROOT}/conflicting-core.service"
+awk '
+    {
+        print
+        if ($0 == "LimitCORE=0") {
+            print "LimitCORE=infinity"
+        }
+    }
+' "$SERVICE_UNIT" >"$_conflicting_core_unit"
+if service_limit_core_contract "$_conflicting_core_unit"; then
+    fail "conflicting LimitCORE directives satisfied the unit contract"
+fi
 grep -Fq 'ProtectSystem=strict' "$SERVICE_UNIT" ||
     fail "service filesystem hardening missing"
 grep -Fq 'NoNewPrivileges=yes' "$SERVICE_UNIT" ||
@@ -891,6 +1840,34 @@ grep -Fq 'Persistent=false' "$TIMER_UNIT" ||
     fail "timer must not replay missed checks after boot"
 pass "systemd units retain private state and explicit hardening"
 
+_unit_start_timeout="$(
+    sed -n 's/^TimeoutStartSec=\([0-9][0-9]*\)s$/\1/p' "$SERVICE_UNIT"
+)"
+case "$_unit_start_timeout" in
+    ""|*[!0-9]*) fail "service TimeoutStartSec is not a bounded second value" ;;
+esac
+grep -Fq \
+    'STATUS_TIMEOUT="$(bounded_positive_or "$STATUS_TIMEOUT" 5 5)"' \
+    "$WATCHDOG" || fail "LocalAPI timeout is not capped by the unit budget"
+grep -Fq \
+    'RESTART_TIMEOUT="$(bounded_positive_or "$RESTART_TIMEOUT" 20 20)"' \
+    "$WATCHDOG" || fail "restart timeout is not capped by the unit budget"
+grep -Fq \
+    'SUPERVISOR_TIMEOUT="$(bounded_positive_or "$SUPERVISOR_TIMEOUT" 3 3)"' \
+    "$WATCHDOG" || fail "systemd query timeout is not capped by the unit budget"
+_timeout_kill_grace=2
+_supervisor_query_count=3
+_eligible_recovery_command_budget=$((
+    _supervisor_query_count * (3 + _timeout_kill_grace) +
+    (5 + _timeout_kill_grace) +
+    (20 + _timeout_kill_grace)
+))
+_unit_completion_margin=5
+[ $((_eligible_recovery_command_budget + _unit_completion_margin)) \
+    -le "$_unit_start_timeout" ] ||
+    fail "watchdog command deadlines exceed systemd TimeoutStartSec"
+pass "systemd deadline includes every recovery command plus completion margin"
+
 if rg -n 'tailscale[[:space:]]+(up|down|login|logout)' \
     "$WATCHDOG" "${REPO_DIR}/vps/install-tailscale-watchdog.sh" \
     >/dev/null 2>&1; then
@@ -902,7 +1879,7 @@ grep -Fq '"$TIMEOUT_CMD" --signal=TERM --kill-after=2 "$RESTART_TIMEOUT"' \
     "$WATCHDOG" || fail "restart request is not deadline-bounded"
 pass "mutation surface is limited to one bounded supervisor restart"
 
-[ "$(grep -c '9>&- &' "$WATCHDOG")" -eq 4 ] ||
+[ "$(grep -c '9>&- &' "$WATCHDOG")" -eq 5 ] ||
     fail "a long-running watchdog child can inherit the singleton lock"
 grep -Fq '>/dev/null 2>&1 9>&- || true' "$WATCHDOG" ||
     fail "logger child can inherit the singleton lock"

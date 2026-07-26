@@ -3,7 +3,139 @@ START=99
 STOP=20
 USE_PROCD=1
 
+INSTALL_FENCE="/etc/jammonitor/install-transaction"
+INSTALL_RECOVERY_ACTIVE="/etc/jammonitor/recovery/active"
+INSTALL_RECOVERY_UNRESOLVED="/etc/jammonitor/recovery/UNRESOLVED"
+STORAGE_RECOVERY_JOURNAL="${JAMMONITOR_STORAGE_RECOVERY_JOURNAL:-/etc/jammonitor_storage_mount_recovery.json}"
+STORAGE_RECOVERY_FAILED="${JAMMONITOR_STORAGE_RECOVERY_FAILED:-/etc/jammonitor_storage_mount_recovery_failed}"
+
+is_lower_sha256() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+}
+
+private_regular_fence() {
+    fence_path="$1"
+    fence_max_bytes="$2"
+    [ -f "$fence_path" ] && [ ! -L "$fence_path" ] || return 1
+    [ "$(stat -c '%u:%g:%a:%h' "$fence_path" 2>/dev/null)" = \
+      "0:0:600:1" ] || return 1
+    fence_size="$(wc -c < "$fence_path" 2>/dev/null |
+        tr -d ' \r\n')" || return 1
+    case "$fence_size" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$fence_size" -gt 0 ] && [ "$fence_size" -le "$fence_max_bytes" ]
+}
+
+fence_value() {
+    fence_key="$1"
+    fence_path="$2"
+    awk -F= -v expected="$fence_key" '
+        $1 == expected {
+            count++
+            value = substr($0, length($1) + 2)
+        }
+        END {
+            if (count != 1 || value == "") exit 1
+            print value
+        }
+    ' "$fence_path"
+}
+
+installer_fence_allows_start() {
+    # Recovery residue without this fence must block future mutation, not a
+    # verified runtime after a fence-first commit or rollback cleanup.
+    if [ ! -e "$INSTALL_FENCE" ] && [ ! -L "$INSTALL_FENCE" ]; then
+        return 0
+    fi
+
+    # JAMMONITOR_BOOT_FENCE_V1. Boot has no token and fails closed. Only the
+    # lock-owning installer exports JAMMONITOR_INSTALL_FENCE_TOKEN while the
+    # exact synchronized recovery transaction remains joinable.
+    private_regular_fence "$INSTALL_FENCE" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_FENCE" 2>/dev/null | tr -d ' ')" = "7" ] ||
+        return 1
+    [ -d "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ ! -L "$INSTALL_RECOVERY_ACTIVE" ] &&
+        [ "$(stat -c '%u:%g:%a' "$INSTALL_RECOVERY_ACTIVE" 2>/dev/null)" = \
+          "0:0:700" ] ||
+        return 1
+    private_regular_fence "$INSTALL_RECOVERY_UNRESOLVED" 1024 || return 1
+    [ "$(wc -l < "$INSTALL_RECOVERY_UNRESOLVED" 2>/dev/null |
+        tr -d ' ')" = "2" ] &&
+        grep -Fqx 'status=mutation_started' \
+            "$INSTALL_RECOVERY_UNRESOLVED" ||
+        return 1
+
+    install_token="$(fence_value token "$INSTALL_FENCE")" || return 1
+    is_lower_sha256 "$install_token" || return 1
+    [ "${JAMMONITOR_INSTALL_FENCE_TOKEN:-}" = "$install_token" ] ||
+        return 1
+    [ "$(fence_value format "$INSTALL_FENCE")" = \
+      "jammonitor-router-install-fence-v1" ] ||
+        return 1
+    install_source_ref="$(fence_value source_ref "$INSTALL_FENCE")" ||
+        return 1
+    case "$install_source_ref" in
+        local-staged) ;;
+        *)
+            [ "${#install_source_ref}" -eq 40 ] || return 1
+            case "$install_source_ref" in
+                *[!0-9a-f]*) return 1 ;;
+            esac
+            ;;
+    esac
+    install_manifest_sha="$(
+        fence_value manifest_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_manifest_sha" || return 1
+    [ "$(fence_value recovery_bundle "$INSTALL_FENCE")" = \
+      "/etc/jammonitor/recovery/active" ] ||
+        return 1
+    install_transaction_sha="$(
+        fence_value recovery_transaction_sha256 "$INSTALL_FENCE"
+    )" || return 1
+    is_lower_sha256 "$install_transaction_sha" || return 1
+    [ "$(fence_value phase "$INSTALL_FENCE")" = "payload_mutation" ] ||
+        return 1
+    private_regular_fence \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" 4096 &&
+        [ "$(sha256sum "$INSTALL_RECOVERY_ACTIVE/transaction" |
+            awk '{print $1}')" = "$install_transaction_sha" ] ||
+        return 1
+    grep -Fqx "source_ref=$install_source_ref" \
+        "$INSTALL_RECOVERY_ACTIVE/transaction" &&
+        grep -Fqx "manifest_sha256=$install_manifest_sha" \
+            "$INSTALL_RECOVERY_ACTIVE/transaction" ||
+        return 1
+    grep -Fqx 'recovery_bundle=/etc/jammonitor/recovery/active' \
+        "$INSTALL_RECOVERY_UNRESOLVED"
+}
+
+storage_recovery_is_pending() {
+    # -e intentionally catches every existing object; -L also catches a
+    # dangling symlink. The collector must never start while either durable
+    # recovery authority exists, regardless of whether its contents parse.
+    [ -e "$STORAGE_RECOVERY_JOURNAL" ] ||
+        [ -L "$STORAGE_RECOVERY_JOURNAL" ] ||
+        [ -e "$STORAGE_RECOVERY_FAILED" ] ||
+        [ -L "$STORAGE_RECOVERY_FAILED" ]
+}
+
 start_service() {
+    installer_fence_allows_start || {
+        logger -t jammonitor \
+            "FATAL: unresolved or invalid installer transaction fence; history start refused"
+        return 1
+    }
+    if storage_recovery_is_pending; then
+        logger -t jammonitor \
+            "FATAL: storage recovery is pending; history collector start refused"
+        return 1
+    fi
     procd_open_instance
     procd_set_param command /usr/bin/jammonitor-collect
     # Missing/read-only USB and corrupt SQLite are deterministic faults. Keep

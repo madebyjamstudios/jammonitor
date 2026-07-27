@@ -196,7 +196,9 @@ Resources:
       Architectures: [arm64]
       MemorySize: 256
       Timeout: 30
-      ReservedConcurrentExecutions: 1
+      # ReservedConcurrentExecutions: 1 requires the account concurrency
+      # quota to exceed the 10-execution minimum; this account is at 10.
+      # Restore the reservation if the quota is ever raised.
       Role: !GetAtt MonitorExecutionRole.Arn
       Tracing: Active
       LoggingConfig:
